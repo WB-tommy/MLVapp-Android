@@ -4,8 +4,10 @@
 
 #ifndef MLVAPP_MLV_PROCESSOR_JNI_H
 #define MLVAPP_MLV_PROCESSOR_JNI_H
+
 #include <jni.h>
 #include <android/log.h>
+#include <android/bitmap.h>
 
 // Include MLV headers (you'll need to copy these from the original project)
 extern "C" {
@@ -22,6 +24,11 @@ extern "C" {
 
 #ifdef __cplusplus
 extern "C" {
+
+JNIEXPORT jobject JNICALL
+Java_fm_forum_mlvapp_MainActivity_openMlvForPreview(JNIEnv *env, jobject thiz, jint fd,
+                                                    jstring fileName, jlong maxRam);
+
 #endif
 
 #ifdef __cplusplus

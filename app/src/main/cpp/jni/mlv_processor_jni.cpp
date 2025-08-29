@@ -3,54 +3,75 @@
 
 extern "C" JNIEXPORT jobject JNICALL
 Java_fm_forum_mlvapp_MainActivity_openMlvForPreview(JNIEnv *env, jobject /* this */, jint fd,
-                                                    jboolean isMlv) {
+                                                    jstring fileName, jlong maxRam) {
     int mlvErr = MLV_ERR_NONE;
     char mlvErrMsg[256] = {0};
 
     mlvObject_t *nativeClip = nullptr;
+    const char *filePath = env->GetStringUTFChars(fileName, nullptr);
 
-    // 1. Create the native mlvObject_t
-    if (isMlv) {
-        // We use a new function that accepts a file descriptor instead of a path.
-        nativeClip = initMlvObjectWithClip(fd, MLV_OPEN_PREVIEW,
-                                             &mlvErr, mlvErrMsg);
-    } else {
-        // For mcraw files, the mcraw library itself would need to be modified
-        // to accept a file descriptor. For now, we'll show the MLV path.
-        // A similar initMlvObjectWithMcrawClipFd would be needed.
-//        nativeClip = initMlvObjectWithMcrawClip(fd,
-//                                                  MLV_OPEN_PREVIEW, &mlvErr, mlvErrMsg);
+    if (filePath != nullptr) { // Always check for null after GetStringUTFChars
+        size_t filePathLen = strlen(filePath);
+
+        if (filePathLen > 3 &&
+            (strncmp(filePath + filePathLen - 4, ".mlv", 4) == 0) ||
+            strncmp(filePath + filePathLen - 4, ".MLV", 4) == 0) {
+            nativeClip = initMlvObjectWithClip(
+                    fd,
+                    (char *) filePath,
+                    MLV_OPEN_PREVIEW,
+                    &mlvErr,
+                    mlvErrMsg);
+        }
+//        else {
+//            initMlvObjectWithMcrawClip(
+//                    fd,
+//                    (char *) filePath,
+//                    MLV_OPEN_PREVIEW,
+//                    &mlvErr,
+//                    mlvErrMsg);
+//        }
     }
 
-    if (mlvErrMsg[0]) { /* handle error */ return nullptr; }
+    if (!nativeClip) { /* handle error */
+        return nullptr;
+    }
 
-    // 2. Perform the data formatting logic, ported from MainWindow.cpp
-    float shutterSpeed = 1000000.0f / (float) (getMlvShutter(nativeClip));
-    float shutterAngle = getMlvFramerate(nativeClip) * 360.0f / shutterSpeed;
-    char shutterStr[128];
-    snprintf(shutterStr, sizeof(shutterStr), "1/%.0f s, %.1f deg, %u µs", shutterSpeed,
-             shutterAngle, getMlvShutter(nativeClip));
+    env->ReleaseStringUTFChars(fileName, filePath);
 
-    LOGD("shutterStr: %s", shutterStr);
+    auto m_pProcessingObject = initProcessingObject();
 
-//    // ... port the complex ISO string logic here ...
-//    char isoStr[64];
-//    // ...
-//    snprintf(isoStr, sizeof(isoStr), "...");
+    uint32_t m_cacheSizeMB = 0;
+    /* Limit frame cache to suitable amount of RAM (~33% at 8GB and below, ~50% at 16GB, then up and up) */
+    if (maxRam < 7500) m_cacheSizeMB = maxRam * 0.33;
+    else m_cacheSizeMB = (uint32_t) (0.66666f * (float) (maxRam - 4000));
 
-    return nullptr;
+    setMlvProcessing(nativeClip, m_pProcessingObject);
+    disableMlvCaching(nativeClip);
+    setMlvRawCacheLimitMegaBytes(nativeClip, m_cacheSizeMB);
 
-//    // 3. Find the Kotlin data class and its constructor
-//    jclass clipDetailsClass = env->FindClass("fm/forum/mlvapp/data/MLVFile");
-//    jmethodID constructor = env->GetMethodID(clipDetailsClass, "<init>",
-//                                             "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"); // Simplified signature
-//
-//    // 4. Create Java strings from your formatted C strings
-//    jstring jCameraName = env->NewStringUTF((const char *) getMlvCamera(nativeClip));
-//    jstring jShutterInfo = env->NewStringUTF(shutterStr);
-//    jstring jIsoInfo = env->NewStringUTF(isoStr);
-//
-//    // 5. Construct and return the clean Kotlin object
-//    return env->NewObject(clipDetailsClass, constructor, clipId, jCameraName, jShutterInfo,
-//                          jIsoInfo);
+    // Disable low level raw fixes for preview
+    nativeClip->llrawproc->fix_raw = 0;
+
+    // Allocate memory for the raw image data
+    int width = getMlvWidth(nativeClip);
+    int height = getMlvHeight(nativeClip);
+    auto *m_pRawImage = new unsigned char[width * height * 3]; // RGB888
+
+    // Get frame from library
+    getMlvProcessedFrame8(nativeClip, 0, m_pRawImage, 4 /* Example thread count */);
+    jstring jCameraName = env->NewStringUTF((const char *) getMlvCamera(nativeClip));
+
+    // Convert RGB888 to ByteArray for PreviewData
+    jbyteArray thumbnailBytes = env->NewByteArray(width * height * 3);
+    env->SetByteArrayRegion(thumbnailBytes, 0, width * height * 3, (jbyte*)m_pRawImage);
+
+    // Clean up the original RGB buffer
+    delete[] m_pRawImage;
+
+    // Find PreviewData class and constructor
+    jclass previewDataClass = env->FindClass("fm/forum/mlvapp/data/PreviewData");
+    jmethodID constructor = env->GetMethodID(previewDataClass, "<init>", "(Ljava/lang/String;II[B)V");
+
+    return env->NewObject(previewDataClass, constructor, jCameraName, width, height, thumbnailBytes);
 }

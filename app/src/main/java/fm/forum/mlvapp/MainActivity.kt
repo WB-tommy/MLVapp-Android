@@ -1,7 +1,8 @@
 package fm.forum.mlvapp
 
+import android.app.ActivityManager
 import android.content.Context
-import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -12,10 +13,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -41,9 +47,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import fm.forum.mlvapp.data.MLVFileForList
+import fm.forum.mlvapp.data.MLVFile
 import fm.forum.mlvapp.ui.theme.MLVappTheme
 import kotlinx.coroutines.launch
 
@@ -52,14 +60,23 @@ class MainActivity : ComponentActivity() {
         System.loadLibrary("mlvcore")
     }
 
-    external fun openMlvForPreview(fd: Int, isMlv: Boolean)
+    external fun openMlvForPreview(
+        fd: Int,
+        fileName: String,
+        memSize: Long
+    ): fm.forum.mlvapp.data.PreviewData
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MLVappTheme {
+                val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                val memInfo = ActivityManager.MemoryInfo()
+                activityManager.getMemoryInfo(memInfo)
+                val totalMemory = memInfo.totalMem // Total RAM in bytes
+
                 // var selectedFileUris by remember { mutableStateOf<List<Uri>>(emptyList()) } // Maybe not needed if only an intermediate
-                var selectedMLVFiles by remember { mutableStateOf<List<MLVFileForList>>(emptyList()) }
+                var selectedMLVFiles by remember { mutableStateOf<List<MLVFile>>(emptyList()) }
                 // Coroutine scope for background processing
                 val coroutineScope = rememberCoroutineScope()
 
@@ -83,24 +100,41 @@ class MainActivity : ComponentActivity() {
                                             // Detach the file descriptor so it's not closed when pfd is closed.
                                             // The native code will be responsible for closing it.
                                             val fd = pfd.detachFd()
-                                            openMlvForPreview(
+                                            val previewData = openMlvForPreview(
                                                 fd,
-                                                fileName.endsWith(".mlv", ignoreCase = true)
+                                                fileName,
+                                                totalMemory
+                                            )
+
+                                            return@mapNotNull MLVFile(
+                                                uri,
+                                                fileName,
+                                                previewData.cameraName,
+                                                previewData.width,
+                                                previewData.height,
+                                                convertRgb888ToImageBitmap(
+                                                    previewData.thumbnail,
+                                                    previewData.width,
+                                                    previewData.height,
+                                                )
                                             )
                                         }
                                     } catch (e: ErrnoException) {
-                                        Log.e("FilePicker", "Failed to open file descriptor for $uri", e)
+                                        Log.e(
+                                            "FilePicker",
+                                            "Failed to open file descriptor for $uri",
+                                            e
+                                        )
                                     } catch (e: Exception) {
                                         Log.e("FilePicker", "Error processing URI $uri", e)
                                     }
-//                                    MLVFileForList(uri, fileName, "Details for $fileName")
                                 } else {
                                     null // Skip files that don't match
                                 }
                             }
-//                            // Update the primary state that the UI observes
-//                            selectedMLVFiles =
-//                                selectedMLVFiles + newMLVFiles // Append to existing or replace
+                            // Update the primary state that the UI observes
+                            selectedMLVFiles =
+                                (selectedMLVFiles + newMLVFiles) as List<MLVFile> // Append to existing or replace
                         }
                     }
                 }
@@ -112,11 +146,29 @@ class MainActivity : ComponentActivity() {
                     topBar = { TheTopBar(onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) }) },
                     bottomBar = { TheBottomBar(Modifier) }
                 ) { innerPadding ->
-                    Surface {
-                        Text(text = "Playback Area")
+                    Surface(
+                        modifier = Modifier
+                            .padding(innerPadding) // <--- APPLY THE PADDING HERE
+                        // Optional: If you want additional padding inside the content area
+                        // .padding(16.dp)
+                    ) {
+                        Column {
+                            Text(
+                                text = "Playback Area",
+                                modifier = Modifier.padding(8.dp) // Add some padding for visual separation
+                            )
+                            Text(
+                                text = "Timeline Control Area",
+                                modifier = Modifier.padding(8.dp) // Add some padding
+                            )
+                            FileListView(
+                                mlvFileList = selectedMLVFiles,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth() // If it's a LazyRow, it will scroll horizontally
+                            )
+                        }
                     }
-                    Text(text = "Timeline Control Area")
-                    FileListView(selectedMLVFiles)
                 }
             }
         }
@@ -178,29 +230,62 @@ fun getFileName(uri: Uri, context: Context): String {
 }
 
 @Composable
-fun FilePreviewCard(mlvFile: MLVFileForList) {
+fun FilePreviewCard(mlvFile: MLVFile) {
     OutlinedCard(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface,
         ),
         border = BorderStroke(1.dp, Color.Black),
         modifier = Modifier
-            .size(width = 240.dp, height = 100.dp)
+            .height(100.dp)
     ) {
-        Text(
-            text = "Outlined",
-            modifier = Modifier
-                .padding(16.dp),
-            textAlign = TextAlign.Center,
-        )
+        Row {
+            Image(mlvFile.thumbnail, contentDescription = "Preview")
+            Text(
+                text = mlvFile.fileName,
+                modifier = Modifier
+                    .padding(16.dp),
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
 @Composable
-fun FileListView(mlvFileList: List<MLVFileForList>) {
-    LazyRow {
+fun FileListView(mlvFileList: List<MLVFile>, modifier: Modifier) {
+    LazyColumn(
+        modifier = modifier
+    ) {
         items(mlvFileList) { mlvFile ->
             FilePreviewCard(mlvFile)
         }
     }
+}
+
+private fun convertRgb888ToImageBitmap(
+    rgb888Bytes: ByteArray,
+    width: Int,
+    height: Int
+): ImageBitmap {
+    val numPixels = width * height
+    val argbPixels = IntArray(numPixels) // Target ARGB_8888 IntArray
+
+    for (i in 0 until numPixels) {
+        val r = rgb888Bytes[i * 3 + 0].toInt() and 0xFF // Red
+        val g = rgb888Bytes[i * 3 + 1].toInt() and 0xFF // Green
+        val b = rgb888Bytes[i * 3 + 2].toInt() and 0xFF // Blue
+        val a = 0xFF // Alpha (fully opaque)
+
+        argbPixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    // Now create an Android Bitmap from the ARGB IntArray
+    val androidBitmap = Bitmap.createBitmap(
+        argbPixels,
+        width,
+        height,
+        Bitmap.Config.ARGB_8888
+    )
+
+    return androidBitmap.asImageBitmap()
 }

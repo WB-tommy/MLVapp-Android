@@ -2,58 +2,58 @@ package fm.forum.mlvapp.data
 
 import android.net.Uri
 import androidx.compose.runtime.Stable
+import androidx.compose.ui.graphics.ImageBitmap
 import java.nio.FloatBuffer
 import java.time.LocalDateTime
 
 @Stable
-data class MLVFileForList(
-    val uri: Uri,
-    val name: String,
-    val path: String,
-    val camera: String = "",
-    val lens: String = "",
-    val resolution: String = "",
-    val duration: String = "",
-    val frames: Int = 0,
-    val frameRate: Double = 0.0,
-    val focalLength: String = "",
-    val shutter: String = "",
-    val aperture: String = "",
-    val iso: Int = 0,
-    val dualISO: Boolean = false,
-    val bitDepth: Int = 0,
-    val dateTime: LocalDateTime? = null,
-    val audioInfo: String = "",
-    val size: Long = 0L,
-    val dataRate: Long = 0L,
-    val thumbnail: ByteArray? = null,
-    val isImporting: Boolean = false
+data class PreviewData(
+    val cameraName: String,
+    val width: Int = 0,
+    val height: Int = 0,
+    val thumbnail: ByteArray,
 ) {
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
-        
-        other as MLVFileForList
-        
-        return name == other.name
+
+        other as MLVFile
+
+        return (cameraName ?: width) == (other.cameraName ?: other.width)
     }
 
     override fun hashCode(): Int {
-        return name.hashCode()
+        return (cameraName ?: width).hashCode()
     }
 }
 
 @Stable
 data class MLVFile(
-    val id: String,
     val uri: Uri,
-    val path: String,
-    
-    // File structure
-    val filenum: Int = 0,
-    val blockNum: Long = 0L,
-    val isActive: Boolean = false,
-    
+    val fileName: String,
+    val cameraName: String,
+    val width: Int = 0,
+    val height: Int = 0,
+    val thumbnail: ImageBitmap,
+
+    val lens: String? = null,
+    val duration: String? = null,
+    val focalLength: String? = null,
+    val shutter: String? = null,
+    val aperture: String? = null,
+    val iso: Int? = null,
+    val dualISO: Boolean? = null,
+    val bitDepth: Int? = null,
+    val dateTime: LocalDateTime? = null,
+    val audioInfo: String? = null,
+    val size: Long? = null,
+    val dataRate: Long? = null,
+
+    val filenum: Int? = null,
+    val blockNum: Long? = null,
+    val isActive: Boolean? = null,
+
     // MLV Headers data
     val mlviHeader: MLVIHeader? = null,
     val rawiHeader: RAWIHeader? = null,
@@ -72,78 +72,78 @@ data class MLVFile(
     val darkHeader: DARKHeader? = null,
     val vidfHeader: VIDFHeader? = null,
     val audfHeader: AUDFHeader? = null,
-    
-    val infoString: String = "",
+
+    val infoString: String? = "",
 
     // Core MLV processing objects
     val cameraIdObj: CameraId? = null,
-    
+
     // Dark frame info
-    val darkFrameOffset: Long = 0L,
-    
+    val darkFrameOffset: Long? = 0L,
+
     // Black and white level
     val originalBlackLevel: Int = 0,
     val originalWhiteLevel: Int = 0,
-    
+
     // Video info
-    val realFrameRate: Double = 0.0,
-    val frameRate: Double = 0.0,
-    val frames: Int = 0,
-    val frameSize: Int = 0,
-    val compressionType: Int = 0,
-    val videoIndex: List<FrameIndex> = emptyList(),
-    
+    val realFrameRate: Double? = 0.0,
+    val frameRate: Double? = 0.0,
+    val frames: Int? = null,
+    val frameSize: Int? = null,
+    val compressionType: Int? = null,
+    val videoIndex: List<FrameIndex>? = emptyList(),
+
     // Audio info
-    val audios: Int = 0,
-    val audioSize: Long = 0L,
-    val audioBufferSize: Long = 0L,
-    val audioIndex: List<FrameIndex> = emptyList(),
-    
+    val audios: Int? = 0,
+    val audioSize: Long? = 0L,
+    val audioBufferSize: Long? = 0L,
+    val audioIndex: List<FrameIndex>? = emptyList(),
+
     // Version info
-    val versBlocks: UInt = 0u,
-    val versIndex: List<FrameIndex> = emptyList(),
+    val versBlocks: UInt? = 0u,
+    val versIndex: List<FrameIndex>? = emptyList(),
 
     // Image processing object pointer (it is to be made separately)
     val processingObj: ProcessingObject? = null,
     val llrawprocObj: LLRawprocObject? = null,
-    
+
     // Lossless raw data bit depth
-    val losslessBpp: Int = 0,
-    
+    val losslessBpp: Int? = 0,
+
     // CA correction
-    val caRed: Float = 0.0f,
-    val caBlue: Float = 0.0f,
-    
+    val caRed: Float? = 0.0f,
+    val caBlue: Float? = 0.0f,
+
     // CPU cache settings (temporary for development)
-    val isCaching: Boolean = false,
-    val cacheThreadCount: Int = 0,
-    val cacheNext: Long = 0L,
-    val stopCaching: Boolean = false,
-    val useAmaze: Boolean = false,
-    val cacheLimitBytes: Long = 0L,
-    val cacheLimitFrames: Long = 0L,
-    val cacheLimitMb: Long = 0L,
-    val cacheStartFrame: Long = 0L,
-    val currentCachedFrameActive: Boolean = false,
-    val currentCachedFrame: Long = 0L,
-    val timesRequested: Int = 0,
-    val cpuCores: Int = 4,
-    
+    val isCaching: Boolean? = false,
+    val cacheThreadCount: Int? = 0,
+    val cacheNext: Long? = 0L,
+    val stopCaching: Boolean? = false,
+    val useAmaze: Boolean? = false,
+    val cacheLimitBytes: Long? = 0L,
+    val cacheLimitFrames: Long? = 0L,
+    val cacheLimitMb: Long? = 0L,
+    val cacheStartFrame: Long? = 0L,
+    val currentCachedFrameActive: Boolean? = false,
+    val currentCachedFrame: Long? = 0L,
+    val timesRequested: Int? = 0,
+    val cpuCores: Int? = 4,
+
     // GPU acceleration settings (for future use)
-    val useGpuAcceleration: Boolean = false,
-    val debayerOnGpu: Boolean = false,
+    val useGpuAcceleration: Boolean? = false,
+    val debayerOnGpu: Boolean? = false,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
-        
+
         other as MLVFile
-        
-        return id == other.id
+
+        return (uri ?: fileName) == (other.uri ?: other.fileName)
     }
-    
+
     override fun hashCode(): Int {
-        return id.hashCode()
+        return (uri ?: fileName).hashCode()
     }
 }
 
@@ -321,12 +321,12 @@ data class MLVGpuFrame(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
-        
+
         other as MLVGpuFrame
-        
+
         return frameIndex == other.frameIndex && timestamp == other.timestamp
     }
-    
+
     override fun hashCode(): Int {
         var result = frameIndex
         result = 31 * result + timestamp.hashCode()
@@ -348,12 +348,12 @@ data class MLVGpuRenderer(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
-        
+
         other as MLVGpuRenderer
-        
+
         return shaderId == other.shaderId
     }
-    
+
     override fun hashCode(): Int {
         return shaderId
     }
@@ -390,14 +390,14 @@ data class MLVProcessingParams(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
-        
+
         other as MLVProcessingParams
-        
+
         return exposure == other.exposure &&
-               temperature == other.temperature &&
-               tint == other.tint
+                temperature == other.temperature &&
+                tint == other.tint
     }
-    
+
     override fun hashCode(): Int {
         var result = exposure.hashCode()
         result = 31 * result + temperature
@@ -444,7 +444,7 @@ data class CameraId(
         other as CameraId
         return cameraModel == other.cameraModel
     }
-    
+
     override fun hashCode(): Int {
         return cameraModel.hashCode()
     }
@@ -468,17 +468,17 @@ data class ProcessingObject(
     val agx: Boolean = false,
     val filterOn: Boolean = false,
     val lutOn: Boolean = false,
-    
+
     // White balance
     val wbFindActive: Boolean = false,
     val kelvin: Double = 5600.0,
     val wbTint: Double = 0.0,
     val wbMultipliers: DoubleArray = doubleArrayOf(1.0, 1.0, 1.0),
-    
+
     // Levels
     val blackLevel: Float = 0.0f,
     val whiteLevel: Int = 65535,
-    
+
     // Basic adjustments
     val exposureStops: Double = 0.0,
     val saturation: Double = 1.0,
@@ -487,17 +487,17 @@ data class ProcessingObject(
     val pivot: Double = 0.5,
     val gammaPower: Double = 1.0,
     val lighten: Double = 0.0,
-    
+
     // Shadow/Highlight
     val highlights: Double = 0.0,
     val shadows: Double = 0.0,
-    
+
     // Clarity & Sharpening
     val clarity: Double = 0.0,
     val sharpen: Double = 0.0,
     val sharpenBias: Double = 0.0,
     val shMasking: UByte = 0u,
-    
+
     // Color correction
     val highlightHue: Double = 0.0,
     val midtoneHue: Double = 0.0,
@@ -505,34 +505,34 @@ data class ProcessingObject(
     val highlightSat: Double = 1.0,
     val midtoneSat: Double = 1.0,
     val shadowSat: Double = 1.0,
-    
+
     // Toning
     val toningDry: Float = 1.0f,
     val toningWet: FloatArray = floatArrayOf(0.0f, 0.0f, 0.0f),
-    
+
     // Camera matrix
     val cameraMatrix: DoubleArray = DoubleArray(9) { if (it % 4 == 0) 1.0 else 0.0 },
     val useCameraMatrix: Boolean = true,
-    
+
     // Advanced
     val highlightReconstruction: Boolean = false,
     val transformation: UByte = 0u,
     val colourGamut: UByte = 0u,
     val tonemapFunction: UByte = 0u,
     val colourSpaceTag: UByte = 0u,
-    
+
     // Denoising
     val denoiserWindow: UByte = 0u,
     val denoiserStrength: UByte = 0u,
     val rbfDenoiserLuma: UByte = 0u,
     val rbfDenoiserChroma: UByte = 0u,
     val rbfDenoiserRange: UByte = 0u,
-    
+
     // Effects
     val grainStrength: UByte = 0u,
     val grainLumaWeight: UByte = 0u,
     val vignetteStrength: Byte = 0,
-    
+
     // CA correction
     val caDesaturate: UByte = 0u,
     val caRadius: UByte = 0u
@@ -543,7 +543,7 @@ data class ProcessingObject(
         other as ProcessingObject
         return kelvin == other.kelvin && exposureStops == other.exposureStops
     }
-    
+
     override fun hashCode(): Int {
         var result = kelvin.hashCode()
         result = 31 * result + exposureStops.hashCode()
@@ -565,23 +565,23 @@ data class LLRawprocObject(
     val chromaSmooth: Int = 0,           // 0=off, 2=cs2x2, 3=cs3x3, 5=cs5x5
     val patternNoise: Boolean = false,
     val deflickerTarget: Int = 0,
-    
+
     // Dual ISO
     val disoValidity: Int = 0,           // 0=not valid, 1=forced, 2=valid
     val dualIso: Int = 0,                // 0=off, 1=full 20bit, 2=preview
     val disoAveraging: Int = 0,          // 0=amaze-edge, 1=mean23
     val disoAliasMap: Boolean = false,
     val disoFrBlending: Boolean = false,
-    
+
     // Dark frame
     val darkFrame: Int = 0,              // 0=off, 1=external, 2=internal
     val darkFrameFilename: String = "",
-    
+
     // cDNG settings
     val dngBitDepth: Int = 14,
     val dngBlackLevel: Int = 0,
     val dngWhiteLevel: Int = 65535,
-    
+
     // Map statuses
     val fpmStatus: Int = 0,              // Focus pixel map: 0=not loaded, 1=loaded, 2=not exist
     val bpmStatus: Int = 0               // Bad pixel map: 0=not loaded, 1=loaded, 2=not exist, 3=none found
@@ -592,7 +592,7 @@ data class LLRawprocObject(
         other as LLRawprocObject
         return fixRaw == other.fixRaw && dualIso == other.dualIso
     }
-    
+
     override fun hashCode(): Int {
         var result = fixRaw.hashCode()
         result = 31 * result + dualIso

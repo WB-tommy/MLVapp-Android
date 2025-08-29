@@ -82,10 +82,30 @@ include_directories(
 add_subdirectory(src/librtprocess)
 
 # Create the main mlvcore shared library (.so/.dylib)
-add_library(${CMAKE_PROJECT_NAME} SHARED ${CMAKE_SOURCE_DIR}/jni/mlv_processor_jni.cpp)
+add_library(${CMAKE_PROJECT_NAME} SHARED
+        ${CMAKE_SOURCE_DIR}/jni/mlv_processor_jni.cpp
+)
+
+# For AndroidBitmap_* functions
+find_library(
+        jnigraphics-lib
+        jnigraphics
+)
 
 # Link all static libraries into the shared library
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE android log processing ca debayer dng matrix mlv rtprocess m)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
+        android
+        log
+        processing
+        ca
+        debayer
+        dng
+        matrix
+        mlv
+        rtprocess
+        m
+        ${jnigraphics-lib}
+)
 
 # Set the output name to be consistent
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "mlvcore")
