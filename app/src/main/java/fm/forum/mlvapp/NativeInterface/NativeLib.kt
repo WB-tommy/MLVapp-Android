@@ -1,15 +1,36 @@
 package fm.forum.mlvapp.NativeInterface
 
-class NativeLib {
+import java.nio.ByteBuffer
+
+object NativeLib {
     init {
         System.loadLibrary("mlvcore")
     }
 
-    // TODO: Implement native functions in JNI layer
-    // external fun initMlvClip(path: String): Long
-    // external fun getFrame(clipHandle: Long, frameIndex: Int): ByteArray
-    // external fun getFrameCount(clipHandle: Long): Int
-    // external fun getThumbnail(clipHandle: Long, width: Int, height: Int): ByteArray?
-    // external fun getMLVInfo(path: String): String // Returns JSON with resolution, duration, etc.
-    // external fun cleanup(clipHandle: Long)
+    external fun openClipForPreview(
+        fd: Int,
+        fileName: String,
+        memSize: Long,
+        cpuCores: Int
+    ): fm.forum.mlvapp.data.ClipPreviewData
+
+    external fun openClip(
+        fd: Int,
+        fileName: String,
+        memSize: Long,
+        cpuCores: Int
+    ): fm.forum.mlvapp.data.ClipMetaData
+
+    external fun fillFrame16(
+        handle: Long,
+        frameIndex: Int,
+        cores: Int,
+        dst: ByteBuffer,  // direct buffer
+        width: Int,
+        height: Int
+    ): Boolean
+
+    external fun closeClip(
+        handle: Long
+    )
 }
