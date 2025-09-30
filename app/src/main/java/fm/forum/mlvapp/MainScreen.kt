@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,7 +28,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import fm.forum.mlvapp.NativeInterface.NativeLib
 import fm.forum.mlvapp.data.Clip
 import fm.forum.mlvapp.data.ClipMetaData
-import fm.forum.mlvapp.data.ClipPreviewData
+import fm.forum.mlvapp.ui.theme.PurpleGrey40
 import fm.forum.mlvapp.videoPlayer.NavigationBar
 import fm.forum.mlvapp.videoPlayer.VideoPlayerScreen
 import fm.forum.mlvapp.videoPlayer.VideoViewModel
@@ -41,6 +43,7 @@ fun MainScreen(
     val context = LocalContext.current
 
     var selectedFiles by remember { mutableStateOf<List<Clip>>(emptyList()) }
+    val curClipGuid by viewModel.clipGUID.collectAsState()
 
     val coroutineScope = rememberCoroutineScope()
 
@@ -49,11 +52,14 @@ fun MainScreen(
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
             coroutineScope.launch {
-                val newMLVFiles = uris.mapNotNull { uri ->
+                val newClips = uris.mapNotNull { uri ->
                     val fileName = getFileName(uri, context)
-                    if (fileName.endsWith(".mlv", ignoreCase = true) ||
-                        fileName.endsWith(".mcraw", ignoreCase = true)
-                    ) {
+                    val extension = fileName.substringAfterLast('.', "")
+                    val isMlvChunk = extension.equals("MLV", ignoreCase = true) ||
+                            extension.matches(Regex("M[0-9]{2}"))
+                    val isMcraw = extension.equals("mcraw", ignoreCase = true)
+
+                    if (isMlvChunk || isMcraw) {
                         try {
                             context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
                                 val fd = pfd.detachFd()
@@ -63,15 +69,16 @@ fun MainScreen(
                                     totalMemory,
                                     cpuCores
                                 )
-
-                                return@mapNotNull Clip(
-                                    uri = uri,
-                                    fileName = fileName,
-                                    width = rawClipData.width,
-                                    height = rawClipData.height,
-                                    thumbnail = rawClipData.thumbnail.asImageBitmap(),
-                                    guid = rawClipData.guid,
-                                )
+                                // Temporary anonymous object
+                                object {
+                                    val uri = uri
+                                    val fileName = fileName
+                                    val width = rawClipData.width
+                                    val height = rawClipData.height
+                                    val thumbnail = rawClipData.thumbnail.asImageBitmap()
+                                    val guid = rawClipData.guid
+                                    val extension = extension
+                                }
                             }
                         } catch (e: Exception) {
                             Log.e("FilePicker", "Error processing URI $uri", e)
@@ -81,7 +88,42 @@ fun MainScreen(
                         null
                     }
                 }
-                selectedFiles = (selectedFiles + newMLVFiles).distinctBy { it.guid }
+
+                val newClipsByGuid = newClips.groupBy { it.guid }
+                val updatedFiles = selectedFiles.toMutableList()
+
+                newClipsByGuid.forEach { (guid, clipInfos) ->
+                    val existingClipIndex = updatedFiles.indexOfFirst { it.guid == guid }
+                    if (existingClipIndex != -1) {
+                        // Merge with existing clip
+                        val existingClip = updatedFiles[existingClipIndex]
+                        val newUris = clipInfos.map { it.uri }
+                        val newFileNames = clipInfos.map { it.fileName }
+
+                        val allUris = (existingClip.uris + newUris).distinct()
+                        val allFileNames = (existingClip.fileNames + newFileNames).distinct()
+
+                        updatedFiles[existingClipIndex] = existingClip.copy(
+                            uris = allUris,
+                            fileNames = allFileNames
+                        )
+                    } else {
+                        // Add new clip
+                        val firstClipInfo = clipInfos.first()
+                        updatedFiles.add(
+                            Clip(
+                                uris = clipInfos.map { it.uri },
+                                fileNames = clipInfos.map { it.fileName },
+                                displayName = firstClipInfo.fileName,
+                                width = firstClipInfo.width,
+                                height = firstClipInfo.height,
+                                thumbnail = firstClipInfo.thumbnail,
+                                guid = firstClipInfo.guid
+                            )
+                        )
+                    }
+                }
+                selectedFiles = updatedFiles
             }
         }
     }
@@ -91,31 +133,57 @@ fun MainScreen(
             .padding(4.dp)
             .statusBarsPadding(),
         topBar = { TheTopBar(onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) }) },
-        bottomBar = { TheBottomBar(Modifier) }
     ) { innerPadding ->
         Surface(
             modifier = Modifier.padding(innerPadding)
         ) {
             Column {
                 VideoPlayerScreen(viewModel, cpuCores)
-                NavigationBar(Modifier.fillMaxWidth(), viewModel)
+                NavigationBar(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(PurpleGrey40),
+                    viewModel
+                )
                 FileListView(
                     clipList = selectedFiles,
-                    onClipSelected = { selectedFile ->
-                        coroutineScope.launch {
-                            context.contentResolver.openFileDescriptor(selectedFile.uri, "r")
-                                ?.use { pfd ->
-                                    val fd = pfd.detachFd()
+                    onClipSelected = { selectedClip ->
+                        if (selectedClip.guid != curClipGuid && !viewModel.isLoading.value) {
+                            viewModel.changeLoadingStatus(true)
+                            coroutineScope.launch {
+                                // The clip object now contains all the uris.
+                                // I need to sort them before getting the file descriptors.
+                                val sortedUrisAndNames =
+                                    selectedClip.uris.zip(selectedClip.fileNames)
+                                        .sortedWith(compareBy { (_, fileName) ->
+                                            val extension = fileName.substringAfterLast('.')
+                                            if (extension.equals("MLV", ignoreCase = true)) {
+                                                "0" // MLV comes first
+                                            } else {
+                                                extension
+                                            }
+                                        })
+
+                                val fds = sortedUrisAndNames.mapNotNull { (uri, _) ->
+                                    try {
+                                        context.contentResolver.openFileDescriptor(uri, "r")
+                                            ?.detachFd()
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                }.toIntArray()
+
+                                if (fds.isNotEmpty()) {
                                     val jniData = NativeLib.openClip(
-                                        fd,
-                                        selectedFile.fileName,
+                                        fds,
+                                        selectedClip.displayName, // Pass the display name
                                         totalMemory,
                                         cpuCores
                                     )
-                                    previewToClip(selectedFile, jniData)
-                                    viewModel.setMetadata(selectedFile)
-                                    Log.d("FileListView", "Selected file: ${viewModel.totalFrames.value}, ${viewModel.fps.value}")
+                                    previewToClip(selectedClip, jniData)
+                                    viewModel.loadNewClip(selectedClip)
                                 }
+                            }
                         }
                     },
                     modifier = Modifier

@@ -139,7 +139,7 @@ typedef struct mr_ctx_s mr_ctx_t;
 
 mr_ctx_t* mr_decoder_new(int verbose);
 void mr_decoder_free(mr_ctx_t *ctx);
-int mr_decoder_open(mr_ctx_t *ctx, const char *filename);
+int mr_decoder_open(mr_ctx_t *ctx, int fd, const char *filename);
 int mr_decoder_parse(mr_ctx_t *ctx);
 void mr_decoder_close(mr_ctx_t *ctx);
 

@@ -15,7 +15,7 @@ object NativeLib {
     ): fm.forum.mlvapp.data.ClipPreviewData
 
     external fun openClip(
-        fd: Int,
+        fds: IntArray,
         fileName: String,
         memSize: Long,
         cpuCores: Int

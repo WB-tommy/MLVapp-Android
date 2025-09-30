@@ -597,9 +597,9 @@ static int mr_read_index(mr_ctx_t *ctx)
 }
 
 //-----------------------------------------------------------------------------
-int mr_decoder_open(mr_ctx_t *ctx, const char *filename)
+int mr_decoder_open(mr_ctx_t *ctx, int fd, const char *filename)
 {
-    ctx->fd = fopen(filename, "rb");
+    ctx->fd = fdopen(fd, "rb");
 
     if (!ctx->fd)
     {

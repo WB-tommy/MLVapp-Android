@@ -12,8 +12,8 @@
 #include "macros.h"
 
 /* All functions in one */
-mlvObject_t * initMlvObjectWithClip(int fd, char * mlvPath, int preview, int * err, char * error_message);
-mlvObject_t * initMlvObjectWithMcrawClip(char * mlvPath, int preview, int * err, char * error_message);
+mlvObject_t * initMlvObjectWithClip(int * fds, int numFds, char * mlvPath, int preview, int * err, char * error_message);
+mlvObject_t * initMlvObjectWithMcrawClip(int fd, char * mlvPath, int preview, int * err, char * error_message);
 
 /* Initialises an MLV object. That's all you need to know */
 mlvObject_t * initMlvObject();
@@ -24,8 +24,8 @@ void printMlvInfo(mlvObject_t * video);
 /* Reads an MLV file in to a video object(mlvObject_t struct)
  * only puts frame indexes and metadata in to the mlvObject_t, 
  * no debayering or processing */
-int openMlvClip(mlvObject_t * video, int fd, char * mlvPath, int open_mode, char * error_message);
-int openMcrawClip(mlvObject_t * video, char * mcrawPath, int open_mode, char * error_message);
+int openMlvClip(mlvObject_t * video, int * fds, int numFds, char * mlvPath, int open_mode, char * error_message);
+int openMcrawClip(mlvObject_t * video, int fd, char * mcrawPath, int open_mode, char * error_message);
 
 /* return error codes of and open modes of openMlvClip() */
 enum mlv_err { MLV_ERR_NONE, MLV_ERR_OPEN, MLV_ERR_IO, MLV_ERR_CORRUPTED, MLV_ERR_INVALID };

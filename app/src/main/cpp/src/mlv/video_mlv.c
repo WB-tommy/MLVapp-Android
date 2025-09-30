@@ -95,70 +95,28 @@ static int seek_to_next_known_block(FILE * in_file)
 }
 
 /* Spanned multichunk MLV file handling */
-static FILE **load_all_chunks(int fd ,char *base_filename, int *entries)
+static FILE **load_all_chunks(int * fds, int numFds, int *entries)
 {
-    int seq_number = 0;
-    int max_name_len = strlen(base_filename) + 16;
-    char *filename = alloca(max_name_len);
-
-    strncpy(filename, base_filename, max_name_len - 1);
-    FILE **files = malloc(sizeof(FILE*));
-
-    // files[0] = fopen(filename, "rb");
-    files[0] = fdopen(fd, "rb");
-
-    if(!files[0])
+    FILE **files = malloc(sizeof(FILE*) * numFds);
+    if (!files)
     {
-        free(files);
         return NULL;
     }
 
-    DEBUG( printf("\nFile %s opened\n", filename); )
-
-    /* get extension and check if it is a .MLV */
-    char *dot = strrchr(filename, '.');
-    if(dot)
+    for (int i = 0; i < numFds; i++)
     {
-        dot++;
-        if(strcasecmp(dot, "mlv"))
+        files[i] = fdopen(fds[i], "rb");
+        if (!files[i])
         {
-            seq_number = 100;
-        }
-    }
-
-    (*entries)++;
-    while(seq_number < 99)
-    {
-        FILE **realloc_files = realloc(files, (*entries + 1) * sizeof(FILE*));
-
-        if(!realloc_files)
-        {
+            // Cleanup previously opened files
+            for (int j = 0; j < i; j++)
+            {
+                fclose(files[j]);
+            }
             free(files);
             return NULL;
         }
-
-        files = realloc_files;
-
-        /* check for the next file M00, M01 etc */
-        char seq_name[8];
-
-        sprintf(seq_name, "%02d", seq_number);
-        seq_number++;
-
-        strcpy(&filename[strlen(filename) - 2], seq_name);
-
-        /* For single file MLV, use the same FILE* pointer for all chunks */
-        files[*entries] = files[0];  // Reuse the same FILE* 
-        if(files[*entries])
-        {
-            DEBUG( printf("Using single file for chunk %s\n", filename); )
-            (*entries)++;
-        }
-        else
-        {
-            DEBUG( printf("Chunk %s not accessible in single file\n\n", filename); )
-            break;
-        }
+        (*entries)++;
     }
 
     return files;
@@ -587,11 +545,11 @@ void getMlvProcessedFrame8(mlvObject_t * video, uint64_t frameIndex, uint8_t * o
 
 /* To initialise mlv object with a clip
  * Two functions in one */
-mlvObject_t * initMlvObjectWithClip(int fd, char * mlvPath, int preview, int * err, char * error_message)
+mlvObject_t * initMlvObjectWithClip(int * fds, int numFds, char * mlvPath, int preview, int * err, char * error_message)
 {
     mlvObject_t * video = initMlvObject();
     char error_message_tmp[256] = {0};
-    int err_tmp =  openMlvClip(video, fd ,mlvPath, preview, error_message_tmp);
+    int err_tmp =  openMlvClip(video, fds, numFds, mlvPath, preview, error_message_tmp);
     if (err != NULL) *err = err_tmp;
     if (error_message != NULL) strcpy(error_message, error_message_tmp);
     return video;
@@ -599,11 +557,11 @@ mlvObject_t * initMlvObjectWithClip(int fd, char * mlvPath, int preview, int * e
 
 /* To initialise mlv object with a clip
  * Two functions in one */
-mlvObject_t * initMlvObjectWithMcrawClip(char * mlvPath, int preview, int * err, char * error_message)
+mlvObject_t * initMlvObjectWithMcrawClip(int fd, char * mlvPath, int preview, int * err, char * error_message)
 {
     mlvObject_t * video = initMlvObject();
     char error_message_tmp[256] = {0};
-    int err_tmp =  openMcrawClip(video, mlvPath, preview, error_message_tmp);
+    int err_tmp =  openMcrawClip(video, fd, mlvPath, preview, error_message_tmp);
     if (err != NULL) *err = err_tmp;
     if (error_message != NULL) strcpy(error_message, error_message_tmp);
     return video;
@@ -1576,7 +1534,7 @@ int saveMlvAVFrame(mlvObject_t * video, FILE * output_mlv, int export_audio, int
 /* Reads a mcraw file in to a mlv object(mlvObject_t struct)
  * only puts metadata in to the mlvObject_t, no debayering or bit unpacking
  */
-int openMcrawClip(mlvObject_t * video, char * mcrawPath, int open_mode, char * error_message)
+int openMcrawClip(mlvObject_t * video, int fd, char * mcrawPath, int open_mode, char * error_message)
 {
     video->path = malloc( strlen(mcrawPath) + 1 );
     memcpy(video->path, mcrawPath, strlen(mcrawPath));
@@ -1584,7 +1542,7 @@ int openMcrawClip(mlvObject_t * video, char * mcrawPath, int open_mode, char * e
 
     mr_ctx_t *ctx = mr_decoder_new(0);
 
-    int res = mr_decoder_open(ctx, mcrawPath);
+    int res = mr_decoder_open(ctx, fd, mcrawPath);
 
     if (res == 0) {
         res = mr_decoder_parse(ctx);
@@ -1812,12 +1770,12 @@ short_cut:
 /* Reads an MLV file in to a mlv object(mlvObject_t struct) 
  * only puts metadata in to the mlvObject_t, 
  * no debayering or bit unpacking */
-int openMlvClip(mlvObject_t * video, int fd, char * mlvPath, int open_mode, char * error_message)
+int openMlvClip(mlvObject_t * video, int * fds, int numFds, char * mlvPath, int open_mode, char * error_message)
 {
     video->path = malloc( strlen(mlvPath) + 1 );
     memcpy(video->path, mlvPath, strlen(mlvPath));
     video->path[strlen(mlvPath)] = 0x0;
-    video->file = load_all_chunks(fd, mlvPath, &video->filenum);
+    video->file = load_all_chunks(fds, numFds, &video->filenum);
     if(!video->file)
     {
         sprintf(error_message, "Could not open file:  %s", video->path);

@@ -15,7 +15,7 @@ extern "C" {
 
 static mlvObject_t *getMlvObject(
         JNIEnv *env,
-        jint fd,
+        jintArray fds,
         jstring fileName, jlong cacheSize,
         jint cores,
         bool isFull) {
@@ -34,15 +34,22 @@ static mlvObject_t *getMlvObject(
                      ((strncmp(filePath + len - 4, ".mlv", 4) == 0) ||
                       (strncmp(filePath + len - 4, ".MLV", 4) == 0));
 
+        jint *fdArray = env->GetIntArrayElements(fds, nullptr);
+        jsize numFds = env->GetArrayLength(fds);
+
         if (isMlv) {
             nativeClip = initMlvObjectWithClip(
-                    fd,
+                    fdArray,
+                    (int) numFds,
                     (char *) filePath,
                     openMode,
                     &mlvErr,
                     mlvErrMsg);
+
+            env->ReleaseIntArrayElements(fds, fdArray, JNI_ABORT);
         } else {
             nativeClip = initMlvObjectWithMcrawClip(
+                    fdArray[0],
                     (char *) filePath,
                     openMode,
                     &mlvErr,
@@ -75,7 +82,14 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
         jstring fileName, jlong cacheSize,
         jint cores) {
 
-    mlvObject_t *nativeClip = getMlvObject(env, fd, fileName, cacheSize, cores, false);
+    jintArray fdArray = env->NewIntArray(1);
+    jint tempFd = fd;
+    env->SetIntArrayRegion(fdArray, 0, 1, &tempFd);
+
+    mlvObject_t *nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores, false);
+
+    env->DeleteLocalRef(fdArray);
+
     if (!nativeClip) return nullptr;
 
     setMlvProcessing(nativeClip, nativeClip->processing);
@@ -91,9 +105,18 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
     // to avoid full-resolution 16-bit processing. Uses a very simple RGGB 2x2 demosaic on a
     // downsampled grid; good enough for tiny previews.
 
-    // Downscale to quarter resolution (configurable later). Keep metadata width/height original.
-    const int thumbW = std::max(1, width / 4);
-    const int thumbH = std::max(1, height / 4);
+    // Downscale to a fixed target height, which is more efficient for the 96.dp tall UI list item.
+    const int targetHeight = 288; // 96dp * 3x density
+    int downscaleFactor = 1;
+    if (height > targetHeight) {
+        downscaleFactor = height / targetHeight;
+    }
+    if (downscaleFactor < 1) {
+        downscaleFactor = 1;
+    }
+
+    const int thumbW = width / downscaleFactor;
+    const int thumbH = height / downscaleFactor;
 
     jclass bitmapCls = env->FindClass("android/graphics/Bitmap");
     jclass configCls = env->FindClass("android/graphics/Bitmap$Config");
@@ -176,8 +199,17 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
     AndroidBitmap_unlockPixels(env, bitmap);
     delete[] rgb888;
 
-    // GUID
-    const uint64_t guid = nativeClip->MLVI.fileGuid;
+    // GUID - if not present (e.g. for mcraw), generate a stable hash from the header block
+    uint64_t final_guid = nativeClip->MLVI.fileGuid;
+    if (final_guid == 0) {
+        // Simple djb2-like hash on the header struct itself to create a stable ID.
+        uint64_t hash = 5381;
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&nativeClip->MLVI);
+        for (size_t i = 0; i < sizeof(mlv_file_hdr_t); ++i) {
+            hash = ((hash << 5) + hash) + bytes[i]; // hash * 33 + c
+        }
+        final_guid = hash;
+    }
 
     // Release native clip (preview path does not retain handle)
     freeProcessingObject(nativeClip->processing);
@@ -198,7 +230,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
             width,
             height,
             bitmap,
-            static_cast<jlong>(guid)
+            static_cast<jlong>(final_guid)
     );
 
     return result;
@@ -207,11 +239,11 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
 JNIEXPORT jobject JNICALL
 Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClip(
         JNIEnv *env, jobject /* this */,
-        jint fd,
+        jintArray fds,
         jstring fileName, jlong cacheSize,
         jint cores) {
 
-    mlvObject_t *nativeClip = getMlvObject(env, fd, fileName, cacheSize, cores, true);
+    mlvObject_t *nativeClip = getMlvObject(env, fds, fileName, cacheSize, cores, true);
     if (!nativeClip) return nullptr;
 
     setMlvProcessing(nativeClip, nativeClip->processing);

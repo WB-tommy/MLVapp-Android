@@ -6,8 +6,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 
 @Stable
 data class Clip(
-    val uri: Uri,
-    val fileName: String,
+    val uris: List<Uri>,
+    val fileNames: List<String>,
+    val displayName: String,
     val width: Int,
     val height: Int,
     val thumbnail: ImageBitmap,

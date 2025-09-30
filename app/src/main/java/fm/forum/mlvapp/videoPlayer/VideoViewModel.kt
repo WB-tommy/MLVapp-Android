@@ -8,15 +8,17 @@ import kotlinx.coroutines.flow.StateFlow
 
 class VideoViewModel : ViewModel() {
 
-//    // If you want to hold a Clip here, make it nullable since initial state is null
-//    private val _clip = MutableStateFlow<Clip?>(null)
-//    val clip: StateFlow<Clip?> = _clip
-
     private val _clipHandle = MutableStateFlow(0L)
     val clipHandle: StateFlow<Long> = _clipHandle
 
+    private val _clipGUID = MutableStateFlow(0L)
+    val clipGUID: StateFlow<Long> = _clipGUID
+
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
+
+    private val _isLoading = MutableStateFlow(false)
+    val isLoading: StateFlow<Boolean> = _isLoading
 
     private val _currentFrame = MutableStateFlow(0)
     val currentFrame: StateFlow<Int> = _currentFrame
@@ -33,14 +35,17 @@ class VideoViewModel : ViewModel() {
     private val _height = MutableStateFlow(0)
     val height: StateFlow<Int> = _height
 
-    private val _lastFrameTimeNanos = MutableStateFlow(0L)
-    val lastFrameTimeNanos: StateFlow<Long> = _lastFrameTimeNanos
+    fun loadNewClip(clip: Clip) {
+        // Release the resources of the currently loaded clip
+        if (_clipHandle.value != 0L)
+            releaseCurrentClip()
 
-    fun setLastFrameTime(time: Long) {
-        _lastFrameTimeNanos.value = time
+        // Set the metadata for the new clip
+        setMetadata(clip)
     }
 
-    fun setMetadata(clip: Clip) {
+    private fun setMetadata(clip: Clip) {
+        _clipGUID.value = clip.guid
         _clipHandle.value = clip.nativeHandle!!
         _totalFrames.value = clip.frames!!
         _fps.value = clip.fps!!
@@ -49,7 +54,6 @@ class VideoViewModel : ViewModel() {
         // Reset playback state for the new clip
         _currentFrame.value = 0
         _isPlaying.value = false
-        _lastFrameTimeNanos.value = 0L
     }
 
     fun setCurrentFrame(currentFrame: Int) {
@@ -60,6 +64,10 @@ class VideoViewModel : ViewModel() {
 
     fun togglePlayback() {
         _isPlaying.value = !_isPlaying.value
+    }
+
+    fun changeLoadingStatus(status: Boolean) {
+        _isLoading.value = status
     }
 
     fun nextFrame() {
@@ -86,8 +94,17 @@ class VideoViewModel : ViewModel() {
         _currentFrame.value = totalFrames.value - 1
     }
 
-    fun loopToStart() {
+    fun releaseCurrentClip() {
+        NativeLib.closeClip(clipHandle.value)
+        _clipHandle.value = 0L
+        _clipGUID.value = 0L
+        _totalFrames.value = 0
+        _fps.value = 0f
+        _width.value = 0
+        _height.value = 0
+        // Reset playback state for the new clip
         _currentFrame.value = 0
+        _isPlaying.value = false
     }
 
     override fun onCleared() {

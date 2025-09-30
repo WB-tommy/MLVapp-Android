@@ -162,7 +162,6 @@ class MlvRenderer(
                 buf
             )
             checkGlError("glTexSubImage2D")
-            Log.d(tag, "${viewModel.currentFrame.value}/${viewModel.totalFrames.value} rendered")
         }
 
         // Set uniforms and attributes
@@ -183,22 +182,10 @@ class MlvRenderer(
         GLES30.glDisableVertexAttribArray(posHandle)
         GLES30.glDisableVertexAttribArray(texCoordHandle)
 
-//        // Playback logic is driven by the render loop from the UI
-//        val now = System.nanoTime()
-//        if (viewModel.isPlaying.value && viewModel.fps.value > 0f) {
-//            val frameDur = (1_000_000_000 / viewModel.fps.value).toLong()
-//            if (viewModel.lastFrameTimeNanos.value == 0L) { viewModel.setLastFrameTime(now) }
-//
-//            if (now - viewModel.lastFrameTimeNanos.value >= frameDur) {
-//                val next = viewModel.currentFrame.value + 1
-//                if (next < viewModel.totalFrames.value) {
-//                    viewModel.setCurrentFrame(next)
-//                } else {
-//                    viewModel.loopToStart()
-//                }
-//                viewModel.setLastFrameTime(now)
-//            }
-//        }
+        // If we are in a loading state, this frame being drawn means loading is complete.
+        if (viewModel.isLoading.value) {
+            viewModel.changeLoadingStatus(false)
+        }
     }
 
     private fun updateScaling(videoWidth: Int, videoHeight: Int) {
