@@ -29,17 +29,14 @@ class MlvRenderer(
         }
     """.trimIndent()
 
-    // Fragment shader for 3-channel RGB data
     private val fragmentShaderCode = """
         #version 300 es
         precision highp float;
-        precision highp usampler2D;
-        uniform usampler2D uTexture;
+        uniform sampler2D uTexture;
         in vec2 vTex;
         out vec4 fragColor;
         void main() {
-            uvec3 rgb = texture(uTexture, vTex).rgb;
-            fragColor = vec4(vec3(rgb) / 65535.0, 1.0);
+            fragColor = texture(uTexture, vTex);
         }
     """.trimIndent()
 
@@ -157,8 +154,8 @@ class MlvRenderer(
                 0,
                 videoWidth,
                 videoHeight,
-                GLES30.GL_RGB_INTEGER,
-                GLES30.GL_UNSIGNED_SHORT,
+                GLES30.GL_RGB,
+                GLES30.GL_HALF_FLOAT,
                 buf
             )
             checkGlError("glTexSubImage2D")
@@ -186,6 +183,10 @@ class MlvRenderer(
         if (viewModel.isLoading.value) {
             viewModel.changeLoadingStatus(false)
         }
+
+        if (viewModel.isDrawing.value) {
+            viewModel.changeDrawingStatus(false)
+        }
     }
 
     private fun updateScaling(videoWidth: Int, videoHeight: Int) {
@@ -204,27 +205,27 @@ class MlvRenderer(
     }
 
     private fun allocateFrameBufferIfNeeded(w: Int, h: Int) {
-        val needed = w * h * 3 * 2 // 3-channel 16-bit
+        val needed = w * h * 3 * 2 // 3-channel 16-bit float
         if (frameBuffer?.capacity() != needed) {
             frameBuffer = ByteBuffer.allocateDirect(needed).order(ByteOrder.nativeOrder())
         }
     }
 
     private fun allocateTextureStorage(w: Int, h: Int) {
-        Log.d(tag, "Allocating RGB texture storage: ${w}x${h}")
+        Log.d(tag, "Allocating RGB16F texture storage: ${w}x${h}")
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
         GLES30.glTexImage2D(
             GLES30.GL_TEXTURE_2D,
             0,
-            GLES30.GL_RGB16UI,
+            GLES30.GL_RGB16F,
             w,
             h,
             0,
-            GLES30.GL_RGB_INTEGER,
-            GLES30.GL_UNSIGNED_SHORT,
+            GLES30.GL_RGB,
+            GLES30.GL_HALF_FLOAT,
             null
         )
-        checkGlError("glTexImage2D - RGB16UI")
+        checkGlError("glTexImage2D - RGB16F")
         textureAllocated = true
     }
 

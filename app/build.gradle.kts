@@ -18,11 +18,6 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    externalNativeBuild {
-        cmake {
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = false

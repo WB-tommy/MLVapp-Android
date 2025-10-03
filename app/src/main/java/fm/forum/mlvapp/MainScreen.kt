@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -21,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -43,6 +45,7 @@ fun MainScreen(
     val context = LocalContext.current
 
     var selectedFiles by remember { mutableStateOf<List<Clip>>(emptyList()) }
+//    var selectedFiles by remember { mutableStateOf(dummyClips) }
     val curClipGuid by viewModel.clipGUID.collectAsState()
 
     val coroutineScope = rememberCoroutineScope()
@@ -77,7 +80,6 @@ fun MainScreen(
                                     val height = rawClipData.height
                                     val thumbnail = rawClipData.thumbnail.asImageBitmap()
                                     val guid = rawClipData.guid
-                                    val extension = extension
                                 }
                             }
                         } catch (e: Exception) {
@@ -148,8 +150,10 @@ fun MainScreen(
                 FileListView(
                     clipList = selectedFiles,
                     onClipSelected = { selectedClip ->
-                        if (selectedClip.guid != curClipGuid && !viewModel.isLoading.value) {
+                        if (selectedClip.guid != curClipGuid && !viewModel.isLoading.value && !viewModel.isPlaying.value) {
                             viewModel.changeLoadingStatus(true)
+                            if (curClipGuid != 0L)
+                                viewModel.releaseCurrentClip()
                             coroutineScope.launch {
                                 // The clip object now contains all the uris.
                                 // I need to sort them before getting the file descriptors.
@@ -181,14 +185,14 @@ fun MainScreen(
                                         cpuCores
                                     )
                                     previewToClip(selectedClip, jniData)
-                                    viewModel.loadNewClip(selectedClip)
+                                    viewModel.setMetadata(selectedClip)
                                 }
                             }
                         }
                     },
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxWidth()
+                        .fillMaxSize()
                 )
             }
         }

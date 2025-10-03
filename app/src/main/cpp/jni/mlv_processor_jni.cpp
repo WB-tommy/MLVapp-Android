@@ -5,13 +5,27 @@
 #include <string>
 #include <algorithm>
 #include <new>
+#include <cstdint>
+#include <cstring>
+
+// for debugging
+#include <android/log.h>
+#include <cinttypes>
 
 extern "C" {
 #include "../src/mlv/mlv_object.h"
 #include "../src/mlv/video_mlv.h"
 #include "../src/dng/dng.h"
 #include "../src/mlv/llrawproc/llrawproc.h"
+#include <time.h>
 }
+
+// Logging macros
+#define LOG_TAG "fm.forum.mlvapp.jni"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+
 
 static mlvObject_t *getMlvObject(
         JNIEnv *env,
@@ -82,11 +96,25 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
         jstring fileName, jlong cacheSize,
         jint cores) {
 
+    using Clock = std::chrono::steady_clock;
+    auto start = Clock::now();
+
     jintArray fdArray = env->NewIntArray(1);
     jint tempFd = fd;
     env->SetIntArrayRegion(fdArray, 0, 1, &tempFd);
 
+    auto elapsedMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+
+    LOGD("making jthing %lld ms", static_cast<long long>(elapsedMs));
+    start = Clock::now();
+
     mlvObject_t *nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores, false);
+
+    elapsedMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+
+    LOGD("get mlv object: %lld ms", static_cast<long long>(elapsedMs));
 
     env->DeleteLocalRef(fdArray);
 
@@ -118,6 +146,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
     const int thumbW = width / downscaleFactor;
     const int thumbH = height / downscaleFactor;
 
+    start = Clock::now();
     jclass bitmapCls = env->FindClass("android/graphics/Bitmap");
     jclass configCls = env->FindClass("android/graphics/Bitmap$Config");
     if (!bitmapCls || !configCls) {
@@ -176,9 +205,15 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
         freeMlvObject(nativeClip);
         return nullptr;
     }
+
+    auto ss = Clock::now();
     // Force fast preview demosaic
     setMlvUseSimpleDebayer(nativeClip);
     getMlvProcessedFrame8(nativeClip, 0, rgb888, cores);
+
+    auto eM = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - ss).count();
+
+    LOGD("getMlvProcessedFrame8: %lld ms\n", static_cast<long long>(eM));
 
     auto *dst = static_cast<unsigned char *>(pixels);
     const int dstStride = static_cast<int>(info.stride);
@@ -199,17 +234,40 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
     AndroidBitmap_unlockPixels(env, bitmap);
     delete[] rgb888;
 
+    elapsedMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+
+    LOGD("creating thumbnail: %lld ms\n", static_cast<long long>(elapsedMs));
+
     // GUID - if not present (e.g. for mcraw), generate a stable hash from the header block
-    uint64_t final_guid = nativeClip->MLVI.fileGuid;
-    if (final_guid == 0) {
-        // Simple djb2-like hash on the header struct itself to create a stable ID.
-        uint64_t hash = 5381;
-        const auto* bytes = reinterpret_cast<const unsigned char*>(&nativeClip->MLVI);
-        for (size_t i = 0; i < sizeof(mlv_file_hdr_t); ++i) {
-            hash = ((hash << 5) + hash) + bytes[i]; // hash * 33 + c
+    uint64_t finalGuid = nativeClip->MLVI.fileGuid;
+        if (finalGuid == 0) {
+            const auto cameraName = getMlvCamera(nativeClip);
+            const auto focalLen = getMlvFocalLength(nativeClip);
+            uint64_t hash = 5381;
+
+            // Helper to hash a value using djb2
+            auto hash_value = [&](auto value) {
+                const auto* bytes = reinterpret_cast<const unsigned char*>(&value);
+                for (size_t i = 0; i < sizeof(value); ++i) {
+                    hash = ((hash << 5) + hash) + bytes[i]; // hash * 33 + c
+                }
+            };
+
+            // Hash all the unique properties
+            hash_value(width);
+            hash_value(height);
+            hash_value(focalLen);
+            hash_value(cameraName);
+            hash_value(getMlvTmYear(nativeClip));
+            hash_value(getMlvTmMonth(nativeClip));
+            hash_value(getMlvTmDay(nativeClip));
+            hash_value(getMlvTmHour(nativeClip));
+            hash_value(getMlvTmMin(nativeClip));
+            hash_value(getMlvTmSec(nativeClip));
+
+            finalGuid = hash;
         }
-        final_guid = hash;
-    }
 
     // Release native clip (preview path does not retain handle)
     freeProcessingObject(nativeClip->processing);
@@ -230,7 +288,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
             width,
             height,
             bitmap,
-            static_cast<jlong>(final_guid)
+            static_cast<jlong>(finalGuid)
     );
 
     return result;
@@ -335,12 +393,33 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_closeClip(
         JNIEnv *env, jobject /* this */,
         jlong handle
 ) {
+    if (handle == 0) {
+        return;
+    }
     auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
     freeProcessingObject(nativeClip->processing);
     freeMlvObject(nativeClip);
 }
 
-// Fills a direct ByteBuffer with RGB16 (uint16_t) pixels.
+// Helper to convert a 32-bit float to a 16-bit half-float (IEEE 754)
+uint16_t float_to_half(float f) {
+    uint32_t x;
+    memcpy(&x, &f, sizeof(f));
+
+    uint32_t sign = (x >> 16) & 0x8000;
+    int32_t exp = ((x >> 23) & 0xff) - 127;
+    uint32_t mant = x & 0x7fffff;
+
+    if (exp > 15) { return sign | 0x7c00; } // Inf/overflow
+    if (exp < -14) { return sign; } // Zero/underflow
+
+    exp += 15;
+    mant >>= 13;
+
+    return sign | (exp << 10) | mant;
+}
+
+// Fills a direct ByteBuffer with RGB16F (half-float) pixels.
 // Java side must allocate: capacity = width * height * 3 * sizeof(uint16_t)
 JNIEXPORT jboolean JNICALL
 Java_fm_forum_mlvapp_NativeInterface_NativeLib_fillFrame16(
@@ -358,19 +437,33 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_fillFrame16(
 
     auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
 
-    void *buf = env->GetDirectBufferAddress(dstByteBuffer);
+    auto *dstBuf = reinterpret_cast<uint16_t *>(env->GetDirectBufferAddress(dstByteBuffer));
     const jlong cap = env->GetDirectBufferCapacity(dstByteBuffer);
     const size_t needed =
             static_cast<size_t>(width) * static_cast<size_t>(height) * 3u * sizeof(uint16_t);
 
-    if (!buf || cap < static_cast<jlong>(needed)) {
+    if (!dstBuf || cap < static_cast<jlong>(needed)) {
         return JNI_FALSE; // buffer too small / not direct
     }
 
-    //    setMlvUseSimpleDebayer(nativeClip);
-    getMlvProcessedFrame16(nativeClip, frameIndex,
-                           reinterpret_cast<uint16_t *>(buf),
-                           cores);
+    // Allocate a temporary buffer for the 16-bit integer RGB data
+    const size_t rgbSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
+    auto *rgbBuf = new(std::nothrow) uint16_t[rgbSize];
+    if (!rgbBuf) {
+        return JNI_FALSE; // out of memory
+    }
+
+    // Get the processed 16-bit RGB frame
+    getMlvProcessedFrame16(nativeClip, frameIndex, rgbBuf, cores);
+
+    // Convert and pack into destination RGB half-float buffer
+    for (size_t i = 0; i < static_cast<size_t>(width) * static_cast<size_t>(height); ++i) {
+        dstBuf[i * 3 + 0] = float_to_half((float)rgbBuf[i * 3 + 0] / 65535.0f); // R
+        dstBuf[i * 3 + 1] = float_to_half((float)rgbBuf[i * 3 + 1] / 65535.0f); // G
+        dstBuf[i * 3 + 2] = float_to_half((float)rgbBuf[i * 3 + 2] / 65535.0f); // B
+    }
+
+    delete[] rgbBuf;
 
     return JNI_TRUE;
 }

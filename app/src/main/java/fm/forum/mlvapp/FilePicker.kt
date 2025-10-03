@@ -19,24 +19,21 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import fm.forum.mlvapp.data.Clip
 
 
 @Composable
 fun FileListView(
     clipList: List<Clip>,
-    modifier: Modifier = Modifier, // Use a default modifier
-    onClipSelected: (Clip) -> Unit
+    onClipSelected: (Clip) -> Unit,
+    modifier: Modifier
 ) {
-    LazyColumn {
+    LazyColumn(modifier = modifier) {
         items(clipList) { clip ->
-            ClipListItem(clip, onClipSelected, modifier)
+            ClipListItem(clip, onClipSelected)
         }
     }
 }
@@ -44,15 +41,14 @@ fun FileListView(
 @Composable
 fun ClipListItem(
     clip: Clip,
-    onClipSelected: (Clip) -> Unit,
-    modifier: Modifier = Modifier
+    onClipSelected: (Clip) -> Unit
 ) {
     val nameAndExtension = clip.displayName.split('.')
     val name = nameAndExtension.getOrNull(0)
     val extension = nameAndExtension.getOrNull(1)
     val clipName = if (name!!.length > 8) "${name.take(8)}...${extension}" else clip.displayName
     Row(
-        modifier
+        Modifier
             .fillMaxWidth()
             .height(96.dp)
             .padding(8.dp),
@@ -92,26 +88,4 @@ fun ClipListItem(
             )
         }
     }
-}
-
-
-@Preview
-@Composable
-fun FilePreviewCardPreview(
-) {
-    val width = 1920
-    val height = 1080
-    ClipListItem(
-        Clip(
-            uris = listOf("1".toUri()),
-            fileNames = listOf("1", "2", "3"),
-            displayName = "testasdjklfj;klsdajfkljsdajf;kljgkhkl;sadjfj;sadjfj;lskaj",
-            width = width,
-            height = height,
-            thumbnail = ImageBitmap(width, height),
-            guid = 123355544
-        ),
-        onClipSelected = {},
-        modifier = Modifier
-    )
 }

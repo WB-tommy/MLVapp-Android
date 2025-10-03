@@ -8,6 +8,11 @@ import kotlinx.coroutines.flow.StateFlow
 
 class VideoViewModel : ViewModel() {
 
+    // 1 means play every frame mode,
+    // 2 means drop frame mode which is sync to audio
+    private val _playMode = MutableStateFlow(1)
+    val playMode: StateFlow<Int> = _playMode
+
     private val _clipHandle = MutableStateFlow(0L)
     val clipHandle: StateFlow<Long> = _clipHandle
 
@@ -19,6 +24,9 @@ class VideoViewModel : ViewModel() {
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
+
+    private val _isDrawing = MutableStateFlow(false)
+    val isDrawing: StateFlow<Boolean> = _isDrawing
 
     private val _currentFrame = MutableStateFlow(0)
     val currentFrame: StateFlow<Int> = _currentFrame
@@ -35,16 +43,7 @@ class VideoViewModel : ViewModel() {
     private val _height = MutableStateFlow(0)
     val height: StateFlow<Int> = _height
 
-    fun loadNewClip(clip: Clip) {
-        // Release the resources of the currently loaded clip
-        if (_clipHandle.value != 0L)
-            releaseCurrentClip()
-
-        // Set the metadata for the new clip
-        setMetadata(clip)
-    }
-
-    private fun setMetadata(clip: Clip) {
+    fun setMetadata(clip: Clip) {
         _clipGUID.value = clip.guid
         _clipHandle.value = clip.nativeHandle!!
         _totalFrames.value = clip.frames!!
@@ -64,6 +63,10 @@ class VideoViewModel : ViewModel() {
 
     fun togglePlayback() {
         _isPlaying.value = !_isPlaying.value
+    }
+
+    fun changeDrawingStatus(status: Boolean) {
+        _isDrawing.value = status
     }
 
     fun changeLoadingStatus(status: Boolean) {
