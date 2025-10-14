@@ -9,14 +9,14 @@ object NativeLib {
 
     external fun openClipForPreview(
         fd: Int,
-        fileName: String,
+        clipPath: String,
         memSize: Long,
         cpuCores: Int
     ): fm.forum.mlvapp.data.ClipPreviewData
 
     external fun openClip(
         fds: IntArray,
-        fileName: String,
+        clipPath: String,
         memSize: Long,
         cpuCores: Int
     ): fm.forum.mlvapp.data.ClipMetaData
@@ -30,7 +30,57 @@ object NativeLib {
         height: Int
     ): Boolean
 
+    external fun getVideoFrameTimestamps(
+        handle: Long
+    ): LongArray?
+
+    external fun getAudioBufferSize(
+        handle: Long
+    ): Long
+
+    external fun getAudioBytesPerSample(
+        handle: Long
+    ): Int
+
+    external fun  readAudioBuffer(
+        handle: Long,
+        offsetBytes: Long,
+        byteCount: Int,
+        dst: ByteBuffer
+    ): Int
+
     external fun closeClip(
         handle: Long
+    )
+
+    external fun getFpmName(
+        handle: Long
+    ): String
+
+    external fun checkCameraModel(
+        handle: Long
+    ): Int
+
+    external fun setBaseDir(
+        path: String
+    )
+
+    external fun refreshFocusPixelMap(
+        handle: Long
+    )
+
+    external fun setFocusPixelMode(
+        handle: Long,
+        mode: Int
+    )
+
+    external fun setFixRawMode(
+        handle: Long,
+        enabled: Boolean
+    )
+
+    external fun setDebayerMode(
+        handle: Long,
+        mode: Int
     )
 }

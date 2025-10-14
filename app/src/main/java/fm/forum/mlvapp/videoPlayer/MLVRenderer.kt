@@ -132,6 +132,7 @@ class MlvRenderer(
 
         val buf = frameBuffer!!
         buf.position(0)
+        val decodeStart = System.nanoTime()
         val ok = NativeLib.fillFrame16(
             viewModel.clipHandle.value,
             viewModel.currentFrame.value,
@@ -140,7 +141,9 @@ class MlvRenderer(
             videoWidth,
             videoHeight
         )
+        val decodeNs = System.nanoTime() - decodeStart
 
+        val renderStart = System.nanoTime()
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glUseProgram(program)
 
@@ -187,6 +190,9 @@ class MlvRenderer(
         if (viewModel.isDrawing.value) {
             viewModel.changeDrawingStatus(false)
         }
+
+        val renderNs = System.nanoTime() - renderStart
+        viewModel.reportFrameTiming(decodeNs, renderNs)
     }
 
     private fun updateScaling(videoWidth: Int, videoHeight: Int) {

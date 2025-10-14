@@ -67,6 +67,7 @@ add_library(mlv STATIC
 )
 
 include_directories(
+        ${CMAKE_SOURCE_DIR}/jni/
         ${MLV_SRC_DIR}/
         ${MLV_SRC_DIR}/avir/
         ${MLV_SRC_DIR}/ca_correct/
@@ -83,7 +84,10 @@ add_subdirectory(src/librtprocess)
 
 # Create the main mlvcore shared library (.so/.dylib)
 add_library(${CMAKE_PROJECT_NAME} SHARED
-        ${CMAKE_SOURCE_DIR}/jni/mlv_processor_jni.cpp
+        ${CMAKE_SOURCE_DIR}/jni/utils.cpp
+        ${CMAKE_SOURCE_DIR}/jni/handle_clip.cpp
+        ${CMAKE_SOURCE_DIR}/jni/handle_playback.cpp
+        ${CMAKE_SOURCE_DIR}/jni/pixel_focus_map.cpp
 )
 
 # For AndroidBitmap_* functions

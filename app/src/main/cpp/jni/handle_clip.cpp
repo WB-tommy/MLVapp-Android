@@ -1,31 +1,9 @@
-#include <jni.h>
+#include "mlv_jni.h"
 #include <android/bitmap.h>
+#include <chrono>
+#include <vector>
+#include <limits>
 #include <cstring>
-#include <unistd.h>
-#include <string>
-#include <algorithm>
-#include <new>
-#include <cstdint>
-#include <cstring>
-
-// for debugging
-#include <android/log.h>
-#include <cinttypes>
-
-extern "C" {
-#include "../src/mlv/mlv_object.h"
-#include "../src/mlv/video_mlv.h"
-#include "../src/dng/dng.h"
-#include "../src/mlv/llrawproc/llrawproc.h"
-#include <time.h>
-}
-
-// Logging macros
-#define LOG_TAG "fm.forum.mlvapp.jni"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-
 
 static mlvObject_t *getMlvObject(
         JNIEnv *env,
@@ -349,7 +327,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClip(
     jmethodID ctor = env->GetMethodID(
             cls,
             "<init>",
-            "(JLjava/lang/String;Ljava/lang/String;IFIIIIIZILjava/lang/String;IIIIIIZII)V"
+            "(JLjava/lang/String;Ljava/lang/String;IFIIIIIZILjava/lang/String;IIIIIIZIIZ)V"
     );
 
     if (!ctor) return nullptr;
@@ -370,22 +348,68 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClip(
             apertureHundredths,
             iso,
             disoVal,
-            (jboolean) dualIsoValid,
+            dualIsoValid,
             losslessBpp,
             jCompression,
-            year, month, day,
-            hour, min, sec,
-            (jboolean) hasAudio,
+            year,
+            month,
+            day,
+            hour,
+            min,
+            sec,
+            hasAudio,
             audioChannels,
-            audioSampleRate
+            audioSampleRate,
+            isMcrawLoaded(nativeClip)
     );
 
-    // Local refs cleanup
     env->DeleteLocalRef(jCamera);
     env->DeleteLocalRef(jLens);
     env->DeleteLocalRef(jCompression);
 
     return metadata;
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_fm_forum_mlvapp_NativeInterface_NativeLib_getVideoFrameTimestamps(
+        JNIEnv *env, jobject /* this */,
+        jlong handle) {
+    if (handle == 0) {
+        return nullptr;
+    }
+
+    auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
+    if (!nativeClip || nativeClip->frames == 0 || nativeClip->video_index == nullptr) {
+        return nullptr;
+    }
+
+    const uint32_t frameCount = nativeClip->frames;
+    if (frameCount == 0 || frameCount > static_cast<uint32_t>(std::numeric_limits<jsize>::max())) {
+        return nullptr;
+    }
+
+    const bool isMcraw = isMcrawLoaded(nativeClip);
+
+    jlongArray result = env->NewLongArray(static_cast<jsize>(frameCount));
+    if (!result) {
+        return nullptr;
+    }
+
+    std::vector<jlong> timestamps(frameCount, 0);
+    for (uint32_t i = 0; i < frameCount; ++i) {
+        const uint32_t frameNumber = nativeClip->video_index[i].frame_number;
+        if (frameNumber >= frameCount) {
+            continue;
+        }
+        jlong timestamp = static_cast<jlong>(nativeClip->video_index[i].frame_time);
+        if (isMcraw) {
+            timestamp *= 1000L; // mcraw timestamps are stored in milliseconds
+        }
+        timestamps[frameNumber] = timestamp;
+    }
+
+    env->SetLongArrayRegion(result, 0, static_cast<jsize>(frameCount), timestamps.data());
+    return result;
 }
 
 JNIEXPORT void JNICALL
@@ -401,72 +425,64 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_closeClip(
     freeMlvObject(nativeClip);
 }
 
-// Helper to convert a 32-bit float to a 16-bit half-float (IEEE 754)
-uint16_t float_to_half(float f) {
-    uint32_t x;
-    memcpy(&x, &f, sizeof(f));
-
-    uint32_t sign = (x >> 16) & 0x8000;
-    int32_t exp = ((x >> 23) & 0xff) - 127;
-    uint32_t mant = x & 0x7fffff;
-
-    if (exp > 15) { return sign | 0x7c00; } // Inf/overflow
-    if (exp < -14) { return sign; } // Zero/underflow
-
-    exp += 15;
-    mant >>= 13;
-
-    return sign | (exp << 10) | mant;
-}
-
-// Fills a direct ByteBuffer with RGB16F (half-float) pixels.
-// Java side must allocate: capacity = width * height * 3 * sizeof(uint16_t)
-JNIEXPORT jboolean JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_fillFrame16(
-        JNIEnv *env, jclass /*clazz*/,
+JNIEXPORT void JNICALL
+Java_fm_forum_mlvapp_NativeInterface_NativeLib_setDebayerMode(
+        JNIEnv *env, jobject /* this */,
         jlong handle,
-        jint frameIndex,
-        jint cores,
-        jobject dstByteBuffer,
-        jint width,
-        jint height) {
-
-    if (handle == 0 || dstByteBuffer == nullptr || width <= 0 || height <= 0) {
-        return JNI_FALSE;
+        jint mode
+) {
+    if (handle == 0) {
+        return;
     }
 
     auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
+    bool enableCache = false;
 
-    auto *dstBuf = reinterpret_cast<uint16_t *>(env->GetDirectBufferAddress(dstByteBuffer));
-    const jlong cap = env->GetDirectBufferCapacity(dstByteBuffer);
-    const size_t needed =
-            static_cast<size_t>(width) * static_cast<size_t>(height) * 3u * sizeof(uint16_t);
-
-    if (!dstBuf || cap < static_cast<jlong>(needed)) {
-        return JNI_FALSE; // buffer too small / not direct
+    switch (mode) {
+        case 0:
+            setMlvUseNoneDebayer(nativeClip);
+            break;
+        case 1:
+            setMlvUseSimpleDebayer(nativeClip);
+            break;
+        case 2:
+            setMlvDontAlwaysUseAmaze(nativeClip);
+            break;
+        case 3:
+            setMlvUseLmmseDebayer(nativeClip);
+            break;
+        case 4:
+            setMlvUseIgvDebayer(nativeClip);
+            break;
+        case 5:
+            setMlvUseAhdDebayer(nativeClip);
+            break;
+        case 6:
+            setMlvUseRcdDebayer(nativeClip);
+            break;
+        case 7:
+            setMlvUseDcbDebayer(nativeClip);
+            break;
+        case 8:
+            setMlvAlwaysUseAmaze(nativeClip);
+            break;
+        case 9:
+            setMlvAlwaysUseAmaze(nativeClip);
+            enableCache = true;
+            break;
+        default:
+            setMlvAlwaysUseAmaze(nativeClip);
+            break;
     }
 
-    // Allocate a temporary buffer for the 16-bit integer RGB data
-    const size_t rgbSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
-    auto *rgbBuf = new(std::nothrow) uint16_t[rgbSize];
-    if (!rgbBuf) {
-        return JNI_FALSE; // out of memory
+    if (enableCache) {
+        enableMlvCaching(nativeClip);
+    } else {
+        disableMlvCaching(nativeClip);
     }
-
-    // Get the processed 16-bit RGB frame
-    getMlvProcessedFrame16(nativeClip, frameIndex, rgbBuf, cores);
-
-    // Convert and pack into destination RGB half-float buffer
-    for (size_t i = 0; i < static_cast<size_t>(width) * static_cast<size_t>(height); ++i) {
-        dstBuf[i * 3 + 0] = float_to_half((float)rgbBuf[i * 3 + 0] / 65535.0f); // R
-        dstBuf[i * 3 + 1] = float_to_half((float)rgbBuf[i * 3 + 1] / 65535.0f); // G
-        dstBuf[i * 3 + 2] = float_to_half((float)rgbBuf[i * 3 + 2] / 65535.0f); // B
-    }
-
-    delete[] rgbBuf;
-
-    return JNI_TRUE;
 }
-}
 
+
+
+}
 #endif

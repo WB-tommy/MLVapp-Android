@@ -13,6 +13,7 @@ data class Clip(
     val height: Int,
     val thumbnail: ImageBitmap,
     val guid: Long = 0L,
+    var mappPath: String = "",
 
     // Metadata (mirrors desktop MainWindow.cpp updateMetadata inputs)
     var cameraName: String? = "",
@@ -31,7 +32,12 @@ data class Clip(
     var audioSampleRate: Long? = 0L,
     var size: Long? = 0L,
     var dataRate: Long? = 0L,
-    var nativeHandle: Long? = 0L,
+    var hasAudio: Boolean = false,
+    var audioBytesPerSample: Int = 0,
+    var audioBufferSize: Long = 0L,
+    var frameTimestamps: LongArray = LongArray(0),
+    var isMcraw: Boolean = false,
+    var nativeHandle: Long = 0L,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

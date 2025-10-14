@@ -1,3 +1,12 @@
 <resources>
     <string name="app_name">MLVapp</string>
+    <string name="focus_pixel_missing_title">Focus pixel map missing</string>
+    <string name="focus_pixel_missing_body">This clip expects the focus pixel map "%1$s". Download the missing map or fetch all maps for this camera.</string>
+    <string name="focus_pixel_download_single">Download single map</string>
+    <string name="focus_pixel_download_all">Download all maps</string>
+    <string name="focus_pixel_download_in_progress">Downloading focus pixel maps...</string>
+    <string name="focus_pixel_download_success">Focus pixel maps downloaded.</string>
+    <string name="focus_pixel_download_failed">Unable to download focus pixel maps.</string>
+    <string name="focus_pixel_download_none_for_camera">No focus pixel maps were found for this camera.</string>
+    <string name="focus_pixel_download_index_unavailable">Focus pixel map index is currently unavailable.</string>
 </resources>

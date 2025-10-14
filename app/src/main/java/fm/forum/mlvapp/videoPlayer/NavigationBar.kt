@@ -19,6 +19,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -33,6 +36,11 @@ fun NavigationBar(
     val totalFrames by viewModel.totalFrames.collectAsState()
     val currentFrame by viewModel.currentFrame.collectAsState()
 
+    // Local state for the slider position to avoid sending too many updates
+    var sliderPosition by remember(currentFrame) {
+        mutableStateOf(currentFrame.toFloat())
+    }
+
     Column(
         modifier = modifier
             .padding(horizontal = 16.dp),
@@ -45,8 +53,9 @@ fun NavigationBar(
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Slider(
-                value = currentFrame.toFloat(),
-                onValueChange = { viewModel.setCurrentFrame(it.toInt()) },
+                value = sliderPosition,
+                onValueChange = { sliderPosition = it },
+                onValueChangeFinished = { viewModel.setCurrentFrame(sliderPosition.toInt()) },
                 valueRange = 0f..(totalFrames.toFloat().takeIf { it > 0f } ?: 0f),
                 steps = (totalFrames - 1).coerceAtLeast(0),
                 modifier = Modifier.weight(1f)

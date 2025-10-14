@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -22,11 +23,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavHostController
 import fm.forum.mlvapp.NativeInterface.NativeLib
 import fm.forum.mlvapp.data.Clip
 import fm.forum.mlvapp.data.ClipMetaData
@@ -34,21 +35,100 @@ import fm.forum.mlvapp.ui.theme.PurpleGrey40
 import fm.forum.mlvapp.videoPlayer.NavigationBar
 import fm.forum.mlvapp.videoPlayer.VideoPlayerScreen
 import fm.forum.mlvapp.videoPlayer.VideoViewModel
+import fm.forum.mlvapp.R
+import fm.forum.mlvapp.settings.SettingsRepository
+import fm.forum.mlvapp.videoPlayer.VideoViewModelFactory
 import kotlinx.coroutines.launch
 
 @Composable
 fun MainScreen(
     totalMemory: Long,
     cpuCores: Int,
-    viewModel: VideoViewModel = viewModel()
+    navController: NavHostController,
+    settingsRepository: SettingsRepository
 ) {
     val context = LocalContext.current
+    val viewModelFactory = remember(settingsRepository) {
+        VideoViewModelFactory(settingsRepository)
+    }
+    val viewModel: VideoViewModel = viewModel(factory = viewModelFactory)
 
     var selectedFiles by remember { mutableStateOf<List<Clip>>(emptyList()) }
-//    var selectedFiles by remember { mutableStateOf(dummyClips) }
+    var showFocusPixelPrompt by remember { mutableStateOf(false) }
+    var isFocusPixelDownloadInProgress by remember { mutableStateOf(false) }
+    var pendingFocusPixelClip by remember { mutableStateOf<Clip?>(null) }
     val curClipGuid by viewModel.clipGUID.collectAsState()
 
     val coroutineScope = rememberCoroutineScope()
+
+    suspend fun loadClip(
+        clip: Clip,
+    ) {
+        viewModel.changeLoadingStatus(true)
+        try {
+            val sortedUrisAndNames =
+                clip.uris.zip(clip.fileNames)
+                    .sortedWith(compareBy { (_, fileName) ->
+                        val extension = fileName.substringAfterLast('.')
+                        if (extension.equals("MLV", ignoreCase = true)) {
+                            "0"
+                        } else {
+                            extension
+                        }
+                    })
+
+            val fds = sortedUrisAndNames.mapNotNull { (uri, _) ->
+                try {
+                    context.contentResolver.openFileDescriptor(uri, "r")
+                        ?.detachFd()
+                } catch (e: Exception) {
+                    null
+                }
+            }.toIntArray()
+
+            if (fds.isEmpty()) {
+                return
+            }
+
+            val clipPath = clip.mappPath.ifEmpty {
+                MappStorage.prepareClipPath(
+                    context,
+                    clip.guid,
+                    clip.displayName
+                )
+            }
+            val jniData = NativeLib.openClip(
+                fds,
+                clipPath,
+                totalMemory,
+                cpuCores
+            )
+
+            clip.mappPath = clipPath
+            previewToClip(clip, jniData)
+
+            val focusMode = NativeLib.checkCameraModel(clip.nativeHandle)
+            if (focusMode != 0) {
+                NativeLib.setFixRawMode(clip.nativeHandle, true)
+                NativeLib.setFocusPixelMode(clip.nativeHandle, focusMode)
+                val requiredMap = NativeLib.getFpmName(clip.nativeHandle)
+                if (!FocusPixelManager.ensureFocusPixelMap(context, requiredMap)) {
+                    pendingFocusPixelClip = clip
+                    showFocusPixelPrompt = true
+                } else if (pendingFocusPixelClip?.guid == clip.guid) {
+                    pendingFocusPixelClip = null
+                    showFocusPixelPrompt = false
+                }
+            } else if (pendingFocusPixelClip?.guid == clip.guid) {
+                pendingFocusPixelClip = null
+                showFocusPixelPrompt = false
+            }
+            viewModel.setMetadata(clip)
+            viewModel.changeDrawingStatus(true)
+        } finally {
+            viewModel.changeLoadingStatus(false)
+        }
+    }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -112,6 +192,11 @@ fun MainScreen(
                     } else {
                         // Add new clip
                         val firstClipInfo = clipInfos.first()
+                        val mappPath = MappStorage.prepareClipPath(
+                            context,
+                            firstClipInfo.guid,
+                            firstClipInfo.fileName
+                        )
                         updatedFiles.add(
                             Clip(
                                 uris = clipInfos.map { it.uri },
@@ -120,7 +205,8 @@ fun MainScreen(
                                 width = firstClipInfo.width,
                                 height = firstClipInfo.height,
                                 thumbnail = firstClipInfo.thumbnail,
-                                guid = firstClipInfo.guid
+                                guid = firstClipInfo.guid,
+                                mappPath = mappPath
                             )
                         )
                     }
@@ -134,7 +220,12 @@ fun MainScreen(
         modifier = Modifier
             .padding(4.dp)
             .statusBarsPadding(),
-        topBar = { TheTopBar(onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) }) },
+        topBar = {
+            TheTopBar(
+                onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) },
+                onSettingClick = { navController.navigate("settings") }
+            )
+        },
     ) { innerPadding ->
         Surface(
             modifier = Modifier.padding(innerPadding)
@@ -151,43 +242,7 @@ fun MainScreen(
                     clipList = selectedFiles,
                     onClipSelected = { selectedClip ->
                         if (selectedClip.guid != curClipGuid && !viewModel.isLoading.value && !viewModel.isPlaying.value) {
-                            viewModel.changeLoadingStatus(true)
-                            if (curClipGuid != 0L)
-                                viewModel.releaseCurrentClip()
-                            coroutineScope.launch {
-                                // The clip object now contains all the uris.
-                                // I need to sort them before getting the file descriptors.
-                                val sortedUrisAndNames =
-                                    selectedClip.uris.zip(selectedClip.fileNames)
-                                        .sortedWith(compareBy { (_, fileName) ->
-                                            val extension = fileName.substringAfterLast('.')
-                                            if (extension.equals("MLV", ignoreCase = true)) {
-                                                "0" // MLV comes first
-                                            } else {
-                                                extension
-                                            }
-                                        })
-
-                                val fds = sortedUrisAndNames.mapNotNull { (uri, _) ->
-                                    try {
-                                        context.contentResolver.openFileDescriptor(uri, "r")
-                                            ?.detachFd()
-                                    } catch (e: Exception) {
-                                        null
-                                    }
-                                }.toIntArray()
-
-                                if (fds.isNotEmpty()) {
-                                    val jniData = NativeLib.openClip(
-                                        fds,
-                                        selectedClip.displayName, // Pass the display name
-                                        totalMemory,
-                                        cpuCores
-                                    )
-                                    previewToClip(selectedClip, jniData)
-                                    viewModel.setMetadata(selectedClip)
-                                }
-                            }
+                            coroutineScope.launch { loadClip(selectedClip) }
                         }
                     },
                     modifier = Modifier
@@ -196,6 +251,109 @@ fun MainScreen(
                 )
             }
         }
+    }
+
+    if (showFocusPixelPrompt) {
+        val clipNeedingMap = pendingFocusPixelClip
+        val requiredFile = clipNeedingMap?.let { NativeLib.getFpmName(it.nativeHandle) }.orEmpty()
+        FocusPixelMapToast(
+            requiredFileName = requiredFile,
+            isBusy = isFocusPixelDownloadInProgress,
+            onSelectSingle = {
+                if (!isFocusPixelDownloadInProgress && requiredFile.isNotBlank() && clipNeedingMap != null) {
+                    coroutineScope.launch {
+                        isFocusPixelDownloadInProgress = true
+                        try {
+                            val success =
+                                FocusPixelManager.downloadFocusPixelMap(context, requiredFile)
+                            if (success) {
+                                Toast.makeText(
+                                    context,
+                                    R.string.focus_pixel_download_success,
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                showFocusPixelPrompt = false
+                                pendingFocusPixelClip = null
+                                if (clipNeedingMap.guid == curClipGuid) {
+                                    NativeLib.refreshFocusPixelMap(clipNeedingMap.nativeHandle)
+                                }
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    R.string.focus_pixel_download_failed,
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        } finally {
+                            isFocusPixelDownloadInProgress = false
+                        }
+                    }
+                }
+            },
+            onSelectAll = {
+                if (!isFocusPixelDownloadInProgress && requiredFile.isNotBlank() && clipNeedingMap != null) {
+                    coroutineScope.launch {
+                        isFocusPixelDownloadInProgress = true
+                        try {
+                            val cameraId =
+                                requiredFile.substringBefore('_').ifEmpty { requiredFile }
+                            val result =
+                                FocusPixelManager.downloadFocusPixelMapsForCamera(context, cameraId)
+                            when (result) {
+                                FocusPixelManager.DownloadAllResult.SUCCESS -> {
+                                    val resolved =
+                                        FocusPixelManager.ensureFocusPixelMap(context, requiredFile)
+                                    Toast.makeText(
+                                        context,
+                                        R.string.focus_pixel_download_success,
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    if (resolved) {
+                                        showFocusPixelPrompt = false
+                                        pendingFocusPixelClip = null
+                                        if (clipNeedingMap.guid == curClipGuid) {
+                                            NativeLib.refreshFocusPixelMap(clipNeedingMap.nativeHandle)
+                                        }
+                                    }
+                                }
+
+                                FocusPixelManager.DownloadAllResult.NONE_FOR_CAMERA -> {
+                                    Toast.makeText(
+                                        context,
+                                        R.string.focus_pixel_download_none_for_camera,
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+
+                                FocusPixelManager.DownloadAllResult.INDEX_UNAVAILABLE -> {
+                                    Toast.makeText(
+                                        context,
+                                        R.string.focus_pixel_download_index_unavailable,
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+
+                                FocusPixelManager.DownloadAllResult.FAILED -> {
+                                    Toast.makeText(
+                                        context,
+                                        R.string.focus_pixel_download_failed,
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        } finally {
+                            isFocusPixelDownloadInProgress = false
+                        }
+                    }
+                }
+            },
+            onDismiss = {
+                if (!isFocusPixelDownloadInProgress) {
+                    showFocusPixelPrompt = false
+                    pendingFocusPixelClip = null
+                }
+            }
+        )
     }
 }
 
@@ -242,6 +400,7 @@ private fun previewToClip(selectedClip: Clip, clipMetaData: ClipMetaData) {
     selectedClip.iso = clipMetaData.iso
     selectedClip.dualISO = clipMetaData.dualIsoValid
     selectedClip.bitDepth = clipMetaData.losslessBpp
+    selectedClip.hasAudio = clipMetaData.hasAudio
     selectedClip.createdDate = "%s-%s-%s %s:%s:%s".format(
         clipMetaData.year,
         clipMetaData.month,
@@ -250,7 +409,37 @@ private fun previewToClip(selectedClip: Clip, clipMetaData: ClipMetaData) {
         clipMetaData.min,
         clipMetaData.sec
     )
-    selectedClip.audioChannel = if (clipMetaData.hasAudio) clipMetaData.audioChannels else 0
-    selectedClip.audioSampleRate =
-        if (clipMetaData.hasAudio) clipMetaData.audioSampleRate.toLong() else 0L
+    if (clipMetaData.hasAudio) {
+        selectedClip.hasAudio = true
+        selectedClip.audioChannel = clipMetaData.audioChannels
+        selectedClip.audioSampleRate = clipMetaData.audioSampleRate.toLong()
+        selectedClip.audioBytesPerSample =
+            NativeLib.getAudioBytesPerSample(selectedClip.nativeHandle)
+        selectedClip.audioBufferSize =
+            NativeLib.getAudioBufferSize(selectedClip.nativeHandle)
+    } else {
+        selectedClip.hasAudio = false
+        selectedClip.audioChannel = 0
+        selectedClip.audioSampleRate = 0
+        selectedClip.audioBytesPerSample = 0
+        selectedClip.audioBufferSize = 0L
+    }
+    selectedClip.isMcraw = clipMetaData.isMcraw
+    val rawFrameTimestamps = NativeLib.getVideoFrameTimestamps(selectedClip.nativeHandle)
+    selectedClip.frameTimestamps = if (selectedClip.isMcraw) {
+        val fps = clipMetaData.fps.takeIf { it > 0f } ?: 24f
+        val durationUs = (1_000_000f / fps).toLong().coerceAtLeast(1L)
+        val count = when {
+            rawFrameTimestamps != null && rawFrameTimestamps.isNotEmpty() -> rawFrameTimestamps.size
+            selectedClip.frames != null -> selectedClip.frames!!
+            else -> 0
+        }
+        LongArray(count) { i -> i * durationUs }
+    } else {
+        rawFrameTimestamps ?: LongArray(0)
+    }
+    if (Log.isLoggable("MainScreen", Log.DEBUG)) {
+        val sample = selectedClip.frameTimestamps.take(5).joinToString()
+        Log.d("MainScreen", "Loaded ${selectedClip.frameTimestamps.size} timestamps first=$sample")
+    }
 }

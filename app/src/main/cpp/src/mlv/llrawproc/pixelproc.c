@@ -379,7 +379,7 @@ static int load_pixel_map(pixel_map * map, uint32_t camera_id, int raw_width, in
 #endif
     }
 
-    char file_name[1024];
+    char file_name[1024] = {0};
     sprintf(file_name, "%x_%ix%i%s", camera_id, raw_width, raw_height, file_ext);
     FILE* f = fopen(file_name, "r");
     if(!f) return 0;

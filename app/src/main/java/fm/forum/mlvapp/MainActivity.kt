@@ -4,11 +4,15 @@ import android.app.ActivityManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import fm.forum.mlvapp.NativeInterface.NativeLib
+import fm.forum.mlvapp.settings.SettingsRepository
 import fm.forum.mlvapp.ui.theme.MLVappTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        NativeLib.setBaseDir(this.filesDir.absolutePath)
+        val settingsRepository = SettingsRepository.getInstance(applicationContext)
         setContent {
             MLVappTheme {
                 val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
@@ -23,7 +27,11 @@ class MainActivity : ComponentActivity() {
                 val cpuCores = Runtime.getRuntime().availableProcessors()
                 val cores = if (cpuCores > 0) cpuCores else 4
 
-                MainScreen(cacheSize, cores)
+                NavController(
+                    cacheSize = cacheSize,
+                    cores = cores,
+                    settingsRepository = settingsRepository
+                )
             }
         }
     }
