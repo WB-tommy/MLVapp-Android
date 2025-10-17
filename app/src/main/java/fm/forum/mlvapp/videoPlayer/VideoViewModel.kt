@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import kotlin.math.min
 
 class VideoViewModel(
     private val settingsRepository: SettingsRepository
@@ -90,10 +89,19 @@ class VideoViewModel(
     private var renderEmaUs = 0.0
     private val smoothing = 0.1
 
+    private val playbackEngine = PlaybackEngine(
+        scope = viewModelScope,
+        frameUpdater = { frame -> onEngineFrame(frame) },
+        onPlaybackStopped = { onEnginePlaybackStopped() },
+        currentFrameProvider = { _currentFrame.value },
+        averageProcessingUsProvider = { _averageProcessingUs.value }
+    )
+
     init {
         viewModelScope.launch {
             settingsRepository.dropFrameMode.collectLatest { enabled ->
                 _isDropFrameMode.value = enabled
+                playbackEngine.setDropFrameMode(enabled)
             }
         }
         viewModelScope.launch {
@@ -105,27 +113,28 @@ class VideoViewModel(
     }
 
     fun setMetadata(clip: Clip) {
+        playbackEngine.stop()
+
         _clipGUID.value = clip.guid
         _clipHandle.value = clip.nativeHandle
-        _totalFrames.value = clip.frames!!
-        _fps.value = clip.fps!!
+        val totalFramesCount = clip.frames ?: clip.frameTimestamps.size
+        _totalFrames.value = totalFramesCount
+        val fpsValue = clip.fps ?: 0f
+        _fps.value = fpsValue
         _width.value = clip.width
         _height.value = clip.height
         _isMcraw.value = clip.isMcraw
-        val sanitizedTimestamps = sanitizeTimestamps(
-            clip.frameTimestamps,
-            clip.fps ?: 0f,
-            clip.isMcraw,
-            clip.frames ?: clip.frameTimestamps.size
-        )
-        _frameTimestamps.value = sanitizedTimestamps
+
+        val timestamps = clip.frameTimestamps
+        _frameTimestamps.value = timestamps
         if (Log.isLoggable(tag, Log.DEBUG)) {
-            val sample = sanitizedTimestamps.take(5).joinToString()
+            val sample = timestamps.take(5).joinToString()
             Log.d(
                 tag,
-                "setMetadata clipGuid=${clip.guid} timestamps=${sanitizedTimestamps.size} first=$sample sanitized=${sanitizedTimestamps !== clip.frameTimestamps} isMcraw=${clip.isMcraw}"
+                "setMetadata clipGuid=${clip.guid} timestamps=${timestamps.size} first=$sample isMcraw=${clip.isMcraw}"
             )
         }
+
         val audioChannels = clip.audioChannel ?: 0
         val audioSampleRate = (clip.audioSampleRate ?: 0L).toInt()
         val audioBytesPerSample = clip.audioBytesPerSample
@@ -136,38 +145,74 @@ class VideoViewModel(
                 audioSampleRate > 0 &&
                 audioBytesPerSample > 0 &&
                 audioBufferSize > 0L
+        val sanitizedAudioChannels = if (hasAudio) audioChannels else 0
+        val sanitizedSampleRate = if (hasAudio) audioSampleRate else 0
+        val sanitizedBytesPerSample = if (hasAudio) audioBytesPerSample else 0
+        val sanitizedBufferSize = if (hasAudio) audioBufferSize else 0L
+
         _hasAudio.value = hasAudio
-        _audioBytesPerSample.value = if (hasAudio) audioBytesPerSample else 0
-        _audioBufferSize.value = if (hasAudio) audioBufferSize else 0L
-        _audioChannels.value = if (hasAudio) audioChannels else 0
-        _audioSampleRate.value = if (hasAudio) audioSampleRate else 0
+        _audioBytesPerSample.value = sanitizedBytesPerSample
+        _audioBufferSize.value = sanitizedBufferSize
+        _audioChannels.value = sanitizedAudioChannels
+        _audioSampleRate.value = sanitizedSampleRate
+
         decodeEmaUs = 0.0
         renderEmaUs = 0.0
         _averageDecodeUs.value = 0L
         _averageRenderUs.value = 0L
         _averageProcessingUs.value = 0L
-        // Reset playback state for the new clip
+
         _currentFrame.value = 0
         _isPlaying.value = false
+
         applyDebayerMode(_debayerMode.value)
+
+        playbackEngine.updateContext(
+            PlaybackContext(
+                clipHandle = clip.nativeHandle,
+                frameCount = totalFramesCount,
+                fps = fpsValue,
+                frameTimestamps = timestamps,
+                hasAudio = hasAudio,
+                audioSampleRate = sanitizedSampleRate,
+                audioChannels = sanitizedAudioChannels,
+                audioBytesPerSample = sanitizedBytesPerSample,
+                audioBufferSize = sanitizedBufferSize
+            )
+        )
     }
 
     fun setCurrentFrame(currentFrame: Int) {
-        if (currentFrame >= 0 && currentFrame < totalFrames.value) {
-            _currentFrame.value = currentFrame
+        val total = _totalFrames.value
+        if (total <= 0) return
+        val clamped = currentFrame.coerceIn(0, total - 1)
+        _currentFrame.value = clamped
+        if (!_isDropFrameMode.value) {
+            _isDrawing.value = true
         }
+        playbackEngine.onSeek(clamped)
     }
 
     fun togglePlayback() {
-        _isPlaying.value = !_isPlaying.value
+        val shouldPlay = !_isPlaying.value
+        _isPlaying.value = shouldPlay
+        if (shouldPlay) {
+            playbackEngine.play()
+        } else {
+            playbackEngine.pause()
+        }
     }
 
     fun stopPlayback() {
+        playbackEngine.stop()
         _isPlaying.value = false
     }
 
     fun changeDrawingStatus(status: Boolean) {
         _isDrawing.value = status
+        if (!status && _isPlaying.value && !_isDropFrameMode.value) {
+            playbackEngine.advanceFrameSequential()
+        }
     }
 
     fun changeLoadingStatus(status: Boolean) {
@@ -176,29 +221,35 @@ class VideoViewModel(
 
     fun nextFrame() {
         if (currentFrame.value < totalFrames.value - 1) {
+            playbackEngine.pause()
             _isPlaying.value = false
-            _currentFrame.value++
+            setCurrentFrame(currentFrame.value + 1)
         }
     }
 
     fun previousFrame() {
         if (currentFrame.value > 0) {
+            playbackEngine.pause()
             _isPlaying.value = false
-            _currentFrame.value--
+            setCurrentFrame(currentFrame.value - 1)
         }
     }
 
     fun goToFirstFrame() {
+        playbackEngine.pause()
         _isPlaying.value = false
-        _currentFrame.value = 0
+        setCurrentFrame(0)
     }
 
     fun goToLastFrame() {
+        val last = (totalFrames.value - 1).coerceAtLeast(0)
+        playbackEngine.pause()
         _isPlaying.value = false
-        _currentFrame.value = totalFrames.value - 1
+        setCurrentFrame(last)
     }
 
     fun releaseCurrentClip() {
+        playbackEngine.stop()
         NativeLib.closeClip(clipHandle.value)
         _clipHandle.value = 0L
         _clipGUID.value = 0L
@@ -260,84 +311,28 @@ class VideoViewModel(
     }
 
     override fun onCleared() {
+        playbackEngine.stop()
         NativeLib.closeClip(clipHandle.value)
         super.onCleared()
+    }
+
+    private fun onEngineFrame(frame: Int) {
+        val total = _totalFrames.value
+        if (total <= 0) return
+        val clamped = frame.coerceIn(0, total - 1)
+        _currentFrame.value = clamped
+        if (!_isDropFrameMode.value) {
+            _isDrawing.value = true
+        }
+    }
+
+    private fun onEnginePlaybackStopped() {
+        _isPlaying.value = false
     }
 
     private fun applyDebayerMode(mode: DebayerMode) {
         val handle = clipHandle.value
         if (handle == 0L) return
         NativeLib.setDebayerMode(handle, mode.nativeId)
-    }
-
-    private fun sanitizeTimestamps(
-        raw: LongArray,
-        fps: Float,
-        isMcraw: Boolean,
-        frameCountHint: Int
-    ): LongArray {
-        val targetCount = when {
-            frameCountHint > 0 -> frameCountHint
-            raw.isNotEmpty() -> raw.size
-            else -> 0
-        }
-        if (targetCount <= 0) return LongArray(0)
-
-        val frameDurationUs = if (fps > 0f) {
-            (1_000_000f / fps).toLong().coerceAtLeast(1L)
-        } else {
-            41_667L // ~24fps
-        }
-        fun syntheticTimeline(): LongArray = LongArray(targetCount) { i -> i * frameDurationUs }
-
-        if (raw.isEmpty()) return syntheticTimeline()
-
-        val inspected = if (raw.size == targetCount) {
-            raw
-        } else {
-            LongArray(targetCount).also { adjusted ->
-                val copyCount = min(raw.size, targetCount)
-                raw.copyInto(adjusted, endIndex = copyCount)
-                if (copyCount <= 0) {
-                    for (i in 0 until targetCount) {
-                        adjusted[i] = i * frameDurationUs
-                    }
-                } else {
-                    var last = adjusted[copyCount - 1]
-                    for (i in copyCount until targetCount) {
-                        last += frameDurationUs
-                        adjusted[i] = last
-                    }
-                }
-            }
-        }
-
-        val minExpectedDelta = (frameDurationUs / 5).coerceAtLeast(1L) // allow some jitter
-        val maxExpectedDelta = frameDurationUs * 5
-
-        var nonIncreasingCount = 0
-        var aberrantDeltaCount = 0
-
-        var prev = inspected[0]
-        for (i in 1 until inspected.size) {
-            val ts = inspected[i]
-            val delta = ts - prev
-            if (delta <= 0L) {
-                nonIncreasingCount++
-            } else if (delta < minExpectedDelta || delta > maxExpectedDelta) {
-                aberrantDeltaCount++
-            }
-            prev = ts
-        }
-
-        if (nonIncreasingCount == 0 && aberrantDeltaCount == 0) {
-            return inspected
-        }
-
-        Log.w(
-            tag,
-            "sanitizeTimestamps fallback applied (nonMonotonic=$nonIncreasingCount, aberrant=$aberrantDeltaCount), fps=$fps, frameDurationUs=$frameDurationUs"
-        )
-        return syntheticTimeline()
     }
 }

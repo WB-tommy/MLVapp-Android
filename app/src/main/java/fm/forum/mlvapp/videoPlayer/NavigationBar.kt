@@ -1,10 +1,14 @@
 package fm.forum.mlvapp.videoPlayer
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
@@ -14,7 +18,9 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -24,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -58,7 +65,10 @@ fun NavigationBar(
                 onValueChangeFinished = { viewModel.setCurrentFrame(sliderPosition.toInt()) },
                 valueRange = 0f..(totalFrames.toFloat().takeIf { it > 0f } ?: 0f),
                 steps = (totalFrames - 1).coerceAtLeast(0),
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                colors = SliderDefaults.colors(
+                    inactiveTrackColor = Color.White
+                )
             )
             Text(text = "${if (totalFrames == 0) 0 else currentFrame + 1}/$totalFrames")
         }

@@ -44,7 +44,6 @@ Each section can change freely — completed tasks should be marked `[x]`, new o
 ## Phase 6 – User Experience / Polish
 - [ ] Display metadata (camera, lens, ISO, FPS, etc.).
 - [ ] Add error UI for failed opens or decode issues.
-- [ ] Persist last used folder, settings, and receipts (DataStore or Room).
 - [ ] Improve playback controls UI/UX (icons, gestures).
 - [ ] Write small integration tests for clip open/close and frame rendering.
 
@@ -52,7 +51,6 @@ Each section can change freely — completed tasks should be marked `[x]`, new o
 
 ## Backlog / Ideas
 - [ ] Histogram and waveform scopes.
-- [ ] Audio playback and sync.
 - [ ] Batch import/export multiple clips.
 - [ ] GPU or Vulkan path for preview acceleration.
 - [ ] Share/export receipts between desktop and Android versions.
@@ -65,9 +63,12 @@ Each section can change freely — completed tasks should be marked `[x]`, new o
 - [x] Phase 1 – Decode first frame and display via `GLSurfaceView`.
 - [x] Phase 1 – Implement RAM/core count detection and pass to native.
 - [x] Phase 1 – Handle SAF multi-select and group chunked MLV files by GUID.
+- [x] Phase 1 - Handle `.mcraw` files in addition to `.MLV`.
+- [x] Phase 1 - Implement two-phase clip loading (fast preview and full load).
 - [x] Phase 2 – Add play/pause, prev/next frame, first/last frame controls.
 - [x] Phase 2 – Maintain playback state in `VideoViewModel`.
 - [x] Phase 2 – Update GL texture per decoded frame with correct aspect ratio.
+- [x] Phase 2 - Implement audio playback and A/V sync with audio as master clock.
 - [x] Phase 4 – Surface focus-pixel correction controls in UI (auto-download ready).
 - [x] Phase 4 – auto-download and cache focus pixel maps alongside clips.
----
+- [x] Phase 6 - Persist user settings (e.g., debayering mode) using SharedPreferences.

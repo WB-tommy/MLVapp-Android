@@ -84,7 +84,9 @@ add_subdirectory(src/librtprocess)
 
 # Create the main mlvcore shared library (.so/.dylib)
 add_library(${CMAKE_PROJECT_NAME} SHARED
+        ${MLV_SRC_DIR}/mlvcore.c
         ${CMAKE_SOURCE_DIR}/jni/utils.cpp
+        ${CMAKE_SOURCE_DIR}/jni/jni_cache.cpp
         ${CMAKE_SOURCE_DIR}/jni/handle_clip.cpp
         ${CMAKE_SOURCE_DIR}/jni/handle_playback.cpp
         ${CMAKE_SOURCE_DIR}/jni/pixel_focus_map.cpp

@@ -9,4 +9,6 @@
     <string name="focus_pixel_download_failed">Unable to download focus pixel maps.</string>
     <string name="focus_pixel_download_none_for_camera">No focus pixel maps were found for this camera.</string>
     <string name="focus_pixel_download_index_unavailable">Focus pixel map index is currently unavailable.</string>
+    <string name="clip_load_failed">Unable to load clip.</string>
+    <string name="clip_preparation_failed">%1$d of %2$d files could not be opened. They may be unsupported.</string>
 </resources>

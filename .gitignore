@@ -13,3 +13,11 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+/desktop_src
+Thumbnail.md
+MainScreenRE.md
+VideoRE.md
+JNI.md
+GEMINI-copy.md
+REFACTORRESULT.md

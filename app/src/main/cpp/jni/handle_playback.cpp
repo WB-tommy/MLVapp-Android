@@ -2,27 +2,50 @@
 // Created by Sungmin Choi on 2025. 10. 11..
 //
 #include "mlv_jni.h"
+#include "mlv_jni_wrapper.h"
+#include <algorithm>
+#include <thread>
+#include <vector>
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
 
-// Helper to convert a 32-bit float to a 16-bit half-float (IEEE 754)
-uint16_t float_to_half(float f) {
-    uint32_t x;
-    memcpy(&x, &f, sizeof(f));
+namespace {
 
-    uint32_t sign = (x >> 16) & 0x8000;
-    int32_t exp = ((x >> 23) & 0xff) - 127;
-    uint32_t mant = x & 0x7fffff;
+constexpr float kNormalizationScale = 1.0f / 65535.0f;
 
-    if (exp > 15) { return sign | 0x7c00; } // Inf/overflow
-    if (exp < -14) { return sign; } // Zero/underflow
-
-    exp += 15;
-    mant >>= 13;
-
-    return sign | (exp << 10) | mant;
+inline void convertSamples(
+        const uint16_t *src,
+        float *dst,
+        size_t start,
+        size_t end) {
+    if (start >= end) {
+        return;
+    }
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    size_t i = start;
+    const float32x4_t scale = vdupq_n_f32(kNormalizationScale);
+    for (; i + 8 <= end; i += 8) {
+        uint16x8_t vals16 = vld1q_u16(src + i);
+        uint32x4_t low32 = vmovl_u16(vget_low_u16(vals16));
+        uint32x4_t high32 = vmovl_u16(vget_high_u16(vals16));
+        float32x4_t lowf = vmulq_f32(vcvtq_f32_u32(low32), scale);
+        float32x4_t highf = vmulq_f32(vcvtq_f32_u32(high32), scale);
+        vst1q_f32(dst + i, lowf);
+        vst1q_f32(dst + i + 4, highf);
+    }
+#else
+    size_t i = start;
+#endif
+    for (; i < end; ++i) {
+        dst[i] = static_cast<float>(src[i]) * kNormalizationScale;
+    }
 }
 
-// Fills a direct ByteBuffer with RGB16F (half-float) pixels.
-// Java side must allocate: capacity = width * height * 3 * sizeof(uint16_t)
+} // namespace
+
+// Fills a direct ByteBuffer with RGB32F (float) pixels.
+// Java side must allocate: capacity = width * height * 3 * sizeof(float)
 extern "C" JNIEXPORT jboolean JNICALL
 Java_fm_forum_mlvapp_NativeInterface_NativeLib_fillFrame16(
         JNIEnv *env, jclass /*clazz*/,
@@ -37,35 +60,69 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_fillFrame16(
         return JNI_FALSE;
     }
 
-    auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
+    mlvObject_t* nativeClip = wrapper->mlv_object;
 
-    auto *dstBuf = reinterpret_cast<uint16_t *>(env->GetDirectBufferAddress(dstByteBuffer));
+    auto *dstBuf = reinterpret_cast<float *>(env->GetDirectBufferAddress(dstByteBuffer));
     const jlong cap = env->GetDirectBufferCapacity(dstByteBuffer);
     const size_t needed =
-            static_cast<size_t>(width) * static_cast<size_t>(height) * 3u * sizeof(uint16_t);
+            static_cast<size_t>(width) * static_cast<size_t>(height) * 3u * sizeof(float);
 
     if (!dstBuf || cap < static_cast<jlong>(needed)) {
         return JNI_FALSE; // buffer too small / not direct
     }
 
-    // Allocate a temporary buffer for the 16-bit integer RGB data
-    const size_t rgbSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
-    auto *rgbBuf = new(std::nothrow) uint16_t[rgbSize];
+    // Use the pre-allocated buffer from the wrapper
+    uint16_t *rgbBuf = wrapper->processing_buffer_16bit;
     if (!rgbBuf) {
-        return JNI_FALSE; // out of memory
+        return JNI_FALSE; // buffer not allocated
     }
 
     // Get the processed 16-bit RGB frame
     getMlvProcessedFrame16(nativeClip, frameIndex, rgbBuf, cores);
 
-    // Convert and pack into destination RGB half-float buffer
-    for (size_t i = 0; i < static_cast<size_t>(width) * static_cast<size_t>(height); ++i) {
-        dstBuf[i * 3 + 0] = float_to_half((float) rgbBuf[i * 3 + 0] / 65535.0f); // R
-        dstBuf[i * 3 + 1] = float_to_half((float) rgbBuf[i * 3 + 1] / 65535.0f); // G
-        dstBuf[i * 3 + 2] = float_to_half((float) rgbBuf[i * 3 + 2] / 65535.0f); // B
+    const size_t totalPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    const size_t totalSamples = totalPixels * 3u;
+    if (totalSamples == 0) {
+        return JNI_TRUE;
     }
 
-    delete[] rgbBuf;
+    int workerCount = cores > 0 ? cores : 1;
+    const size_t minSamplesPerThread = 8192;
+    int maxUsefulWorkers = static_cast<int>((totalSamples + minSamplesPerThread - 1) / minSamplesPerThread);
+    if (maxUsefulWorkers < 1) {
+        maxUsefulWorkers = 1;
+    }
+    workerCount = std::clamp(workerCount, 1, maxUsefulWorkers);
+
+    const uint16_t *srcSamples = rgbBuf;
+    float *dstSamples = dstBuf;
+
+    size_t chunk = (totalSamples + static_cast<size_t>(workerCount) - 1) / static_cast<size_t>(workerCount);
+    if (chunk == 0) {
+        chunk = totalSamples;
+    }
+
+    std::vector<std::thread> workers;
+    if (workerCount > 1) {
+        workers.reserve(static_cast<size_t>(workerCount - 1));
+    }
+
+    size_t start = 0;
+    for (int w = 0; w < workerCount - 1; ++w) {
+        size_t end = std::min(totalSamples, start + chunk);
+        const size_t localStart = start;
+        const size_t localEnd = end;
+        workers.emplace_back([srcSamples, dstSamples, localStart, localEnd]() {
+            convertSamples(srcSamples, dstSamples, localStart, localEnd);
+        });
+        start = end;
+    }
+    convertSamples(srcSamples, dstSamples, start, totalSamples);
+
+    for (auto &worker : workers) {
+        worker.join();
+    }
 
     return JNI_TRUE;
 }
@@ -74,11 +131,8 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_fm_forum_mlvapp_NativeInterface_NativeLib_getAudioBufferSize(
         JNIEnv *env, jobject /* this */,
         jlong handle) {
-    if (handle == 0) {
-        return 0;
-    }
-
-    auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
+    auto *nativeClip = wrapper->mlv_object;
     if (!nativeClip || !doesMlvHaveAudio(nativeClip)) {
         return 0;
     }
@@ -95,11 +149,8 @@ extern "C" JNIEXPORT jint JNICALL
 Java_fm_forum_mlvapp_NativeInterface_NativeLib_getAudioBytesPerSample(
         JNIEnv *env, jobject /* this */,
         jlong handle) {
-    if (handle == 0) {
-        return 0;
-    }
-
-    auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
+    auto *nativeClip = wrapper->mlv_object;
     if (!nativeClip || !doesMlvHaveAudio(nativeClip)) {
         return 0;
     }
@@ -125,7 +176,8 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_readAudioBuffer(
         return 0;
     }
 
-    auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
+    auto *nativeClip = wrapper->mlv_object;
     if (!doesMlvHaveAudio(nativeClip)) {
         return 0;
     }

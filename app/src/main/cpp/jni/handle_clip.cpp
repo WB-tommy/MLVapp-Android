@@ -1,9 +1,24 @@
 #include "mlv_jni.h"
+#include "mlv_jni_wrapper.h"
+#include "jni_cache.h"
 #include <android/bitmap.h>
+#include <android/log.h>
 #include <chrono>
 #include <vector>
+#include <algorithm>
 #include <limits>
 #include <cstring>
+
+extern "C" {
+void get_mlv_processed_thumbnail_8(mlvObject_t *video,
+                                   int frame_index, int downscale_factor,
+                                   int cpu_cores,
+                                   unsigned char *out_buffer);
+}
+
+namespace {
+constexpr const char *kJniTag = "MLVApp-JNI";
+}
 
 static mlvObject_t *getMlvObject(
         JNIEnv *env,
@@ -74,201 +89,152 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
         jstring fileName, jlong cacheSize,
         jint cores) {
 
-    using Clock = std::chrono::steady_clock;
-    auto start = Clock::now();
+    if (!EnsureJniCacheInitialized(env)) {
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "JNI cache not initialized");
+        return nullptr;
+    }
+
+    const JniCache &cache = GetJniCache();
+
+    uint64_t finalGuid = 0;
 
     jintArray fdArray = env->NewIntArray(1);
-    jint tempFd = fd;
-    env->SetIntArrayRegion(fdArray, 0, 1, &tempFd);
+    if (!fdArray) {
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to allocate fdArray");
+        return nullptr;
+    }
+    env->SetIntArrayRegion(fdArray, 0, 1, &fd);
 
-    auto elapsedMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+    mlvObject_t *nativeClip = nullptr;
+    jobject bitmap = nullptr;
+    jobject result = nullptr;
+    void *pixels = nullptr;
+    bool pixelsLocked = false;
+    int width = 0;
+    int height = 0;
+    const int targetHeight = 192;
+    int downscaleFactor = 1;
+    int thumbW = 0;
+    int thumbH = 0;
+    AndroidBitmapInfo info{};
 
-    LOGD("making jthing %lld ms", static_cast<long long>(elapsedMs));
-    start = Clock::now();
-
-    mlvObject_t *nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores, false);
-
-    elapsedMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
-
-    LOGD("get mlv object: %lld ms", static_cast<long long>(elapsedMs));
-
-    env->DeleteLocalRef(fdArray);
-
-    if (!nativeClip) return nullptr;
+    nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores, false);
+    if (!nativeClip) {
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to open clip for preview");
+        goto cleanup;
+    }
 
     setMlvProcessing(nativeClip, nativeClip->processing);
-    disableMlvCaching(nativeClip);
-    // Disable low level raw fixes for preview
     nativeClip->llrawproc->fix_raw = 0;
 
-    // Dimensions (original clip resolution)
-    const int width = getMlvWidth(nativeClip);
-    const int height = getMlvHeight(nativeClip);
+    width = getMlvWidth(nativeClip);
+    height = getMlvHeight(nativeClip);
 
-    // Thumbnail -> Android Bitmap (ARGB_8888). Generate a reduced-size preview directly from RAW
-    // to avoid full-resolution 16-bit processing. Uses a very simple RGGB 2x2 demosaic on a
-    // downsampled grid; good enough for tiny previews.
-
-    // Downscale to a fixed target height, which is more efficient for the 96.dp tall UI list item.
-    const int targetHeight = 288; // 96dp * 3x density
-    int downscaleFactor = 1;
     if (height > targetHeight) {
         downscaleFactor = height / targetHeight;
     }
-    if (downscaleFactor < 1) {
-        downscaleFactor = 1;
-    }
+    thumbW = width / downscaleFactor;
+    thumbH = height / downscaleFactor;
 
-    const int thumbW = width / downscaleFactor;
-    const int thumbH = height / downscaleFactor;
-
-    start = Clock::now();
-    jclass bitmapCls = env->FindClass("android/graphics/Bitmap");
-    jclass configCls = env->FindClass("android/graphics/Bitmap$Config");
-    if (!bitmapCls || !configCls) {
-        freeProcessingObject(nativeClip->processing);
-        freeMlvObject(nativeClip);
-        return nullptr;
+    bitmap = env->CallStaticObjectMethod(
+            cache.bitmapClass,
+            cache.bitmapCreateMethod,
+            thumbW,
+            thumbH,
+            cache.bitmapConfigArgb8888);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
     }
-
-    jfieldID fidArgb8888 = env->GetStaticFieldID(configCls, "ARGB_8888",
-                                                 "Landroid/graphics/Bitmap$Config;");
-    if (!fidArgb8888) {
-        freeProcessingObject(nativeClip->processing);
-        freeMlvObject(nativeClip);
-        return nullptr;
-    }
-    jobject argb8888 = env->GetStaticObjectField(configCls, fidArgb8888);
-
-    jmethodID midCreateBitmap = env->GetStaticMethodID(
-            bitmapCls,
-            "createBitmap",
-            "(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;"
-    );
-    if (!midCreateBitmap) {
-        freeProcessingObject(nativeClip->processing);
-        freeMlvObject(nativeClip);
-        return nullptr;
-    }
-    jobject bitmap = env->CallStaticObjectMethod(bitmapCls, midCreateBitmap, thumbW, thumbH,
-                                                 argb8888);
     if (!bitmap) {
-        freeProcessingObject(nativeClip->processing);
-        freeMlvObject(nativeClip);
-        return nullptr;
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to create preview bitmap");
+        goto cleanup;
     }
 
-    AndroidBitmapInfo info{};
     if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS ||
         info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
-        freeProcessingObject(nativeClip->processing);
-        freeMlvObject(nativeClip);
-        return nullptr;
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Unexpected bitmap format for preview");
+        goto cleanup;
     }
 
-    void *pixels = nullptr;
     if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS ||
         !pixels) {
-        freeProcessingObject(nativeClip->processing);
-        freeMlvObject(nativeClip);
-        return nullptr;
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Unable to lock bitmap pixels");
+        goto cleanup;
     }
-    // Use library's processed 8-bit frame (simple debayer) and downscale to the smaller bitmap
-    auto *rgb888 = new(std::nothrow) unsigned char[width * height * 3];
-    if (!rgb888) {
-        AndroidBitmap_unlockPixels(env, bitmap);
-        freeProcessingObject(nativeClip->processing);
-        freeMlvObject(nativeClip);
-        return nullptr;
-    }
+    pixelsLocked = true;
 
-    auto ss = Clock::now();
-    // Force fast preview demosaic
-    setMlvUseSimpleDebayer(nativeClip);
-    getMlvProcessedFrame8(nativeClip, 0, rgb888, cores);
+    get_mlv_processed_thumbnail_8(
+            nativeClip,
+            0,
+            downscaleFactor,
+            cores,
+            static_cast<unsigned char *>(pixels));
 
-    auto eM = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - ss).count();
-
-    LOGD("getMlvProcessedFrame8: %lld ms\n", static_cast<long long>(eM));
-
-    auto *dst = static_cast<unsigned char *>(pixels);
-    const int dstStride = static_cast<int>(info.stride);
-    for (int y = 0; y < thumbH; ++y) {
-        unsigned char *dstRow = dst + y * dstStride;
-        const int srcY = static_cast<int>((static_cast<long long>(y) * height) / thumbH);
-        const unsigned char *srcRow = rgb888 + srcY * width * 3;
-        for (int x = 0; x < thumbW; ++x) {
-            const int srcX = static_cast<int>((static_cast<long long>(x) * width) / thumbW);
-            const int di = x * 4;
-            const int si = srcX * 3;
-            dstRow[di + 0] = srcRow[si + 0]; // R
-            dstRow[di + 1] = srcRow[si + 1]; // G
-            dstRow[di + 2] = srcRow[si + 2]; // B
-            dstRow[di + 3] = 255;            // A
-        }
-    }
     AndroidBitmap_unlockPixels(env, bitmap);
-    delete[] rgb888;
+    pixelsLocked = false;
 
-    elapsedMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+    finalGuid = nativeClip->MLVI.fileGuid;
+    if (finalGuid == 0) {
+        const auto cameraName = getMlvCamera(nativeClip);
+        const auto focalLen = getMlvFocalLength(nativeClip);
+        uint64_t hash = 5381;
 
-    LOGD("creating thumbnail: %lld ms\n", static_cast<long long>(elapsedMs));
+        auto hash_value = [&](auto value) {
+            const auto *bytes = reinterpret_cast<const unsigned char *>(&value);
+            for (size_t i = 0; i < sizeof(value); ++i) {
+                hash = ((hash << 5) + hash) + bytes[i];
+            }
+        };
 
-    // GUID - if not present (e.g. for mcraw), generate a stable hash from the header block
-    uint64_t finalGuid = nativeClip->MLVI.fileGuid;
-        if (finalGuid == 0) {
-            const auto cameraName = getMlvCamera(nativeClip);
-            const auto focalLen = getMlvFocalLength(nativeClip);
-            uint64_t hash = 5381;
+        auto hash_string = [&](const char *value) {
+            if (!value) return;
+            while (*value) {
+                hash = ((hash << 5) + hash) + static_cast<unsigned char>(*value++);
+            }
+        };
 
-            // Helper to hash a value using djb2
-            auto hash_value = [&](auto value) {
-                const auto* bytes = reinterpret_cast<const unsigned char*>(&value);
-                for (size_t i = 0; i < sizeof(value); ++i) {
-                    hash = ((hash << 5) + hash) + bytes[i]; // hash * 33 + c
-                }
-            };
+        hash_value(width);
+        hash_value(height);
+        hash_value(focalLen);
+        hash_string(reinterpret_cast<const char *>(cameraName));
+        hash_value(getMlvTmYear(nativeClip));
+        hash_value(getMlvTmMonth(nativeClip));
+        hash_value(getMlvTmDay(nativeClip));
+        hash_value(getMlvTmHour(nativeClip));
+        hash_value(getMlvTmMin(nativeClip));
+        hash_value(getMlvTmSec(nativeClip));
 
-            // Hash all the unique properties
-            hash_value(width);
-            hash_value(height);
-            hash_value(focalLen);
-            hash_value(cameraName);
-            hash_value(getMlvTmYear(nativeClip));
-            hash_value(getMlvTmMonth(nativeClip));
-            hash_value(getMlvTmDay(nativeClip));
-            hash_value(getMlvTmHour(nativeClip));
-            hash_value(getMlvTmMin(nativeClip));
-            hash_value(getMlvTmSec(nativeClip));
+        finalGuid = hash;
+    }
 
-            finalGuid = hash;
-        }
-
-    // Release native clip (preview path does not retain handle)
     freeProcessingObject(nativeClip->processing);
     freeMlvObject(nativeClip);
+    nativeClip = nullptr;
 
-    // Build fm.forum.mlvapp.data.MlvPreview
-    jclass cls = env->FindClass("fm/forum/mlvapp/data/ClipPreviewData");
-    if (!cls) return nullptr;
-    jmethodID ctor = env->GetMethodID(
-            cls,
-            "<init>",
-            "(IILandroid/graphics/Bitmap;J)V"
-    );
-    if (!ctor) return nullptr;
-
-    jobject result = env->NewObject(
-            cls, ctor,
+    result = env->NewObject(
+            cache.clipPreviewDataClass,
+            cache.clipPreviewCtor,
             width,
             height,
             bitmap,
-            static_cast<jlong>(finalGuid)
-    );
+            static_cast<jlong>(finalGuid));
+    if (!result) {
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to instantiate ClipPreviewData");
+    }
 
+cleanup:
+    if (pixelsLocked) {
+        AndroidBitmap_unlockPixels(env, bitmap);
+    }
+    if (bitmap) {
+        env->DeleteLocalRef(bitmap);
+        bitmap = nullptr;
+    }
+    if (nativeClip) {
+        freeProcessingObject(nativeClip->processing);
+        freeMlvObject(nativeClip);
+    }
+    env->DeleteLocalRef(fdArray);
     return result;
 }
 
@@ -279,93 +245,128 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClip(
         jstring fileName, jlong cacheSize,
         jint cores) {
 
-    mlvObject_t *nativeClip = getMlvObject(env, fds, fileName, cacheSize, cores, true);
-    if (!nativeClip) return nullptr;
+    if (!EnsureJniCacheInitialized(env)) {
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "JNI cache not initialized");
+        return nullptr;
+    }
 
-    setMlvProcessing(nativeClip, nativeClip->processing);
-    disableMlvCaching(nativeClip);
+    const JniCache &cache = GetJniCache();
 
-    // --- Metadata (mirror MainWindow.cpp updateMetadata sources) ---
-    // FPS and frames
-    const float fps = getMlvFramerate(nativeClip);
-    const int frames = (int) getMlvFrames(nativeClip);
+    mlvObject_t *nativeClip = nullptr;
+    JniClipWrapper *wrapper = nullptr;
+    jobject metadata = nullptr;
 
-    // Lens, Camera
-    const char *camera = (const char *) getMlvCamera(nativeClip);
-    const char *lens = (const char *) getMlvLens(nativeClip);
+    nativeClip = getMlvObject(env, fds, fileName, cacheSize, cores, true);
+    if (!nativeClip) {
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to open clip");
+        goto cleanup;
+    }
 
-    // Focal, shutter, aperture, ISO
-    const int focalLengthMm = (int) getMlvFocalLength(nativeClip);
-    const int shutterUs = (int) getMlvShutter(nativeClip);
-    const int apertureHundredths = (int) getMlvAperture(nativeClip);
-    const int iso = (int) getMlvIso(nativeClip);
-    const int disoVal = (int) getMlv2ndIso(nativeClip);
-    const bool dualIsoValid = (llrpGetDualIsoValidity(nativeClip) == DISO_VALID);
+    wrapper = new(std::nothrow) JniClipWrapper();
+    if (!wrapper) {
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to allocate clip wrapper");
+        goto cleanup;
+    }
+    wrapper->mlv_object = nativeClip;
+    wrapper->processing_buffer_16bit = nullptr;
 
-    // Compression / bit depth
-    const int losslessBpp = (int) getLosslessBpp(nativeClip);
-    const char *compression = (const char *) getMlvCompression(nativeClip);
+    // This block isolates the variable initializations to prevent the 'goto' error.
+    {
+        const int width = getMlvWidth(nativeClip);
+        const int height = getMlvHeight(nativeClip);
+        const size_t rgbSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
+        wrapper->processing_buffer_16bit = new(std::nothrow) uint16_t[rgbSize];
+        if (!wrapper->processing_buffer_16bit) {
+            __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to allocate RGB buffer");
+            goto cleanup;
+        }
 
-    // Date/time
-    const int year = (int) getMlvTmYear(nativeClip);
-    const int month = (int) getMlvTmMonth(nativeClip);
-    const int day = (int) getMlvTmDay(nativeClip);
-    const int hour = (int) getMlvTmHour(nativeClip);
-    const int min = (int) getMlvTmMin(nativeClip);
-    const int sec = (int) getMlvTmSec(nativeClip);
+        setMlvProcessing(nativeClip, nativeClip->processing);
+        disableMlvCaching(nativeClip);
 
-    // Audio
-    const bool hasAudio = doesMlvHaveAudio(nativeClip);
-    const int audioChannels = hasAudio ? (int) getMlvAudioChannels(nativeClip) : 0;
-    const int audioSampleRate = hasAudio ? (int) getMlvSampleRate(nativeClip) : 0;
+        const float fps = getMlvFramerate(nativeClip);
+        const int frames = static_cast<int>(getMlvFrames(nativeClip));
+        const char *camera = reinterpret_cast<const char *>(getMlvCamera(nativeClip));
+        const char *lens = reinterpret_cast<const char *>(getMlvLens(nativeClip));
+        const int focalLengthMm = static_cast<int>(getMlvFocalLength(nativeClip));
+        const int shutterUs = static_cast<int>(getMlvShutter(nativeClip));
+        const int apertureHundredths = static_cast<int>(getMlvAperture(nativeClip));
+        const int iso = static_cast<int>(getMlvIso(nativeClip));
+        const int disoVal = static_cast<int>(getMlv2ndIso(nativeClip));
+        const bool dualIsoValid = (llrpGetDualIsoValidity(nativeClip) == DISO_VALID);
+        const int losslessBpp = static_cast<int>(getLosslessBpp(nativeClip));
+        const char *compression = reinterpret_cast<const char *>(getMlvCompression(nativeClip));
+        const int year = static_cast<int>(getMlvTmYear(nativeClip));
+        const int month = static_cast<int>(getMlvTmMonth(nativeClip));
+        const int day = static_cast<int>(getMlvTmDay(nativeClip));
+        const int hour = static_cast<int>(getMlvTmHour(nativeClip));
+        const int min = static_cast<int>(getMlvTmMin(nativeClip));
+        const int sec = static_cast<int>(getMlvTmSec(nativeClip));
+        const bool hasAudio = doesMlvHaveAudio(nativeClip);
+        const int audioChannels = hasAudio ? static_cast<int>(getMlvAudioChannels(nativeClip)) : 0;
+        const int audioSampleRate = hasAudio ? static_cast<int>(getMlvSampleRate(nativeClip)) : 0;
 
-    // Build fm.forum.mlvapp.data.ClipMetadata
-    jclass cls = env->FindClass("fm/forum/mlvapp/data/ClipMetaData");
+        jstring jCamera = env->NewStringUTF(camera ? camera : "");
+        jstring jLens = env->NewStringUTF(lens ? lens : "");
+        jstring jCompression = env->NewStringUTF(compression ? compression : "");
 
-    if (!cls) return nullptr;
+        if ((camera && !jCamera) || (lens && !jLens) || (compression && !jCompression)) {
+            __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to allocate metadata strings");
+            if (jCamera) env->DeleteLocalRef(jCamera);
+            if (jLens) env->DeleteLocalRef(jLens);
+            if (jCompression) env->DeleteLocalRef(jCompression);
+            goto cleanup;
+        }
 
-    jmethodID ctor = env->GetMethodID(
-            cls,
-            "<init>",
-            "(JLjava/lang/String;Ljava/lang/String;IFIIIIIZILjava/lang/String;IIIIIIZIIZ)V"
-    );
+        metadata = env->NewObject(
+                cache.clipMetaDataClass,
+                cache.clipMetaDataCtor,
+                reinterpret_cast<jlong>(wrapper),
+                jCamera,
+                jLens,
+                frames,
+                fps,
+                focalLengthMm,
+                shutterUs,
+                apertureHundredths,
+                iso,
+                disoVal,
+                dualIsoValid,
+                losslessBpp,
+                jCompression,
+                year,
+                month,
+                day,
+                hour,
+                min,
+                sec,
+                hasAudio,
+                audioChannels,
+                audioSampleRate,
+                isMcrawLoaded(nativeClip)
+        );
 
-    if (!ctor) return nullptr;
+        env->DeleteLocalRef(jCamera);
+        env->DeleteLocalRef(jLens);
+        env->DeleteLocalRef(jCompression);
 
-    jstring jCamera = env->NewStringUTF(camera ? camera : "");
-    jstring jLens = env->NewStringUTF(lens ? lens : "");
-    jstring jCompression = env->NewStringUTF(compression ? compression : "");
+        if (!metadata) {
+            __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to instantiate ClipMetaData");
+            goto cleanup;
+        }
+    }
 
-    jobject metadata = env->NewObject(
-            cls, ctor,
-            reinterpret_cast<jlong>(nativeClip),
-            jCamera,
-            jLens,
-            frames,
-            fps,
-            focalLengthMm,
-            shutterUs,
-            apertureHundredths,
-            iso,
-            disoVal,
-            dualIsoValid,
-            losslessBpp,
-            jCompression,
-            year,
-            month,
-            day,
-            hour,
-            min,
-            sec,
-            hasAudio,
-            audioChannels,
-            audioSampleRate,
-            isMcrawLoaded(nativeClip)
-    );
-
-    env->DeleteLocalRef(jCamera);
-    env->DeleteLocalRef(jLens);
-    env->DeleteLocalRef(jCompression);
+cleanup:
+    if (!metadata) { // If we failed at any point
+        if (wrapper) {
+            delete[] wrapper->processing_buffer_16bit;
+            delete wrapper;
+        }
+        if (nativeClip) {
+            freeProcessingObject(nativeClip->processing);
+            freeMlvObject(nativeClip);
+        }
+    }
 
     return metadata;
 }
@@ -374,11 +375,8 @@ JNIEXPORT jlongArray JNICALL
 Java_fm_forum_mlvapp_NativeInterface_NativeLib_getVideoFrameTimestamps(
         JNIEnv *env, jobject /* this */,
         jlong handle) {
-    if (handle == 0) {
-        return nullptr;
-    }
-
-    auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
+    auto *nativeClip = wrapper->mlv_object;
     if (!nativeClip || nativeClip->frames == 0 || nativeClip->video_index == nullptr) {
         return nullptr;
     }
@@ -388,24 +386,85 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_getVideoFrameTimestamps(
         return nullptr;
     }
 
-    const bool isMcraw = isMcrawLoaded(nativeClip);
-
     jlongArray result = env->NewLongArray(static_cast<jsize>(frameCount));
     if (!result) {
         return nullptr;
     }
 
+    const bool isMcraw = isMcrawLoaded(nativeClip);
+    const double fpsSource = (nativeClip->frame_rate > 0.0)
+        ? nativeClip->frame_rate
+        : nativeClip->real_frame_rate;
+    const jlong frameDurationUs = static_cast<jlong>(
+            fpsSource > 0.0 ? std::max(1.0, 1'000'000.0 / fpsSource) : 41'667.0);
+
+    auto buildSyntheticTimeline = [&](jlong startTimestampUs) {
+        std::vector<jlong> synthetic(frameCount, 0);
+        const jlong durationUs = frameDurationUs > 0 ? frameDurationUs : 41'667L;
+        for (uint32_t i = 0; i < frameCount; ++i) {
+            synthetic[i] = startTimestampUs + static_cast<jlong>(i) * durationUs;
+        }
+        return synthetic;
+    };
+
     std::vector<jlong> timestamps(frameCount, 0);
-    for (uint32_t i = 0; i < frameCount; ++i) {
-        const uint32_t frameNumber = nativeClip->video_index[i].frame_number;
-        if (frameNumber >= frameCount) {
-            continue;
+    bool needsFallback = false;
+
+    if (nativeClip->video_index == nullptr) {
+        needsFallback = true;
+    } else if (isMcraw) {
+        // mcraw audio timestamp is stored in 0 not like MLV file.
+        // Mixing the raw values with audio timestamps
+        // would drift the playback clock, so we normalize the timeline to an evenly spaced
+        // synthetic sequence and let audio sync derive from that canonical cadence.
+        needsFallback = true;
+    } else {
+        bool hasNonZero = false;
+        for (uint32_t i = 0; i < frameCount; ++i) {
+            const uint32_t frameNumber = nativeClip->video_index[i].frame_number;
+            if (frameNumber >= frameCount) {
+                continue;
+            }
+            jlong timestamp = static_cast<jlong>(nativeClip->video_index[i].frame_time);
+            timestamps[frameNumber] = timestamp;
+            if (timestamp != 0) {
+                hasNonZero = true;
+            }
         }
-        jlong timestamp = static_cast<jlong>(nativeClip->video_index[i].frame_time);
-        if (isMcraw) {
-            timestamp *= 1000L; // mcraw timestamps are stored in milliseconds
+
+        if (!hasNonZero) {
+            needsFallback = true;
+        } else {
+            const jlong minExpectedDelta = frameDurationUs > 0
+                ? std::max<jlong>(1L, frameDurationUs / 5)
+                : 1L;
+            const jlong maxExpectedDelta = frameDurationUs > 0
+                ? std::max<jlong>(minExpectedDelta, frameDurationUs * 5)
+                : std::numeric_limits<jlong>::max();
+
+            jlong prev = timestamps[0];
+            if (prev < 0) {
+                needsFallback = true;
+            } else {
+                for (uint32_t i = 1; i < frameCount; ++i) {
+                    const jlong ts = timestamps[i];
+                    if (ts <= prev) {
+                        needsFallback = true;
+                        break;
+                    }
+                    const jlong delta = ts - prev;
+                    if (delta < minExpectedDelta || delta > maxExpectedDelta) {
+                        needsFallback = true;
+                        break;
+                    }
+                    prev = ts;
+                }
+            }
         }
-        timestamps[frameNumber] = timestamp;
+    }
+
+    if (needsFallback) {
+        timestamps = buildSyntheticTimeline(0);
     }
 
     env->SetLongArrayRegion(result, 0, static_cast<jsize>(frameCount), timestamps.data());
@@ -420,9 +479,12 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_closeClip(
     if (handle == 0) {
         return;
     }
-    auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
-    freeProcessingObject(nativeClip->processing);
-    freeMlvObject(nativeClip);
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
+    if (wrapper->mlv_object) {
+        freeMlvObject(wrapper->mlv_object);
+    }
+    delete[] wrapper->processing_buffer_16bit;
+    delete wrapper;
 }
 
 JNIEXPORT void JNICALL
@@ -435,43 +497,44 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_setDebayerMode(
         return;
     }
 
-    auto *nativeClip = reinterpret_cast<mlvObject_t *>(handle);
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
+    auto *nativeClip = wrapper->mlv_object;
     bool enableCache = false;
 
     switch (mode) {
         case 0:
-            setMlvUseNoneDebayer(nativeClip);
+        setMlvUseNoneDebayer(nativeClip);
             break;
         case 1:
-            setMlvUseSimpleDebayer(nativeClip);
+        setMlvUseSimpleDebayer(nativeClip);
             break;
         case 2:
-            setMlvDontAlwaysUseAmaze(nativeClip);
+        setMlvDontAlwaysUseAmaze(nativeClip);
             break;
         case 3:
-            setMlvUseLmmseDebayer(nativeClip);
+        setMlvUseLmmseDebayer(nativeClip);
             break;
         case 4:
-            setMlvUseIgvDebayer(nativeClip);
+        setMlvUseIgvDebayer(nativeClip);
             break;
         case 5:
-            setMlvUseAhdDebayer(nativeClip);
+        setMlvUseAhdDebayer(nativeClip);
             break;
         case 6:
-            setMlvUseRcdDebayer(nativeClip);
+        setMlvUseRcdDebayer(nativeClip);
             break;
         case 7:
-            setMlvUseDcbDebayer(nativeClip);
+        setMlvUseDcbDebayer(nativeClip);
             break;
         case 8:
-            setMlvAlwaysUseAmaze(nativeClip);
+        setMlvAlwaysUseAmaze(nativeClip);
             break;
         case 9:
-            setMlvAlwaysUseAmaze(nativeClip);
+        setMlvAlwaysUseAmaze(nativeClip);
             enableCache = true;
             break;
         default:
-            setMlvAlwaysUseAmaze(nativeClip);
+        setMlvAlwaysUseAmaze(nativeClip);
             break;
     }
 
@@ -481,7 +544,6 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_setDebayerMode(
         disableMlvCaching(nativeClip);
     }
 }
-
 
 
 }

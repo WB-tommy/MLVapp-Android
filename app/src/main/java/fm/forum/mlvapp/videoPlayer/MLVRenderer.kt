@@ -61,7 +61,6 @@ class MlvRenderer(
     private val textureCoords = floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        Log.d(tag, "onSurfaceCreated")
         GLES30.glClearColor(0.0f, 0.0f, 0.0f, 1.0f)
 
         program = createProgram(vertexShaderCode, fragmentShaderCode)
@@ -109,7 +108,6 @@ class MlvRenderer(
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
-        Log.d(tag, "onSurfaceChanged: ${width}x${height}")
         GLES30.glViewport(0, 0, width, height)
         this.viewWidth = width
         this.viewHeight = height
@@ -158,7 +156,7 @@ class MlvRenderer(
                 videoWidth,
                 videoHeight,
                 GLES30.GL_RGB,
-                GLES30.GL_HALF_FLOAT,
+                GLES30.GL_FLOAT,
                 buf
             )
             checkGlError("glTexSubImage2D")
@@ -211,27 +209,26 @@ class MlvRenderer(
     }
 
     private fun allocateFrameBufferIfNeeded(w: Int, h: Int) {
-        val needed = w * h * 3 * 2 // 3-channel 16-bit float
+        val needed = w * h * 3 * 4 // 3-channel 32-bit float
         if (frameBuffer?.capacity() != needed) {
             frameBuffer = ByteBuffer.allocateDirect(needed).order(ByteOrder.nativeOrder())
         }
     }
 
     private fun allocateTextureStorage(w: Int, h: Int) {
-        Log.d(tag, "Allocating RGB16F texture storage: ${w}x${h}")
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
         GLES30.glTexImage2D(
             GLES30.GL_TEXTURE_2D,
             0,
-            GLES30.GL_RGB16F,
+            GLES30.GL_RGB32F,
             w,
             h,
             0,
             GLES30.GL_RGB,
-            GLES30.GL_HALF_FLOAT,
+            GLES30.GL_FLOAT,
             null
         )
-        checkGlError("glTexImage2D - RGB16F")
+        checkGlError("glTexImage2D - RGB32F")
         textureAllocated = true
     }
 
