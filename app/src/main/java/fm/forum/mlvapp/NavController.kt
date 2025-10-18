@@ -1,5 +1,6 @@
 package fm.forum.mlvapp
 
+import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.runtime.*
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -13,6 +14,7 @@ private const val ROUTE_SETTINGS = "settings"
 
 @Composable
 fun NavController(
+    windowSizeClass: WindowSizeClass,
     cacheSize: Long,
     cores: Int,
     settingsRepository: SettingsRepository
@@ -25,6 +27,7 @@ fun NavController(
         // Home Screen (where the TopBar lives)
         composable(ROUTE_HOME) {
             MainScreen(
+                windowSizeClass = windowSizeClass,
                 totalMemory = cacheSize,
                 cpuCores = cores,
                 navController = navController,

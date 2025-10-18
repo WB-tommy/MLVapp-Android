@@ -56,6 +56,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.material3)
+    implementation("androidx.compose.material3:material3-window-size-class:1.2.1")
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.compose.material:material-icons-extended-android:1.6.8")

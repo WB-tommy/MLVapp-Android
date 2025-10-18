@@ -30,8 +30,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,9 +50,6 @@ fun SettingsScreen(
         SettingsViewModelFactory(settingsRepository)
     }
     val viewModel: SettingsViewModel = viewModel(factory = viewModelFactory)
-    val isDropFrameMode by viewModel.isDropFrameMode.collectAsState()
-    val debayerMode by viewModel.debayerMode.collectAsState()
-    var showDebayerDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -66,34 +63,46 @@ fun SettingsScreen(
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-        ) {
-            SettingsCategory(title = "Playback")
+        SettingsContent(
+            viewModel = viewModel,
+            modifier = Modifier.padding(padding)
+        )
+    }
+}
 
-            SwitchSettingItem(
-                title = "Real-Time Playback",
-                summary = if (isDropFrameMode) "Drop frames to stay in sync" else "Advance one frame at a time",
-                checked = isDropFrameMode,
-                onCheckedChange = { enabled -> viewModel.setDropFrameMode(enabled) }
-            )
+@Composable
+fun SettingsContent(viewModel: SettingsViewModel, modifier: Modifier = Modifier) {
+    val isDropFrameMode by viewModel.isDropFrameMode.collectAsState()
+    val debayerMode by viewModel.debayerMode.collectAsState()
+    var showDebayerDialog by remember { mutableStateOf(false) }
 
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 16.dp),
-                thickness = DividerDefaults.Thickness,
-                color = DividerDefaults.color
-            )
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
+        SettingsCategory(title = "Playback")
 
-            SettingsCategory(title = "Image Processing")
+        SwitchSettingItem(
+            title = "Real-Time Playback",
+            summary = if (isDropFrameMode) "Drop frames to stay in sync" else "Advance one frame at a time",
+            checked = isDropFrameMode,
+            onCheckedChange = { enabled -> viewModel.setDropFrameMode(enabled) }
+        )
 
-            DialogSettingItem(
-                title = "Debayer Algorithm",
-                summary = debayerMode.displayName,
-                onClick = { showDebayerDialog = true }
-            )
-        }
+        HorizontalDivider(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            thickness = DividerDefaults.Thickness,
+            color = DividerDefaults.color
+        )
+
+        SettingsCategory(title = "Image Processing")
+
+        DialogSettingItem(
+            title = "Debayer Algorithm",
+            summary = debayerMode.displayName,
+            onClick = { showDebayerDialog = true }
+        )
     }
 
     if (showDebayerDialog) {

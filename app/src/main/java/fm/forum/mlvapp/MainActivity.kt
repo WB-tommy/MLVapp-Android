@@ -1,20 +1,32 @@
 package fm.forum.mlvapp
 
 import android.app.ActivityManager
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.ui.Modifier
 import fm.forum.mlvapp.NativeInterface.NativeLib
 import fm.forum.mlvapp.settings.SettingsRepository
 import fm.forum.mlvapp.ui.theme.MLVappTheme
 
 class MainActivity : ComponentActivity() {
+    @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val forcePortrait = resources.getBoolean(R.bool.force_portrait)
+        requestedOrientation = if (forcePortrait) {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+
         NativeLib.setBaseDir(this.filesDir.absolutePath)
         val settingsRepository = SettingsRepository.getInstance(applicationContext)
         setContent {
@@ -23,6 +35,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
+                    val windowSizeClass = calculateWindowSizeClass(this)
                     val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
                     val memoryInfo = ActivityManager.MemoryInfo()
                     activityManager.getMemoryInfo(memoryInfo)
@@ -36,6 +49,7 @@ class MainActivity : ComponentActivity() {
                     val cores = if (cpuCores > 0) cpuCores else 4
 
                     NavController(
+                        windowSizeClass = windowSizeClass,
                         cacheSize = cacheSize,
                         cores = cores,
                         settingsRepository = settingsRepository

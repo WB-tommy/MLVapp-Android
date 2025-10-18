@@ -18,7 +18,8 @@ import androidx.compose.runtime.Composable
 @Composable
 fun TheTopBar(
     onAddFileClick: () -> Unit,
-    onSettingClick: () -> Unit
+    onSettingClick: () -> Unit,
+    showSettingsButton: Boolean = true
 ) {
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
@@ -39,11 +40,13 @@ fun TheTopBar(
                     contentDescription = "Add File"
                 )
             }
-            IconButton(onClick = onSettingClick) {
-                Icon(
-                    imageVector = Icons.Rounded.Settings,
-                    contentDescription = "Settings"
-                )
+            if (showSettingsButton) {
+                IconButton(onClick = onSettingClick) {
+                    Icon(
+                        imageVector = Icons.Rounded.Settings,
+                        contentDescription = "Settings"
+                    )
+                }
             }
         },
     )

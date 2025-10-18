@@ -13,6 +13,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,7 +23,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.windowsizeclass.WindowSizeClass
+import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -40,7 +44,6 @@ import fm.forum.mlvapp.clips.ClipViewModelFactory
 import fm.forum.mlvapp.clips.FocusPixelDownloadOutcome
 import fm.forum.mlvapp.data.ClipRepository
 import fm.forum.mlvapp.settings.SettingsRepository
-import fm.forum.mlvapp.ui.theme.PurpleGrey40
 import fm.forum.mlvapp.videoPlayer.NavigationBar
 import fm.forum.mlvapp.videoPlayer.VideoPlayerScreen
 import fm.forum.mlvapp.videoPlayer.VideoViewModel
@@ -48,30 +51,28 @@ import fm.forum.mlvapp.videoPlayer.VideoViewModelFactory
 
 @Composable
 fun MainScreen(
+    windowSizeClass: WindowSizeClass,
     totalMemory: Long,
     cpuCores: Int,
     navController: NavHostController,
     settingsRepository: SettingsRepository
 ) {
     val context = LocalContext.current
-    val videoViewModelFactory = remember(settingsRepository) {
-        VideoViewModelFactory(settingsRepository)
-    }
-    val videoViewModel: VideoViewModel = viewModel(factory = videoViewModelFactory)
 
-    val applicationContext = context.applicationContext
-    val clipRepository = remember(applicationContext) {
-        ClipRepository(applicationContext)
-    }
-    val clipViewModelFactory = remember(clipRepository, totalMemory, cpuCores) {
-        ClipViewModelFactory(clipRepository, totalMemory, cpuCores)
-    }
-    val clipViewModel: ClipViewModel = viewModel(factory = clipViewModelFactory)
+    // Create ViewModels
+    val videoViewModel: VideoViewModel = viewModel(
+        factory = remember(settingsRepository) { VideoViewModelFactory(settingsRepository) }
+    )
+    val clipViewModel: ClipViewModel = viewModel(
+        factory = remember(context.applicationContext, totalMemory, cpuCores) {
+            ClipViewModelFactory(ClipRepository(context.applicationContext), totalMemory, cpuCores)
+        }
+    )
 
     val clipUiState by clipViewModel.uiState.collectAsState()
-    val curClipGuid by videoViewModel.clipGUID.collectAsState()
     val isPlaying by videoViewModel.isPlaying.collectAsState()
 
+    // Keep screen on when playing
     val view = LocalView.current
     DisposableEffect(isPlaying) {
         val window = (view.context as? Activity)?.window
@@ -85,6 +86,7 @@ fun MainScreen(
         }
     }
 
+    // Connect ViewModels
     LaunchedEffect(clipUiState.isActivatingClip) {
         videoViewModel.changeLoadingStatus(clipUiState.isActivatingClip)
     }
@@ -99,17 +101,14 @@ fun MainScreen(
         }
     }
 
+    // Handle one-off events
     LaunchedEffect(clipViewModel) {
         clipViewModel.events.collect { event ->
             when (event) {
                 is ClipEvent.FocusPixelDownloadFeedback -> {
                     val messageRes = when (event.outcome) {
-                        FocusPixelDownloadOutcome.SINGLE_SUCCESS,
-                        FocusPixelDownloadOutcome.ALL_SUCCESS -> R.string.focus_pixel_download_success
-
-                        FocusPixelDownloadOutcome.SINGLE_FAILURE,
-                        FocusPixelDownloadOutcome.ALL_FAILURE -> R.string.focus_pixel_download_failed
-
+                        FocusPixelDownloadOutcome.SINGLE_SUCCESS, FocusPixelDownloadOutcome.ALL_SUCCESS -> R.string.focus_pixel_download_success
+                        FocusPixelDownloadOutcome.SINGLE_FAILURE, FocusPixelDownloadOutcome.ALL_FAILURE -> R.string.focus_pixel_download_failed
                         FocusPixelDownloadOutcome.ALL_NONE_FOR_CAMERA -> R.string.focus_pixel_download_none_for_camera
                         FocusPixelDownloadOutcome.ALL_INDEX_UNAVAILABLE -> R.string.focus_pixel_download_index_unavailable
                     }
@@ -117,48 +116,131 @@ fun MainScreen(
                 }
 
                 is ClipEvent.LoadFailed -> {
-                    Toast.makeText(
-                        context,
-                        R.string.clip_load_failed,
-                        Toast.LENGTH_LONG
-                    ).show()
+                    Toast.makeText(context, R.string.clip_load_failed, Toast.LENGTH_LONG).show()
                 }
 
                 is ClipEvent.ClipPreparationFailed -> {
-                    val message = context.getString(
-                        R.string.clip_preparation_failed,
-                        event.failedCount,
-                        event.totalCount
-                    )
+                    val message = context.getString(R.string.clip_preparation_failed, event.failedCount, event.totalCount)
                     Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
 
-    val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris: List<Uri> ->
-        if (uris.isNotEmpty()) {
-            clipViewModel.onFilesPicked(uris)
-        }
+    // Show Focus Pixel prompt if needed
+    val focusPixelPrompt = clipUiState.focusPixelPrompt
+    if (focusPixelPrompt != null) {
+        FocusPixelMapToast(
+            requiredFileName = focusPixelPrompt.requiredFile,
+            isBusy = clipUiState.isFocusPixelDownloadInProgress,
+            onSelectSingle = { clipViewModel.downloadFocusPixelMap() },
+            onSelectAll = { clipViewModel.downloadAllFocusPixelMaps() },
+            onDismiss = { clipViewModel.dismissFocusPixelPrompt() }
+        )
     }
 
+    // Choose layout based on screen size
+    when (windowSizeClass.widthSizeClass) {
+        WindowWidthSizeClass.Expanded -> {
+            TabletLayout(
+                clipViewModel = clipViewModel,
+                videoViewModel = videoViewModel,
+                navController = navController,
+                cpuCores = cpuCores
+            )
+        }
+        else -> {
+            MobileLayout(
+                clipViewModel = clipViewModel,
+                videoViewModel = videoViewModel,
+                navController = navController,
+                cpuCores = cpuCores
+            )
+        }
+    }
+}
+
+@Composable
+private fun MobileLayout(
+    clipViewModel: ClipViewModel,
+    videoViewModel: VideoViewModel,
+    navController: NavHostController,
+    cpuCores: Int
+) {
+    val clipUiState by clipViewModel.uiState.collectAsState()
+    val curClipGuid by videoViewModel.clipGUID.collectAsState()
+    val isPlaying by videoViewModel.isPlaying.collectAsState()
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+        onResult = { uris: List<Uri> -> if (uris.isNotEmpty()) clipViewModel.onFilesPicked(uris) }
+    )
+
     Scaffold(
-        modifier = Modifier
-            .padding(4.dp)
-            .statusBarsPadding(),
+        modifier = Modifier.statusBarsPadding(),
         topBar = {
             TheTopBar(
                 onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) },
                 onSettingClick = { navController.navigate("settings") }
             )
-        },
+        }
     ) { innerPadding ->
-        Surface(
-            modifier = Modifier.padding(innerPadding)
+        Column(modifier = Modifier.padding(innerPadding)) {
+            VideoPlayerScreen(videoViewModel, cpuCores)
+            NavigationBar(
+                Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                videoViewModel
+            )
+            LoadingIndicatorBar(isLoading = clipUiState.isLoading)
+            FileListView(
+                clipList = clipUiState.clips,
+                onClipSelected = { selectedClip ->
+                    if (selectedClip.guid != curClipGuid && !clipUiState.isActivatingClip && !isPlaying) {
+                        clipViewModel.onClipSelected(selectedClip.guid)
+                    }
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxSize()
+            )
+        }
+    }
+}
+
+@Composable
+private fun TabletLayout(
+    clipViewModel: ClipViewModel,
+    videoViewModel: VideoViewModel,
+    navController: NavHostController,
+    cpuCores: Int
+) {
+    val clipUiState by clipViewModel.uiState.collectAsState()
+    val curClipGuid by videoViewModel.clipGUID.collectAsState()
+    val isPlaying by videoViewModel.isPlaying.collectAsState()
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+        onResult = { uris: List<Uri> -> if (uris.isNotEmpty()) clipViewModel.onFilesPicked(uris) }
+    )
+
+    Scaffold(
+        modifier = Modifier.statusBarsPadding(),
+        topBar = {
+            TheTopBar(
+                onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) },
+                onSettingClick = { navController.navigate("settings") }
+            )
+        }
+    ) { innerPadding ->
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
         ) {
-            Column {
+            // Left Panel (Player and File List)
+            Column(modifier = Modifier.weight(2f)) {
                 VideoPlayerScreen(videoViewModel, cpuCores)
                 NavigationBar(
                     Modifier
@@ -179,24 +261,16 @@ fun MainScreen(
                         .fillMaxSize()
                 )
             }
-        }
-    }
 
-    val focusPixelPrompt = clipUiState.focusPixelPrompt
-    if (focusPixelPrompt != null) {
-        FocusPixelMapToast(
-            requiredFileName = focusPixelPrompt.requiredFile,
-            isBusy = clipUiState.isFocusPixelDownloadInProgress,
-            onSelectSingle = {
-                clipViewModel.downloadFocusPixelMap()
-            },
-            onSelectAll = {
-                clipViewModel.downloadAllFocusPixelMaps()
-            },
-            onDismiss = {
-                clipViewModel.dismissFocusPixelPrompt()
+            // Right Panel
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            ) {
+                Text("Processing function will be coming soon!")
             }
-        )
+        }
     }
 }
 
