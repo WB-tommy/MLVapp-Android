@@ -37,7 +37,7 @@ The playback engine is designed for synchronized audio and video. To ensure robu
 
 *   **Video Master Clock (`VideoPlayerScreen.kt`):** The main playback loop, implemented as a `LaunchedEffect` in the video player, is the heart of the playback system. It advances the `currentFrame` state in the `VideoViewModel` based on the clip's FPS, creating a master timeline.
 *   **Audio Slave (`AudioPlaybackController.kt`):** When an audio track is present, the `AudioPlaybackController` synchronizes audio playback to the video master clock. It streams audio data and adjusts its timing to match the video frame being displayed, ensuring A/V sync.
-*   **OpenGL Rendering (`MLVRenderer.kt`):** The renderer uses a `GLSurfaceView` and OpenGL ES 3.0. It leverages integer textures (`GL_RGB16UI`) to handle 16-bit video data from the backend without precision loss. Aspect ratio correction is handled in the vertex shader to prevent distortion. The render loop is set to `RENDERMODE_WHEN_DIRTY` and is triggered by changes to the `currentFrame` state in the ViewModel.
+*   **OpenGL Rendering (`MLVRenderer.kt`):** The renderer uses a `GLSurfaceView` and OpenGL ES 3.0. For broad device compatibility, it uses 32-bit float textures (`GL_RGB32F`). The native backend provides the frame data in this 32-bit float format, which is then uploaded to the GPU. Aspect ratio correction is handled in the vertex shader to prevent distortion. The render loop is set to `RENDERMODE_WHEN_DIRTY` and is triggered by changes to the `currentFrame` state in the ViewModel.
 
 ## Multi-Chunk and SAF Handling
 

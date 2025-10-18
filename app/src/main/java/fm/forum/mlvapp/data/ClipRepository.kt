@@ -1,6 +1,7 @@
 package fm.forum.mlvapp.data
 
 import android.content.ContentResolver
+import android.util.Log
 import android.content.Context
 import android.database.Cursor
 import android.net.Uri
@@ -56,9 +57,6 @@ class ClipRepository(
         )
     }
 
-    fun prepareClipPath(guid: Long, displayName: String): String =
-        MappStorage.prepareClipPath(appContext, guid, displayName)
-
     suspend fun loadClip(
         clip: Clip,
         totalMemory: Long,
@@ -68,7 +66,7 @@ class ClipRepository(
         // receives them in the correct order (.MLV, then .M00, .M01, etc.).
         // We achieve this by mapping the primary ".MLV" extension to "0" so it
         // always comes first in an alphanumeric sort.
-        val sortedUris = clip.uris.zip(clip.fileNames).sortedWith(compareBy { (_, fileName) ->
+        val sortedUrisAndNames = clip.uris.zip(clip.fileNames).sortedWith(compareBy { (_, fileName) ->
             val extension = fileName.substringAfterLast('.', "")
             if (extension.equals("MLV", ignoreCase = true)) {
                 "0"
@@ -77,7 +75,7 @@ class ClipRepository(
             }
         })
 
-        val fileDescriptors = sortedUris.mapNotNull { (uri, _) ->
+        val fileDescriptors = sortedUrisAndNames.mapNotNull { (uri, _) ->
             runCatching {
                 contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
                     pfd.detachFd()
@@ -89,13 +87,11 @@ class ClipRepository(
             return@withContext ClipLoadResult(clip, focusPixelRequirement = null)
         }
 
-        val clipPath = clip.mappPath.ifEmpty {
-            prepareClipPath(clip.guid, clip.displayName)
-        }
+        val primaryFileName = sortedUrisAndNames.firstOrNull()?.second ?: clip.displayName
 
         val metadata = NativeLib.openClip(
             fileDescriptors,
-            clipPath,
+            primaryFileName,
             totalMemory,
             cpuCores
         )
@@ -133,7 +129,7 @@ class ClipRepository(
             audioBufferSize > 0L
 
         val updatedClip = clip.copy(
-            mappPath = clipPath,
+            mappPath = "", // Mapp logic removed
             nativeHandle = nativeHandle,
             cameraName = metadata.cameraName,
             lens = metadata.lens,

@@ -79,17 +79,23 @@ class ClipViewModel(
                 _uiState.update { state ->
                     val updatedClips = replaceClip(state.clips, loadResult.clip)
                     val prompt = loadResult.focusPixelRequirement
-                    val nextPrompt = when {
-                        prompt != null -> prompt
-                        state.focusPixelPrompt?.clipGuid == loadResult.clip.guid -> null
-                        else -> state.focusPixelPrompt
+
+                    if (prompt != null) {
+                        // .fpm file is missing. Show prompt and wait. DO NOT activate the clip.
+                        state.copy(
+                            clips = updatedClips,
+                            isActivatingClip = false,
+                            focusPixelPrompt = prompt
+                        )
+                    } else {
+                        // .fpm file exists or is not needed. Activate the clip immediately.
+                        state.copy(
+                            clips = updatedClips,
+                            activeClip = loadResult.clip,
+                            isActivatingClip = false,
+                            focusPixelPrompt = null // Clear any old prompt
+                        )
                     }
-                    state.copy(
-                        clips = updatedClips,
-                        activeClip = loadResult.clip,
-                        isActivatingClip = false,
-                        focusPixelPrompt = nextPrompt
-                    )
                 }
             }.onFailure { throwable ->
                 _uiState.update { it.copy(isActivatingClip = false) }
@@ -104,6 +110,17 @@ class ClipViewModel(
         }
     }
 
+    private fun activatePendingClip(clipGuid: Long) {
+        val pendingClip = _uiState.value.clips.firstOrNull { it.guid == clipGuid }
+        _uiState.update { state ->
+            state.copy(
+                isFocusPixelDownloadInProgress = false,
+                focusPixelPrompt = null,
+                activeClip = pendingClip ?: state.activeClip
+            )
+        }
+    }
+
     fun downloadFocusPixelMap() {
         val prompt = _uiState.value.focusPixelPrompt ?: return
         if (_uiState.value.isFocusPixelDownloadInProgress) return
@@ -112,26 +129,16 @@ class ClipViewModel(
             val success = runCatching {
                 repository.downloadFocusPixelMap(prompt.requiredFile)
             }.getOrDefault(false)
-            val resolved = if (success) {
-                repository.ensureFocusPixelMap(prompt.requiredFile)
+
+            if (success) {
+                // Download succeeded, now activate the clip that was waiting.
+                activatePendingClip(prompt.clipGuid)
+                _events.emit(ClipEvent.FocusPixelDownloadFeedback(FocusPixelDownloadOutcome.SINGLE_SUCCESS))
             } else {
-                false
+                // Download failed, just update status and emit event.
+                _uiState.update { it.copy(isFocusPixelDownloadInProgress = false) }
+                _events.emit(ClipEvent.FocusPixelDownloadFeedback(FocusPixelDownloadOutcome.SINGLE_FAILURE))
             }
-            if (resolved) {
-                refreshFocusPixelFor(prompt.clipGuid)
-            }
-            _uiState.update { state ->
-                state.copy(
-                    isFocusPixelDownloadInProgress = false,
-                    focusPixelPrompt = if (resolved) null else state.focusPixelPrompt
-                )
-            }
-            _events.emit(
-                ClipEvent.FocusPixelDownloadFeedback(
-                    if (resolved) FocusPixelDownloadOutcome.SINGLE_SUCCESS
-                    else FocusPixelDownloadOutcome.SINGLE_FAILURE
-                )
-            )
         }
     }
 
@@ -144,47 +151,22 @@ class ClipViewModel(
             val result = runCatching {
                 repository.downloadFocusPixelMapsForCamera(cameraId)
             }.getOrNull()
+
             val outcome = when (result) {
-                FocusPixelManager.DownloadAllResult.SUCCESS -> {
-                    val resolved = repository.ensureFocusPixelMap(prompt.requiredFile)
-                    if (resolved) {
-                        refreshFocusPixelFor(prompt.clipGuid)
-                    }
-                    if (resolved) {
-                        FocusPixelDownloadOutcome.ALL_SUCCESS
-                    } else {
-                        FocusPixelDownloadOutcome.ALL_FAILURE
-                    }
-                }
-
-                FocusPixelManager.DownloadAllResult.NONE_FOR_CAMERA ->
-                    FocusPixelDownloadOutcome.ALL_NONE_FOR_CAMERA
-
-                FocusPixelManager.DownloadAllResult.INDEX_UNAVAILABLE ->
-                    FocusPixelDownloadOutcome.ALL_INDEX_UNAVAILABLE
-
-                FocusPixelManager.DownloadAllResult.FAILED ->
-                    FocusPixelDownloadOutcome.ALL_FAILURE
-
-                null ->
-                    FocusPixelDownloadOutcome.ALL_FAILURE
+                FocusPixelManager.DownloadAllResult.SUCCESS -> FocusPixelDownloadOutcome.ALL_SUCCESS
+                FocusPixelManager.DownloadAllResult.NONE_FOR_CAMERA -> FocusPixelDownloadOutcome.ALL_NONE_FOR_CAMERA
+                FocusPixelManager.DownloadAllResult.INDEX_UNAVAILABLE -> FocusPixelDownloadOutcome.ALL_INDEX_UNAVAILABLE
+                else -> FocusPixelDownloadOutcome.ALL_FAILURE
             }
 
-            val shouldDismiss = outcome == FocusPixelDownloadOutcome.ALL_SUCCESS
-            _uiState.update { state ->
-                state.copy(
-                    isFocusPixelDownloadInProgress = false,
-                    focusPixelPrompt = if (shouldDismiss) null else state.focusPixelPrompt
-                )
+            if (outcome == FocusPixelDownloadOutcome.ALL_SUCCESS) {
+                // Downloads succeeded, now activate the clip that was waiting.
+                activatePendingClip(prompt.clipGuid)
+            } else {
+                // Downloads failed, just update status
+                _uiState.update { it.copy(isFocusPixelDownloadInProgress = false) }
             }
             _events.emit(ClipEvent.FocusPixelDownloadFeedback(outcome))
-        }
-    }
-
-    private fun refreshFocusPixelFor(clipGuid: Long) {
-        val activeClip = _uiState.value.activeClip
-        if (activeClip != null && activeClip.guid == clipGuid && activeClip.nativeHandle != 0L) {
-            repository.refreshFocusPixelMap(activeClip.nativeHandle)
         }
     }
 
@@ -200,7 +182,6 @@ class ClipViewModel(
             )
             return existing.toMutableList().apply { set(index, updated) }
         }
-        val mappPath = repository.prepareClipPath(chunk.guid, chunk.fileName)
         val newClip = Clip(
             uris = listOf(chunk.uri),
             fileNames = listOf(chunk.fileName),
@@ -209,7 +190,7 @@ class ClipViewModel(
             height = chunk.height,
             thumbnail = chunk.thumbnail,
             guid = chunk.guid,
-            mappPath = mappPath
+            mappPath = "" // Mapp logic removed
         )
         return existing + newClip
     }
@@ -232,7 +213,7 @@ data class ClipUiState(
 ) {
     val isLoading: Boolean
         get() = isActivatingClip || isPreparingClips
-} 
+}
 
 sealed interface ClipEvent {
     data class FocusPixelDownloadFeedback(val outcome: FocusPixelDownloadOutcome) : ClipEvent

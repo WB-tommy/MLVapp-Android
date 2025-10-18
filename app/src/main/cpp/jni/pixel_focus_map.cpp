@@ -2,6 +2,7 @@
 // Created by Sungmin Choi on 2025. 10. 11..
 //
 #include "mlv_jni.h"
+#include "mlv_jni_wrapper.h" // Include the wrapper definition
 #include <cstdio>
 #include <cinttypes>
 #include "../src/mlv/llrawproc/pixelproc.h"
@@ -16,8 +17,14 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_checkCameraModel(
         return -1;
     }
 
-    auto *nativeClip =
-            reinterpret_cast<mlvObject_t *>(static_cast<uintptr_t>(handle));
+    // Correctly cast to the wrapper first, then get the mlv_object
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(static_cast<uintptr_t>(handle));
+    if (!wrapper || !wrapper->mlv_object) {
+        return -1;
+    }
+    auto *nativeClip = wrapper->mlv_object;
+
+    LOGD("%u\n", nativeClip->IDNT.cameraModel);
 
     return llrpDetectFocusDotFixMode(nativeClip);
 }
@@ -31,11 +38,12 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_getFpmName(
         return env->NewStringUTF("null handle");
     }
 
-    auto *nativeClip =
-            reinterpret_cast<mlvObject_t *>(static_cast<uintptr_t>(handle));
-    if (nativeClip == nullptr) {
+    // Correctly cast to the wrapper first, then get the mlv_object
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(static_cast<uintptr_t>(handle));
+    if (!wrapper || !wrapper->mlv_object) {
         return env->NewStringUTF("failed to cast handle");
     }
+    auto *nativeClip = wrapper->mlv_object;
 
     const uint32_t cameraID = nativeClip->IDNT.cameraModel;
     int width = nativeClip->RAWI.raw_info.width;
@@ -60,11 +68,13 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_refreshFocusPixelMap(
     if (handle == 0) {
         return;
     }
-    auto *nativeClip =
-            reinterpret_cast<mlvObject_t *>(static_cast<uintptr_t>(handle));
-    if (nativeClip == nullptr) {
+    // Correctly cast to the wrapper first, then get the mlv_object
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(static_cast<uintptr_t>(handle));
+    if (!wrapper || !wrapper->mlv_object) {
         return;
     }
+    auto *nativeClip = wrapper->mlv_object;
+
     llrpResetFpmStatus(nativeClip);
     llrpResetBpmStatus(nativeClip);
     resetMlvCache(nativeClip);
@@ -77,11 +87,13 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_setFocusPixelMode(
     if (handle == 0) {
         return;
     }
-    auto *nativeClip =
-            reinterpret_cast<mlvObject_t *>(static_cast<uintptr_t>(handle));
-    if (nativeClip == nullptr) {
+    // Correctly cast to the wrapper first, then get the mlv_object
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(static_cast<uintptr_t>(handle));
+    if (!wrapper || !wrapper->mlv_object) {
         return;
     }
+    auto *nativeClip = wrapper->mlv_object;
+
     llrpSetFocusPixelMode(nativeClip, mode);
 }
 
@@ -91,11 +103,13 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_setFixRawMode(
     if (handle == 0) {
         return;
     }
-    auto *nativeClip =
-            reinterpret_cast<mlvObject_t *>(static_cast<uintptr_t>(handle));
-    if (nativeClip == nullptr) {
+    // Correctly cast to the wrapper first, then get the mlv_object
+    auto *wrapper = reinterpret_cast<JniClipWrapper *>(static_cast<uintptr_t>(handle));
+    if (!wrapper || !wrapper->mlv_object) {
         return;
     }
+    auto *nativeClip = wrapper->mlv_object;
+
     llrpSetFixRawMode(nativeClip, enabled ? 1 : 0);
 }
 
