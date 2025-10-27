@@ -1,7 +1,7 @@
 //
 // Created by Sungmin Choi on 2025. 10. 11..
 //
-#include "mlv_jni.h"
+#include "clip/clip_jni.h"
 #include "mlv_jni_wrapper.h" // Include the wrapper definition
 #include <cstdio>
 #include <cinttypes>

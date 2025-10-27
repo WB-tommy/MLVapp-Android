@@ -2,7 +2,6 @@ package fm.forum.mlvapp.clips
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import fm.forum.mlvapp.data.ClipRepository
 
 class ClipViewModelFactory(
     private val repository: ClipRepository,

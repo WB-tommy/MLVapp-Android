@@ -1,4 +1,4 @@
-#include "mlv_jni.h"
+#include "clip_jni.h"
 #include "mlv_jni_wrapper.h"
 #include "jni_cache.h"
 #include <android/bitmap.h>
@@ -20,10 +20,11 @@ namespace {
 constexpr const char *kJniTag = "MLVApp-JNI";
 }
 
-static mlvObject_t *getMlvObject(
+mlvObject_t *getMlvObject(
         JNIEnv *env,
         jintArray fds,
-        jstring fileName, jlong cacheSize,
+        jstring fileName,
+        jlong cacheSize,
         jint cores,
         bool isFull) {
     int mlvErr = MLV_ERR_NONE;

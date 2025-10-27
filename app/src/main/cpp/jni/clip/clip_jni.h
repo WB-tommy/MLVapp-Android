@@ -2,8 +2,8 @@
 // Created by Sungmin Choi on 2025. 10. 11..
 //
 
-#ifndef MLVAPP_MLV_JNI_H
-#define MLVAPP_MLV_JNI_H
+#ifndef MLVAPP_CLIP_JNI_H
+#define MLVAPP_CLIP_JNI_H
 
 #include <jni.h>
 #include <cstdint>
@@ -11,10 +11,10 @@
 #include <new>
 
 extern "C" {
-#include "../src/mlv/mlv_object.h"
-#include "../src/mlv/video_mlv.h"
-#include "../src/dng/dng.h"
-#include "../src/mlv/llrawproc/llrawproc.h"
+#include "mlv/mlv_object.h"
+#include "mlv/video_mlv.h"
+#include "dng/dng.h"
+#include "mlv/llrawproc/llrawproc.h"
 #include <time.h>
 
 // for debugging
@@ -26,6 +26,13 @@ extern "C" {
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+
+mlvObject_t *getMlvObject(
+        JNIEnv *env,
+        jintArray fds,
+        jstring fileName, jlong cacheSize,
+        jint cores,
+        bool isFull);
 
 JNIEXPORT jobject JNICALL
 Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
@@ -110,4 +117,4 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_setDebayerMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode);
 
 }
-#endif //MLVAPP_MLV_JNI_H
+#endif //MLVAPP_CLIP_JNI_H

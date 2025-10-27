@@ -1,7 +1,6 @@
-package fm.forum.mlvapp.data
+package fm.forum.mlvapp.clips
 
 import android.content.ContentResolver
-import android.util.Log
 import android.content.Context
 import android.database.Cursor
 import android.net.Uri
@@ -9,8 +8,8 @@ import android.provider.OpenableColumns
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import fm.forum.mlvapp.FocusPixelManager
-import fm.forum.mlvapp.MappStorage
 import fm.forum.mlvapp.NativeInterface.NativeLib
+import fm.forum.mlvapp.data.Clip
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

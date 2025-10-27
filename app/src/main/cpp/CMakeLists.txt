@@ -68,6 +68,8 @@ add_library(mlv STATIC
 
 include_directories(
         ${CMAKE_SOURCE_DIR}/jni/
+        ${CMAKE_SOURCE_DIR}/jni/clip/
+        ${CMAKE_SOURCE_DIR}/jni/export/
         ${MLV_SRC_DIR}/
         ${MLV_SRC_DIR}/avir/
         ${MLV_SRC_DIR}/ca_correct/
@@ -86,10 +88,12 @@ add_subdirectory(src/librtprocess)
 add_library(${CMAKE_PROJECT_NAME} SHARED
         ${MLV_SRC_DIR}/mlvcore.c
         ${CMAKE_SOURCE_DIR}/jni/utils.cpp
-        ${CMAKE_SOURCE_DIR}/jni/jni_cache.cpp
-        ${CMAKE_SOURCE_DIR}/jni/handle_clip.cpp
-        ${CMAKE_SOURCE_DIR}/jni/handle_playback.cpp
+        ${CMAKE_SOURCE_DIR}/jni/clip/jni_cache.cpp
+        ${CMAKE_SOURCE_DIR}/jni/clip/handle_clip.cpp
+        ${CMAKE_SOURCE_DIR}/jni/clip/handle_playback.cpp
         ${CMAKE_SOURCE_DIR}/jni/pixel_focus_map.cpp
+        ${CMAKE_SOURCE_DIR}/jni/export/export_handler.cpp
+        ${CMAKE_SOURCE_DIR}/jni/export/export_jni.cpp
 )
 
 # For AndroidBitmap_* functions

@@ -1,5 +1,6 @@
 package fm.forum.mlvapp.NativeInterface
 
+import fm.forum.mlvapp.export.ExportOptions
 import java.nio.ByteBuffer
 
 object NativeLib {
@@ -42,7 +43,7 @@ object NativeLib {
         handle: Long
     ): Int
 
-    external fun  readAudioBuffer(
+    external fun readAudioBuffer(
         handle: Long,
         offsetBytes: Long,
         byteCount: Int,
@@ -82,5 +83,14 @@ object NativeLib {
     external fun setDebayerMode(
         handle: Long,
         mode: Int
+    )
+
+    external fun exportHandler(
+        memSize: Long,
+        cpuCores: Int,
+        clipFds: IntArray,
+        options: ExportOptions,
+        progressListener: Any,
+        fileProvider: Any?
     )
 }

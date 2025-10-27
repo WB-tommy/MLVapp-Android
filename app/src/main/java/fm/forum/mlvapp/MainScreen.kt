@@ -1,5 +1,6 @@
 package fm.forum.mlvapp
 
+import android.Manifest
 import android.app.Activity
 import android.net.Uri
 import android.view.WindowManager
@@ -37,12 +38,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.navigation.NavHostController
 import fm.forum.mlvapp.clips.ClipEvent
 import fm.forum.mlvapp.clips.ClipViewModel
-import fm.forum.mlvapp.clips.ClipViewModelFactory
 import fm.forum.mlvapp.clips.FocusPixelDownloadOutcome
-import fm.forum.mlvapp.data.ClipRepository
 import fm.forum.mlvapp.settings.SettingsRepository
 import fm.forum.mlvapp.videoPlayer.NavigationBar
 import fm.forum.mlvapp.videoPlayer.VideoPlayerScreen
@@ -55,18 +57,27 @@ fun MainScreen(
     totalMemory: Long,
     cpuCores: Int,
     navController: NavHostController,
-    settingsRepository: SettingsRepository
+    settingsRepository: SettingsRepository,
+    clipViewModel: ClipViewModel
 ) {
     val context = LocalContext.current
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* no-op */ }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && context is Activity) {
+            val permission = Manifest.permission.POST_NOTIFICATIONS
+            if (ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(permission)
+            }
+        }
+    }
 
     // Create ViewModels
     val videoViewModel: VideoViewModel = viewModel(
         factory = remember(settingsRepository) { VideoViewModelFactory(settingsRepository) }
-    )
-    val clipViewModel: ClipViewModel = viewModel(
-        factory = remember(context.applicationContext, totalMemory, cpuCores) {
-            ClipViewModelFactory(ClipRepository(context.applicationContext), totalMemory, cpuCores)
-        }
     )
 
     val clipUiState by clipViewModel.uiState.collectAsState()
@@ -181,7 +192,8 @@ private fun MobileLayout(
         topBar = {
             TheTopBar(
                 onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) },
-                onSettingClick = { navController.navigate("settings") }
+                onSettingClick = { navController.navigate("settings") },
+                onExportClick = { navController.navigate("export_selection") }
             )
         }
     ) { innerPadding ->
@@ -230,7 +242,8 @@ private fun TabletLayout(
         topBar = {
             TheTopBar(
                 onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) },
-                onSettingClick = { navController.navigate("settings") }
+                onSettingClick = { navController.navigate("settings") },
+                onExportClick = { navController.navigate("export_selection") }
             )
         }
     ) { innerPadding ->

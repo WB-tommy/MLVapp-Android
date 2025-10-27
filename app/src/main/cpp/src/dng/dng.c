@@ -1178,6 +1178,40 @@ int saveDngFrame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_t frame_
     return 0;
 }
 
+/* save DNG file */
+int saveDngFrameFd(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_t frame_index, int fd, const char *prop_filename)
+{
+    FILE* dngf = fdopen(fd, "wb");
+    if (!dngf)
+    {
+        return 1;
+    }
+
+    /* get filled dng_data struct */
+    if(dng_get_frame(mlv_data, dng_data, frame_index, prop_filename) != 0)
+    {
+        fclose(dngf);
+        return 1;
+    }
+
+    /* write DNG header */
+    if (fwrite(dng_data->header_buf, dng_data->header_size, 1, dngf) != 1)
+    {
+        fclose(dngf);
+        return 1;
+    }
+    
+    /* write DNG image data */
+    if (fwrite(dng_data->image_buf, dng_data->image_size, 1, dngf) != 1)
+    {
+        fclose(dngf);
+        return 1;
+    }
+
+    fclose(dngf);
+    return 0;
+}
+
 /* free all buffers used for DNG creation */
 void freeDngObject(dngObject_t * dng_data)
 {

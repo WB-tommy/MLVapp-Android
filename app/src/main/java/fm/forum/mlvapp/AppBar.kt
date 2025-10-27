@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 fun TheTopBar(
     onAddFileClick: () -> Unit,
     onSettingClick: () -> Unit,
+    onExportClick: () -> Unit,
     showSettingsButton: Boolean = true
 ) {
     TopAppBar(
@@ -28,7 +29,7 @@ fun TheTopBar(
         ),
         title = { Text("") },
         actions = {
-            IconButton(onClick = { Log.d("FilePicker", "Export") }) {
+            IconButton(onClick = onExportClick) {
                 Icon(
                     imageVector = Icons.Outlined.Share,
                     contentDescription = "Export"

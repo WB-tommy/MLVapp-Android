@@ -3,6 +3,15 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <queries>
+        <package android:name="com.android.documentsui" />
+        <package android:name="com.google.android.documentsui" />
+        <package android:name="com.google.android.apps.docs" />
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -24,6 +33,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".export.ExportService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing" />
     </application>
 
 </manifest>

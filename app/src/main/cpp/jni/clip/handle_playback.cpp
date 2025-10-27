@@ -1,7 +1,7 @@
 //
 // Created by Sungmin Choi on 2025. 10. 11..
 //
-#include "mlv_jni.h"
+#include "clip_jni.h"
 #include "mlv_jni_wrapper.h"
 #include <algorithm>
 #include <thread>

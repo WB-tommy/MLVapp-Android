@@ -2,7 +2,7 @@
 #ifndef MLV_JNI_WRAPPER_H
 #define MLV_JNI_WRAPPER_H
 
-#include "mlv_jni.h" // Includes the original mlv_object_t forward declaration
+#include "clip/clip_jni.h" // Includes the original mlv_object_t forward declaration
 #include <cstdint>
 
 // A wrapper struct to hold the original mlvObject_t handle

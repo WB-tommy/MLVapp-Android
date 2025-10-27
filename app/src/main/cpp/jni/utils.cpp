@@ -1,7 +1,7 @@
 //
 // Created by Sungmin Choi on 2025. 10. 12..
 //
-#include "mlv_jni.h"
+#include "clip/clip_jni.h"
 #include <unistd.h>
 
 extern "C" {

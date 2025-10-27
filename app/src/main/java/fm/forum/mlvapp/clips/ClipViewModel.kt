@@ -5,9 +5,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fm.forum.mlvapp.FocusPixelManager
 import fm.forum.mlvapp.data.Clip
-import fm.forum.mlvapp.data.ClipChunk
-import fm.forum.mlvapp.data.ClipRepository
-import fm.forum.mlvapp.data.FocusPixelRequirement
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +14,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class ClipViewModel(
     private val repository: ClipRepository,
@@ -174,11 +172,12 @@ class ClipViewModel(
         val index = existing.indexOfFirst { it.guid == chunk.guid }
         if (index >= 0) {
             val current = existing[index]
-            val mergedUris = (current.uris + chunk.uri).distinct()
-            val mergedFileNames = (current.fileNames + chunk.fileName).distinct()
+            val mergedPairs = current.uris.zip(current.fileNames) + (chunk.uri to chunk.fileName)
+            val dedupedPairs = mergedPairs.distinctBy { (_, name) -> name.lowercase(Locale.ROOT) }
+            val (uris, fileNames) = dedupedPairs.unzip()
             val updated = current.copy(
-                uris = mergedUris,
-                fileNames = mergedFileNames
+                uris = uris,
+                fileNames = fileNames
             )
             return existing.toMutableList().apply { set(index, updated) }
         }

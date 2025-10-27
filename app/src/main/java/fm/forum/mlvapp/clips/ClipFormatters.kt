@@ -1,4 +1,4 @@
-package fm.forum.mlvapp.data
+package fm.forum.mlvapp.clips
 
 import java.util.Locale
 
