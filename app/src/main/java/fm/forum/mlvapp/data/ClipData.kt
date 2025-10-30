@@ -14,6 +14,7 @@ data class Clip(
     val thumbnail: ImageBitmap,
     val guid: Long = 0L,
     val mappPath: String = "",
+    val processing: ClipProcessingData = ClipProcessingData(),
 
     // Metadata (mirrors desktop MainWindow.cpp updateMetadata inputs)
     val cameraName: String? = "",
@@ -38,6 +39,8 @@ data class Clip(
     val frameTimestamps: LongArray = LongArray(0),
     val isMcraw: Boolean = false,
     val nativeHandle: Long = 0L,
+    val cameraModelId: Int = 0,
+    val focusPixelMapName: String = "",
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

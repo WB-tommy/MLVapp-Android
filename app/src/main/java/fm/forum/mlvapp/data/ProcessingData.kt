@@ -2,7 +2,7 @@ package fm.forum.mlvapp.data
 
 import androidx.compose.runtime.Stable
 @Stable
-data class ClipProcessingData(
+data class ProcessingData(
     val exposure: Float = 0.0f,
     val temperature: Int = 5600,
     val tint: Float = 0.0f,
@@ -25,7 +25,7 @@ data class ClipProcessingData(
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
 
-        other as ClipProcessingData
+        other as ProcessingData
 
         return exposure == other.exposure &&
                 temperature == other.temperature &&

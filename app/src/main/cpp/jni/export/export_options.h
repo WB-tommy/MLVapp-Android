@@ -26,6 +26,8 @@ struct export_options_t {
     std::string source_base_name;
     std::string clip_uri_path;
     std::string audio_temp_dir;
+    float stretch_factor_x = 1.0f;
+    float stretch_factor_y = 1.0f;
 };
 
 #endif // MLVAPP_EXPORT_OPTIONS_H

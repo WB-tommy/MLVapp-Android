@@ -19,5 +19,7 @@ data class ExportOptions(
     val frameRateValue: Float,
     val sourceFileName: String,
     val clipUriPath: String,
-    val audioTempDir: String
+    val audioTempDir: String,
+    val stretchFactorX: Float = 1.0f,
+    val stretchFactorY: Float = 1.0f
 ) : Parcelable

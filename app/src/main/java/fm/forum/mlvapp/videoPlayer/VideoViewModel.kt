@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fm.forum.mlvapp.NativeInterface.NativeLib
 import fm.forum.mlvapp.data.Clip
+import fm.forum.mlvapp.data.ClipProcessingData
 import fm.forum.mlvapp.settings.DebayerMode
 import fm.forum.mlvapp.settings.SettingsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,6 +86,9 @@ class VideoViewModel(
     private val _debayerMode = MutableStateFlow(DebayerMode.ALWAYS_AMAZE)
     val debayerMode: StateFlow<DebayerMode> = _debayerMode
 
+    private val _processingData = MutableStateFlow(ClipProcessingData())
+    val processingData: StateFlow<ClipProcessingData> = _processingData
+
     private var decodeEmaUs = 0.0
     private var renderEmaUs = 0.0
     private val smoothing = 0.1
@@ -124,6 +128,7 @@ class VideoViewModel(
         _width.value = clip.width
         _height.value = clip.height
         _isMcraw.value = clip.isMcraw
+        _processingData.value = clip.processing
 
         val timestamps = clip.frameTimestamps
         _frameTimestamps.value = timestamps
@@ -264,6 +269,7 @@ class VideoViewModel(
         _audioChannels.value = 0
         _audioSampleRate.value = 0
         _isMcraw.value = false
+        _processingData.value = ClipProcessingData()
         decodeEmaUs = 0.0
         renderEmaUs = 0.0
         _averageDecodeUs.value = 0L

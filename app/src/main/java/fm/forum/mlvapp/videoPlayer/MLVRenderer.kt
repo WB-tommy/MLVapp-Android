@@ -9,6 +9,7 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.abs
 
 class MlvRenderer(
     private val cpuCores: Int,
@@ -22,10 +23,12 @@ class MlvRenderer(
         layout(location = 0) in vec2 aPos;
         layout(location = 1) in vec2 aTex;
         uniform vec2 uScale; // For aspect ratio correction
+        uniform vec2 uStretch; // Applied before scaling to handle anamorphic stretch
         out vec2 vTex;
         void main() {
             vTex = aTex;
-            gl_Position = vec4(aPos * uScale, 0.0, 1.0);
+            vec2 stretched = aPos * uStretch;
+            gl_Position = vec4(stretched * uScale, 0.0, 1.0);
         }
     """.trimIndent()
 
@@ -49,10 +52,14 @@ class MlvRenderer(
     private var texCoordHandle = 0
     private var texUniformHandle = 0
     private var scaleUniformHandle = -1
+    private var stretchUniformHandle = -1
 
     private var viewWidth = 1
     private var viewHeight = 1
     private val scale = floatArrayOf(1f, 1f)
+    private val stretch = floatArrayOf(1f, 1f)
+    private var lastLoggedStretchX = 1f
+    private var lastLoggedStretchY = 1f
 
     private var textureAllocated = false
     private var frameBuffer: ByteBuffer? = null
@@ -70,6 +77,7 @@ class MlvRenderer(
         texCoordHandle = GLES30.glGetAttribLocation(program, "aTex")
         texUniformHandle = GLES30.glGetUniformLocation(program, "uTexture")
         scaleUniformHandle = GLES30.glGetUniformLocation(program, "uScale")
+        stretchUniformHandle = GLES30.glGetUniformLocation(program, "uStretch")
 
         vertexBuffer =
             ByteBuffer.allocateDirect(quadVertices.size * 4).order(ByteOrder.nativeOrder())
@@ -164,7 +172,23 @@ class MlvRenderer(
 
         // Set uniforms and attributes
         GLES30.glUniform1i(texUniformHandle, 0)
-        updateScaling(videoWidth, videoHeight)
+        val processing = viewModel.processingData.value
+        val stretchX = sanitizeStretch(processing.stretchFactorX)
+        val stretchY = sanitizeStretch(processing.stretchFactorY)
+
+        stretch[0] = stretchX
+        stretch[1] = stretchY
+        if (stretchUniformHandle >= 0) {
+            GLES30.glUniform2fv(stretchUniformHandle, 1, stretch, 0)
+        }
+        if (abs(stretchX - lastLoggedStretchX) > 0.001f ||
+            abs(stretchY - lastLoggedStretchY) > 0.001f) {
+            Log.d(tag, "Applying stretch x=$stretchX y=$stretchY")
+            lastLoggedStretchX = stretchX
+            lastLoggedStretchY = stretchY
+        }
+
+        updateScaling(videoWidth, videoHeight, stretchX, stretchY)
 
         GLES30.glEnableVertexAttribArray(posHandle)
         GLES30.glVertexAttribPointer(posHandle, 2, GLES30.GL_FLOAT, false, 0, vertexBuffer)
@@ -193,19 +217,34 @@ class MlvRenderer(
         viewModel.reportFrameTiming(decodeNs, renderNs)
     }
 
-    private fun updateScaling(videoWidth: Int, videoHeight: Int) {
+    private fun updateScaling(videoWidth: Int, videoHeight: Int, stretchX: Float, stretchY: Float) {
         if (viewWidth > 0 && viewHeight > 0 && videoWidth > 0 && videoHeight > 0) {
             val viewAspect = viewWidth.toFloat() / viewHeight.toFloat()
-            val videoAspect = videoWidth.toFloat() / videoHeight.toFloat()
-            if (viewAspect > videoAspect) {
-                scale[0] = videoAspect / viewAspect
+            val adjustedVideoAspect = (videoWidth.toFloat() * stretchX) /
+                (videoHeight.toFloat() * stretchY)
+            if (viewAspect > adjustedVideoAspect) {
+                scale[0] = adjustedVideoAspect / viewAspect
                 scale[1] = 1f
             } else {
                 scale[0] = 1f
-                scale[1] = viewAspect / videoAspect
+                scale[1] = viewAspect / adjustedVideoAspect
             }
-            GLES30.glUniform2fv(scaleUniformHandle, 1, scale, 0)
+            scale[0] /= stretchX
+            scale[1] /= stretchY
+            if (!scale[0].isFinite() || scale[0] <= 0f) {
+                scale[0] = 1f
+            }
+            if (!scale[1].isFinite() || scale[1] <= 0f) {
+                scale[1] = 1f
+            }
+            if (scaleUniformHandle >= 0) {
+                GLES30.glUniform2fv(scaleUniformHandle, 1, scale, 0)
+            }
         }
+    }
+
+    private fun sanitizeStretch(value: Float): Float {
+        return if (value.isFinite() && value > 0f) value else 1f
     }
 
     private fun allocateFrameBufferIfNeeded(w: Int, h: Int) {

@@ -16,6 +16,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 
 @Composable
 fun VideoPlayerScreen(
+    screenWidth: Float,
     viewModel: VideoViewModel,
     cpuCores: Int,
 ) {
@@ -25,7 +26,7 @@ fun VideoPlayerScreen(
 
     Box(
         modifier = Modifier
-            .aspectRatio(16f / 9f)
+            .aspectRatio(screenWidth / 9f)
             .background(Color.Black)
     ) {
         key(clipGUID) {

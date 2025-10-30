@@ -4,12 +4,19 @@
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <cmath>
 #include "../../src/mlv/macros.h"
 
 namespace fs = std::filesystem;
 
 static const int kCdngNamingDefault = 0;
 static const int kCdngNamingDaVinci = 1;
+
+namespace {
+inline bool approximately(float value, float target, float epsilon = 1e-3f) {
+    return std::fabs(value - target) < epsilon;
+}
+}
 
 int startExportCdng(
         mlvObject_t *video,
@@ -20,8 +27,19 @@ int startExportCdng(
     if (!provider.acquire_frame_fd) {
         return -1;
     }
-    auto stretchFactorX = STRETCH_H_100;
-    auto stretchFactorY = STRETCH_V_100;
+    if (is_export_cancelled()) {
+        return EXPORT_CANCELLED;
+    }
+    float stretchFactorX = options.stretch_factor_x;
+    if (!(stretchFactorX > 0.0f)) {
+        stretchFactorX = STRETCH_H_100;
+    }
+
+    float stretchFactorY = options.stretch_factor_y;
+    if (!(stretchFactorY > 0.0f)) {
+        stretchFactorY = STRETCH_V_100;
+    }
+
     setMlvAlwaysUseAmaze(video);
     llrpResetFpmStatus(video);
     llrpResetBpmStatus(video);
@@ -31,34 +49,26 @@ int startExportCdng(
         video->llrawproc->fix_raw = 1;
     }
 
-    float ratioV = getMlvAspectRatio(video);
-    if (ratioV == 0.0) ratioV = 1.0;
-
-    if (ratioV > 0.9 && ratioV < 1.1) stretchFactorY = STRETCH_V_100;
-    else if (ratioV > 1.6 && ratioV < 1.7) stretchFactorY = STRETCH_V_167;
-    else if (ratioV > 2.9 && ratioV < 3.1) stretchFactorY = STRETCH_V_300;
-    else stretchFactorY = STRETCH_V_033;
-
     //Set aspect ratio of the picture
     int32_t picAR[4] = {0};
 
     //Set horizontal stretch
-    if (stretchFactorX == STRETCH_H_133) {
+    if (approximately(stretchFactorX, STRETCH_H_133)) {
         picAR[0] = 4;
         picAR[1] = 3;
-    } else if (stretchFactorX == STRETCH_H_150) {
+    } else if (approximately(stretchFactorX, STRETCH_H_150)) {
         picAR[0] = 3;
         picAR[1] = 2;
-    } else if (stretchFactorX == STRETCH_H_167) {
+    } else if (approximately(stretchFactorX, STRETCH_H_167)) {
         picAR[0] = 5;
         picAR[1] = 3;
-    } else if (stretchFactorX == STRETCH_H_175) {
+    } else if (approximately(stretchFactorX, STRETCH_H_175)) {
         picAR[0] = 7;
         picAR[1] = 4;
-    } else if (stretchFactorX == STRETCH_H_180) {
+    } else if (approximately(stretchFactorX, STRETCH_H_180)) {
         picAR[0] = 9;
         picAR[1] = 5;
-    } else if (stretchFactorX == STRETCH_H_200) {
+    } else if (approximately(stretchFactorX, STRETCH_H_200)) {
         picAR[0] = 2;
         picAR[1] = 1;
     } else {
@@ -66,13 +76,13 @@ int startExportCdng(
         picAR[1] = 1;
     }
     //Set vertical stretch
-    if (stretchFactorY == STRETCH_V_167) {
+    if (approximately(stretchFactorY, STRETCH_V_167)) {
         picAR[2] = 5;
         picAR[3] = 3;
-    } else if (stretchFactorY == STRETCH_V_300) {
+    } else if (approximately(stretchFactorY, STRETCH_V_300)) {
         picAR[2] = 3;
         picAR[3] = 1;
-    } else if (stretchFactorY == STRETCH_V_033) {
+    } else if (approximately(stretchFactorY, STRETCH_V_033)) {
         picAR[2] = 1;
         picAR[3] = 1;
         picAR[0] *= 3; //Upscale only
@@ -99,6 +109,10 @@ int startExportCdng(
     char relativeName[512] = {0};
 
     for (uint32_t frame = 0; frame < totalFrames; frame++) {
+        if (is_export_cancelled()) {
+            freeDngObject(cinemaDng);
+            return EXPORT_CANCELLED;
+        }
         const uint32_t frameNumber = getMlvFrameNumber(video, frame);
         if (options.naming_scheme == kCdngNamingDaVinci) {
             snprintf(
@@ -134,6 +148,11 @@ int startExportCdng(
 
         if (progress_callback) {
             progress_callback((int) (100.0f * (frame + 1) / totalFrames));
+        }
+
+        if (is_export_cancelled()) {
+            freeDngObject(cinemaDng);
+            return EXPORT_CANCELLED;
         }
     }
 
@@ -191,7 +210,15 @@ int startExportJob(
         const export_fd_provider_t &provider,
         void (*progress_callback)(int progress)
 ) {
+    if (is_export_cancelled()) {
+        return EXPORT_CANCELLED;
+    }
+
     write_export_audio(video, options);
+
+    if (is_export_cancelled()) {
+        return EXPORT_CANCELLED;
+    }
 
     switch (options.codec) {
         case EXPORT_CODEC_CINEMA_DNG:

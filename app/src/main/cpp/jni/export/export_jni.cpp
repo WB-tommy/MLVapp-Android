@@ -4,6 +4,7 @@
 #include <cstring>
 #include "export_handler.h"
 #include "../../src/mlv/video_mlv.h"
+#include <atomic>
 
 static JavaVM *g_vm = nullptr;
 static jobject g_progress_listener = nullptr;
@@ -12,6 +13,7 @@ static jobject g_file_provider = nullptr;
 static jmethodID g_open_frame_fd_mid = nullptr;
 static jmethodID g_open_container_fd_mid = nullptr;
 static jmethodID g_open_audio_fd_mid = nullptr;
+static std::atomic<bool> g_cancel_requested{false};
 
 static std::string jstring_to_string(JNIEnv *env, jstring value) {
     if (!value) return {};
@@ -85,11 +87,35 @@ static export_options_t parse_export_options(JNIEnv *env, jobject exportOptions)
     options.audio_temp_dir = jstring_to_string(env, audioDirString);
     env->DeleteLocalRef(audioDirString);
 
+    jfieldID stretchXField = env->GetFieldID(optionsClass, "stretchFactorX", "F");
+    options.stretch_factor_x = env->GetFloatField(exportOptions, stretchXField);
+
+    jfieldID stretchYField = env->GetFieldID(optionsClass, "stretchFactorY", "F");
+    options.stretch_factor_y = env->GetFloatField(exportOptions, stretchYField);
+
     env->DeleteLocalRef(optionsClass);
     return options;
 }
 
+extern "C"
+JNIEXPORT void JNICALL
+Java_fm_forum_mlvapp_NativeInterface_NativeLib_cancelExport(
+        JNIEnv *, jobject /*thiz*/) {
+    g_cancel_requested.store(true, std::memory_order_relaxed);
+}
+
+bool is_export_cancelled() {
+    return g_cancel_requested.load(std::memory_order_relaxed);
+}
+
+void reset_export_cancel_flag() {
+    g_cancel_requested.store(false, std::memory_order_relaxed);
+}
+
 static void progress_callback(int progress) {
+    if (g_cancel_requested.load(std::memory_order_relaxed)) {
+        return;
+    }
     if (!g_progress_listener || !g_on_progress_mid || !g_vm) {
         return;
     }
@@ -208,6 +234,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_exportHandler(
     }
 
     export_options_t options = parse_export_options(env, exportOptions);
+    reset_export_cancel_flag();
 
     jstring jFileName = env->NewStringUTF(options.source_file_name.c_str());
     mlvObject_t *video = getMlvObject(env, clipFds, jFileName, cacheSize, cores, true);
@@ -224,6 +251,15 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_exportHandler(
 
     setMlvProcessing(video, video->processing);
     disableMlvCaching(video);
+    const int focusMode = llrpDetectFocusDotFixMode(video);
+    if (focusMode != 0) {
+        llrpSetFixRawMode(video, 1);
+        llrpSetFocusPixelMode(video, focusMode);
+        llrpResetFpmStatus(video);
+        llrpResetBpmStatus(video);
+        resetMlvCache(video);
+        resetMlvCachedFrame(video);
+    }
 
     export_fd_provider_t provider = {};
     if (g_file_provider) {
@@ -248,6 +284,14 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_exportHandler(
     if (g_file_provider) {
         env->DeleteGlobalRef(g_file_provider);
         g_file_provider = nullptr;
+    }
+
+    if (result == EXPORT_CANCELLED) {
+        jclass cancellationCls = env->FindClass("kotlin/coroutines/CancellationException");
+        if (cancellationCls) {
+            env->ThrowNew(cancellationCls, "Export cancelled");
+        }
+        return;
     }
 
     if (result != 0) {

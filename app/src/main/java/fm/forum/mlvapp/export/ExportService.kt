@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Binder
 import android.os.IBinder
@@ -13,6 +14,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.documentfile.provider.DocumentFile
 import fm.forum.mlvapp.NativeInterface.NativeLib
+import fm.forum.mlvapp.R
 import java.io.File
 import java.util.Collections
 import kotlinx.coroutines.CancellationException
@@ -141,12 +143,14 @@ class ExportService : Service() {
     }
 
     fun cancelExport() {
+        NativeLib.cancelExport()
         currentExportJob?.cancel()
         cleanupTempAudioArtifacts()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        NativeLib.cancelExport()
         currentExportJob?.cancel()
         serviceJob.cancel()
         _status.value = ExportStatus.Idle
@@ -201,7 +205,9 @@ class ExportService : Service() {
             val exportOptions = exportSettings.toExportOptions(
                 sourceFileName = clip.primaryFileName,
                 clipUriPath = "",
-                audioTempDir = tempDir
+                audioTempDir = tempDir,
+                stretchFactorX = clip.stretchFactorX,
+                stretchFactorY = clip.stretchFactorY
             )
             try {
                 NativeLib.exportHandler(
@@ -229,7 +235,13 @@ class ExportService : Service() {
         val audioTempDir = filesDir.absolutePath
         val sourceFileName = clip.primaryFileName
         val baseName = sourceFileName.substringBeforeLast('.', sourceFileName)
-        val exportOptions = exportSettings.toExportOptions(sourceFileName, clipUriPath, audioTempDir)
+        val exportOptions = exportSettings.toExportOptions(
+            sourceFileName = sourceFileName,
+            clipUriPath = clipUriPath,
+            audioTempDir = audioTempDir,
+            stretchFactorX = clip.stretchFactorX,
+            stretchFactorY = clip.stretchFactorY
+        )
 
         val provider = if (exportSettings.codec == ExportCodec.CINEMA_DNG) {
             ExportFdProvider(contentResolver, clipOutputDir)
@@ -279,7 +291,9 @@ class ExportService : Service() {
     private fun ExportSettings.toExportOptions(
         sourceFileName: String,
         clipUriPath: String,
-        audioTempDir: String
+        audioTempDir: String,
+        stretchFactorX: Float,
+        stretchFactorY: Float
     ): ExportOptions {
         val codecOption = when (codec) {
             ExportCodec.CINEMA_DNG -> cdngVariant.nativeId
@@ -297,7 +311,9 @@ class ExportService : Service() {
             frameRateValue = frameRate.value,
             sourceFileName = sourceFileName,
             clipUriPath = clipUriPath,
-            audioTempDir = audioTempDir
+            audioTempDir = audioTempDir,
+            stretchFactorX = stretchFactorX,
+            stretchFactorY = stretchFactorY
         )
     }
 
@@ -310,7 +326,7 @@ class ExportService : Service() {
         val tempDir = File(tempDirPath)
         val audioFile = tempDir.listFiles()?.firstOrNull { file ->
             file.isFile && file.name?.endsWith(".wav") == true &&
-                (file.name?.startsWith(baseName) == true || file.name?.startsWith("${baseName}_") == true)
+                    (file.name?.startsWith(baseName) == true || file.name?.startsWith("${baseName}_") == true)
         } ?: return
 
         val targetName = audioFile.name ?: "$baseName.wav"
@@ -509,8 +525,8 @@ class ExportService : Service() {
         searchDirs.forEach { dir ->
             dir.listFiles()?.firstOrNull { file ->
                 file.isFile &&
-                    file.name.lowercase().endsWith(".wav") &&
-                    (file.name.startsWith(baseClipName) || file.name.startsWith("${baseClipName}_"))
+                        file.name.lowercase().endsWith(".wav") &&
+                        (file.name.startsWith(baseClipName) || file.name.startsWith("${baseClipName}_"))
             }?.let { return it }
         }
         return null

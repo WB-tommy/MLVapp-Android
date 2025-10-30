@@ -69,7 +69,11 @@ fun MainScreen(
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && context is Activity) {
             val permission = Manifest.permission.POST_NOTIFICATIONS
-            if (ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED) {
+            if (ContextCompat.checkSelfPermission(
+                    context,
+                    permission
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
                 notificationPermissionLauncher.launch(permission)
             }
         }
@@ -131,7 +135,11 @@ fun MainScreen(
                 }
 
                 is ClipEvent.ClipPreparationFailed -> {
-                    val message = context.getString(R.string.clip_preparation_failed, event.failedCount, event.totalCount)
+                    val message = context.getString(
+                        R.string.clip_preparation_failed,
+                        event.failedCount,
+                        event.totalCount
+                    )
                     Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                 }
             }
@@ -160,6 +168,7 @@ fun MainScreen(
                 cpuCores = cpuCores
             )
         }
+
         else -> {
             MobileLayout(
                 clipViewModel = clipViewModel,
@@ -198,7 +207,7 @@ private fun MobileLayout(
         }
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding)) {
-            VideoPlayerScreen(videoViewModel, cpuCores)
+            VideoPlayerScreen(16f, videoViewModel, cpuCores)
             NavigationBar(
                 Modifier
                     .fillMaxWidth()
@@ -254,7 +263,7 @@ private fun TabletLayout(
         ) {
             // Left Panel (Player and File List)
             Column(modifier = Modifier.weight(2f)) {
-                VideoPlayerScreen(videoViewModel, cpuCores)
+                VideoPlayerScreen(21f, videoViewModel, cpuCores)
                 NavigationBar(
                     Modifier
                         .fillMaxWidth()

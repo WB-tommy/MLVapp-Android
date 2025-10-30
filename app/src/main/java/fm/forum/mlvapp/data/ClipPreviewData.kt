@@ -7,6 +7,10 @@ data class ClipPreviewData(
     val height: Int,
     val thumbnail: Bitmap,
     val guid: Long,
+    val stretchFactorX: Float = 1.0f,
+    val stretchFactorY: Float = 1.0f,
+    val cameraModelId: Int = 0,
+    val focusPixelMapName: String = "",
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

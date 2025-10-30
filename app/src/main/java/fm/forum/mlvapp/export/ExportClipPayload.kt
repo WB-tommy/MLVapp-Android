@@ -8,5 +8,7 @@ import kotlinx.parcelize.Parcelize
 data class ExportClipPayload(
     val displayName: String,
     val primaryFileName: String,
-    val uris: List<Uri>
+    val uris: List<Uri>,
+    val stretchFactorX: Float = 1.0f,
+    val stretchFactorY: Float = 1.0f
 ) : Parcelable

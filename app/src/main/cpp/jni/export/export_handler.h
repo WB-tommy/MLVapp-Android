@@ -57,4 +57,18 @@ int startExportJob(
         const export_fd_provider_t &provider,
         void (*progress_callback)(int progress));
 
+#ifdef __cplusplus
+bool is_export_cancelled();
+void reset_export_cancel_flag();
+#endif
+
 #endif //MLVAPP_EXPORT_HANDLER_H
+#ifdef __cplusplus
+#include <cstdint>
+#endif
+
+#ifdef __cplusplus
+constexpr int EXPORT_CANCELLED = -3;
+#else
+#define EXPORT_CANCELLED -3
+#endif

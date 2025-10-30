@@ -24,8 +24,6 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_checkCameraModel(
     }
     auto *nativeClip = wrapper->mlv_object;
 
-    LOGD("%u\n", nativeClip->IDNT.cameraModel);
-
     return llrpDetectFocusDotFixMode(nativeClip);
 }
 

@@ -70,6 +70,8 @@ object NativeLib {
         handle: Long
     )
 
+    external fun cancelExport()
+
     external fun setFocusPixelMode(
         handle: Long,
         mode: Int

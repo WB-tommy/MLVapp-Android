@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fm.forum.mlvapp.FocusPixelManager
 import fm.forum.mlvapp.data.Clip
+import fm.forum.mlvapp.data.ClipProcessingData
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +30,8 @@ class ClipViewModel(
     val events: SharedFlow<ClipEvent> = _events.asSharedFlow()
 
     private var currentLoadJob: Job? = null
+
+    private val promptedFocusPixelClips = mutableSetOf<Long>()
 
     fun onFilesPicked(uris: List<Uri>) {
         if (uris.isEmpty()) return
@@ -74,11 +77,15 @@ class ClipViewModel(
             }
 
             result.onSuccess { loadResult ->
+                val prompt = loadResult.focusPixelRequirement
+                val shouldPrompt = if (prompt != null) {
+                    promptedFocusPixelClips.add(prompt.clipGuid)
+                } else {
+                    false
+                }
                 _uiState.update { state ->
                     val updatedClips = replaceClip(state.clips, loadResult.clip)
-                    val prompt = loadResult.focusPixelRequirement
-
-                    if (prompt != null) {
+                    if (shouldPrompt && prompt != null) {
                         // .fpm file is missing. Show prompt and wait. DO NOT activate the clip.
                         state.copy(
                             clips = updatedClips,
@@ -103,9 +110,9 @@ class ClipViewModel(
     }
 
     fun dismissFocusPixelPrompt() {
-        _uiState.update { state ->
-            if (state.isFocusPixelDownloadInProgress) state else state.copy(focusPixelPrompt = null)
-        }
+        val prompt = _uiState.value.focusPixelPrompt ?: return
+        if (_uiState.value.isFocusPixelDownloadInProgress) return
+        activatePendingClip(prompt.clipGuid)
     }
 
     private fun activatePendingClip(clipGuid: Long) {
@@ -113,6 +120,7 @@ class ClipViewModel(
         _uiState.update { state ->
             state.copy(
                 isFocusPixelDownloadInProgress = false,
+                isActivatingClip = false,
                 focusPixelPrompt = null,
                 activeClip = pendingClip ?: state.activeClip
             )
@@ -133,8 +141,8 @@ class ClipViewModel(
                 activatePendingClip(prompt.clipGuid)
                 _events.emit(ClipEvent.FocusPixelDownloadFeedback(FocusPixelDownloadOutcome.SINGLE_SUCCESS))
             } else {
-                // Download failed, just update status and emit event.
-                _uiState.update { it.copy(isFocusPixelDownloadInProgress = false) }
+                // Download failed, still activate the clip and notify the user.
+                activatePendingClip(prompt.clipGuid)
                 _events.emit(ClipEvent.FocusPixelDownloadFeedback(FocusPixelDownloadOutcome.SINGLE_FAILURE))
             }
         }
@@ -157,14 +165,29 @@ class ClipViewModel(
                 else -> FocusPixelDownloadOutcome.ALL_FAILURE
             }
 
-            if (outcome == FocusPixelDownloadOutcome.ALL_SUCCESS) {
-                // Downloads succeeded, now activate the clip that was waiting.
-                activatePendingClip(prompt.clipGuid)
-            } else {
-                // Downloads failed, just update status
-                _uiState.update { it.copy(isFocusPixelDownloadInProgress = false) }
-            }
+            // Always activate the clip after attempting to download related focus pixel maps.
+            activatePendingClip(prompt.clipGuid)
             _events.emit(ClipEvent.FocusPixelDownloadFeedback(outcome))
+        }
+    }
+
+    suspend fun findMissingFocusPixelMapsForExport(
+        clips: List<Clip>
+    ): List<FocusPixelRequirement> =
+        clips.filterNot { it.isMcraw }.mapNotNull { clip ->
+            repository.resolveFocusPixelRequirementForExport(
+                clip = clip,
+                totalMemory = totalMemory,
+                cpuCores = cpuCores
+            )
+        }
+
+    suspend fun downloadFocusPixelMapForExport(fileName: String): Boolean =
+        repository.downloadFocusPixelMap(fileName)
+
+    fun refreshFocusPixelMapForExport(handle: Long) {
+        if (handle != 0L) {
+            repository.refreshFocusPixelMap(handle)
         }
     }
 
@@ -177,7 +200,10 @@ class ClipViewModel(
             val (uris, fileNames) = dedupedPairs.unzip()
             val updated = current.copy(
                 uris = uris,
-                fileNames = fileNames
+                fileNames = fileNames,
+                cameraModelId = current.cameraModelId.takeIf { it != 0 } ?: chunk.cameraModelId,
+                focusPixelMapName = current.focusPixelMapName.ifBlank { chunk.focusPixelMapName },
+                isMcraw = current.isMcraw || chunk.isMcraw
             )
             return existing.toMutableList().apply { set(index, updated) }
         }
@@ -189,7 +215,14 @@ class ClipViewModel(
             height = chunk.height,
             thumbnail = chunk.thumbnail,
             guid = chunk.guid,
-            mappPath = "" // Mapp logic removed
+            mappPath = "", // Mapp logic removed
+            processing = ClipProcessingData(
+                stretchFactorX = chunk.stretchFactorX.takeIf { it > 0f } ?: 1.0f,
+                stretchFactorY = chunk.stretchFactorY.takeIf { it > 0f } ?: 1.0f
+            ),
+            cameraModelId = chunk.cameraModelId,
+            focusPixelMapName = chunk.focusPixelMapName,
+            isMcraw = chunk.isMcraw
         )
         return existing + newClip
     }

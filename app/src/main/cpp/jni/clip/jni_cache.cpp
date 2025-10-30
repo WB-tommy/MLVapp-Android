@@ -86,7 +86,7 @@ bool CacheClipClasses(JNIEnv *env, JniCache &cache) {
     cache.clipPreviewCtor = env->GetMethodID(
             cache.clipPreviewDataClass,
             "<init>",
-            "(IILandroid/graphics/Bitmap;J)V");
+            "(IILandroid/graphics/Bitmap;JFFILjava/lang/String;)V");
     if (!cache.clipPreviewCtor) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to cache ClipPreviewData constructor");
         return false;

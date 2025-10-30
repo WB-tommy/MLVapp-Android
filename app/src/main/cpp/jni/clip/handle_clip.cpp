@@ -1,6 +1,8 @@
 #include "clip_jni.h"
 #include "mlv_jni_wrapper.h"
 #include "jni_cache.h"
+#include "../export/StretchFactors.h"
+#include "../src/mlv/llrawproc/pixelproc.h"
 #include <android/bitmap.h>
 #include <android/log.h>
 #include <chrono>
@@ -18,6 +20,30 @@ void get_mlv_processed_thumbnail_8(mlvObject_t *video,
 
 namespace {
 constexpr const char *kJniTag = "MLVApp-JNI";
+
+inline void resolveStretchFactors(mlvObject_t *clip, float &stretchX, float &stretchY) {
+    stretchX = STRETCH_H_100;
+    stretchY = STRETCH_V_100;
+
+    if (!clip) {
+        return;
+    }
+
+    float ratioV = getMlvAspectRatio(clip);
+    if (ratioV == 0.0f) {
+        ratioV = 1.0f;
+    }
+
+    if (ratioV > 0.9f && ratioV < 1.1f) {
+        stretchY = STRETCH_V_100;
+    } else if (ratioV > 1.6f && ratioV < 1.7f) {
+        stretchY = STRETCH_V_167;
+    } else if (ratioV > 2.9f && ratioV < 3.1f) {
+        stretchY = STRETCH_V_300;
+    } else {
+        stretchY = STRETCH_V_033;
+    }
+}
 }
 
 mlvObject_t *getMlvObject(
@@ -118,6 +144,10 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
     int thumbW = 0;
     int thumbH = 0;
     AndroidBitmapInfo info{};
+    float stretchFactorX = 0.0f;
+    float stretchFactorY = 0.0f;
+    int cameraModelId = 0;
+    jstring focusPixelMapNameJ = nullptr;
 
     nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores, false);
     if (!nativeClip) {
@@ -130,6 +160,8 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
 
     width = getMlvWidth(nativeClip);
     height = getMlvHeight(nativeClip);
+
+    resolveStretchFactors(nativeClip, stretchFactorX, stretchFactorY);
 
     if (height > targetHeight) {
         downscaleFactor = height / targetHeight;
@@ -208,6 +240,37 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
         finalGuid = hash;
     }
 
+    cameraModelId = nativeClip->IDNT.cameraModel;
+    char focusPixelMapName[128];
+    focusPixelMapName[0] = '\0';
+    if (cameraModelId != 0) {
+        const int focusMode = llrpDetectFocusDotFixMode(nativeClip);
+        if (focusMode != 0) {
+            llrpSetFixRawMode(nativeClip, 1);
+            llrpSetFocusPixelMode(nativeClip, focusMode);
+        }
+
+        int mapWidth = nativeClip->RAWI.raw_info.width;
+        int mapHeight = nativeClip->RAWI.raw_info.height;
+        if (mapWidth == 0 || mapHeight == 0) {
+            mapWidth = getMlvWidth(nativeClip);
+            mapHeight = getMlvHeight(nativeClip);
+        }
+
+        std::snprintf(
+                focusPixelMapName,
+                sizeof(focusPixelMapName),
+                "%08X_%dx%d.fpm",
+                static_cast<unsigned int>(cameraModelId),
+                mapWidth,
+                mapHeight);
+        focusPixelMapName[sizeof(focusPixelMapName) - 1] = '\0';
+    }
+    focusPixelMapNameJ = env->NewStringUTF(focusPixelMapName);
+    if (!focusPixelMapNameJ) {
+        focusPixelMapNameJ = env->NewStringUTF("");
+    }
+
     freeProcessingObject(nativeClip->processing);
     freeMlvObject(nativeClip);
     nativeClip = nullptr;
@@ -218,7 +281,11 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
             width,
             height,
             bitmap,
-            static_cast<jlong>(finalGuid));
+            static_cast<jlong>(finalGuid),
+            stretchFactorX,
+            stretchFactorY,
+            cameraModelId,
+            focusPixelMapNameJ);
     if (!result) {
         __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to instantiate ClipPreviewData");
     }
@@ -230,6 +297,9 @@ cleanup:
     if (bitmap) {
         env->DeleteLocalRef(bitmap);
         bitmap = nullptr;
+    }
+    if (focusPixelMapNameJ) {
+        env->DeleteLocalRef(focusPixelMapNameJ);
     }
     if (nativeClip) {
         freeProcessingObject(nativeClip->processing);
