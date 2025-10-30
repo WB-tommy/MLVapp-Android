@@ -37,6 +37,7 @@ fun ExportSettingsScreen(
             Button(
                 onClick = { navController.navigate("export_location") },
                 modifier = Modifier
+                    .navigationBarsPadding()
                     .fillMaxWidth()
                     .padding(16.dp)
             ) {
