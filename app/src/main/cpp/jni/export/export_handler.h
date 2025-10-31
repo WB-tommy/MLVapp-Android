@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 JNIEXPORT void JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_exportHandler(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_exportHandler(
         JNIEnv *env,
         jobject thiz,
         jlong cacheSize,

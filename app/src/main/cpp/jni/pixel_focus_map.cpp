@@ -10,7 +10,7 @@
 extern "C" {
 
 JNIEXPORT jint JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_checkCameraModel(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_checkCameraModel(
         JNIEnv *env, jobject thiz,
         jlong handle) {
     if (handle == 0) {
@@ -28,7 +28,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_checkCameraModel(
 }
 
 JNIEXPORT jstring JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_getFpmName(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_getFpmName(
         JNIEnv *env, jobject /* this */,
         jlong handle) {
 
@@ -61,7 +61,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_getFpmName(
 }
 
 JNIEXPORT void JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_refreshFocusPixelMap(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_refreshFocusPixelMap(
         JNIEnv *env, jobject /* this */, jlong handle) {
     if (handle == 0) {
         return;
@@ -80,7 +80,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_refreshFocusPixelMap(
 }
 
 JNIEXPORT void JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_setFocusPixelMode(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_setFocusPixelMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode) {
     if (handle == 0) {
         return;
@@ -96,7 +96,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_setFocusPixelMode(
 }
 
 JNIEXPORT void JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_setFixRawMode(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_setFixRawMode(
         JNIEnv *env, jobject /* this */, jlong handle, jboolean enabled) {
     if (handle == 0) {
         return;

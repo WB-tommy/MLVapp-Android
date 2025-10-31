@@ -110,7 +110,7 @@ mlvObject_t *getMlvObject(
 #ifdef __cplusplus
 extern "C" {
 JNIEXPORT jobject JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClipForPreview(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_openClipForPreview(
         JNIEnv *env, jobject /* this */,
         jint fd,
         jstring fileName, jlong cacheSize,
@@ -310,7 +310,7 @@ cleanup:
 }
 
 JNIEXPORT jobject JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_openClip(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_openClip(
         JNIEnv *env, jobject /* this */,
         jintArray fds,
         jstring fileName, jlong cacheSize,
@@ -443,7 +443,7 @@ cleanup:
 }
 
 JNIEXPORT jlongArray JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_getVideoFrameTimestamps(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_getVideoFrameTimestamps(
         JNIEnv *env, jobject /* this */,
         jlong handle) {
     auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
@@ -543,7 +543,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_getVideoFrameTimestamps(
 }
 
 JNIEXPORT void JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_closeClip(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_closeClip(
         JNIEnv *env, jobject /* this */,
         jlong handle
 ) {
@@ -559,7 +559,7 @@ Java_fm_forum_mlvapp_NativeInterface_NativeLib_closeClip(
 }
 
 JNIEXPORT void JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_setDebayerMode(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_setDebayerMode(
         JNIEnv *env, jobject /* this */,
         jlong handle,
         jint mode

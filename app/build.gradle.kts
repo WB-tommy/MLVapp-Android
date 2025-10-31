@@ -6,15 +6,15 @@ plugins {
 }
 
 android {
-    namespace = "fm.forum.mlvapp"
+    namespace = "fm.magiclantern.forum"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "fm.forum.mlvapp"
+        applicationId = "fm.magiclantern.forum"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 5
+        versionName = "2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

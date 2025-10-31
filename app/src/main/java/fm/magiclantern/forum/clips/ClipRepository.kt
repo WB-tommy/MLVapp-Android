@@ -1,0 +1,347 @@
+package fm.magiclantern.forum.clips
+
+import android.content.ContentResolver
+import android.content.Context
+import android.database.Cursor
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import fm.magiclantern.forum.FocusPixelManager
+import fm.magiclantern.forum.NativeInterface.NativeLib
+import fm.magiclantern.forum.data.Clip
+import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlin.text.RegexOption
+
+class ClipRepository(
+    context: Context,
+    private val focusPixelManager: FocusPixelManager = FocusPixelManager
+) {
+    private val appContext = context.applicationContext
+    private val contentResolver: ContentResolver = appContext.contentResolver
+
+    suspend fun prepareClipChunk(
+        uri: Uri,
+        totalMemory: Long,
+        cpuCores: Int
+    ): ClipChunk? = withContext(Dispatchers.IO) {
+        val fileName = resolveFileName(uri) ?: return@withContext null
+        val extension = fileName.substringAfterLast('.', "")
+        val isMlvChunk = extension.equals("MLV", ignoreCase = true) ||
+            extension.matches(Regex("M[0-9]{2}", RegexOption.IGNORE_CASE))
+        val isMcraw = extension.equals("mcraw", ignoreCase = true)
+        if (!isMlvChunk && !isMcraw) return@withContext null
+
+        val preview = runCatching {
+            contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                val fd = pfd.detachFd()
+                NativeLib.openClipForPreview(
+                    fd,
+                    fileName,
+                    totalMemory,
+                    cpuCores
+                )
+            }
+        }.getOrNull() ?: return@withContext null
+
+        ClipChunk(
+            uri = uri,
+            fileName = fileName,
+            guid = preview.guid,
+            width = preview.width,
+            height = preview.height,
+            thumbnail = preview.thumbnail.asImageBitmap(),
+            stretchFactorX = preview.stretchFactorX,
+            stretchFactorY = preview.stretchFactorY,
+            cameraModelId = preview.cameraModelId,
+            focusPixelMapName = preview.focusPixelMapName,
+            isMcraw = isMcraw
+        )
+    }
+
+    suspend fun loadClip(
+        clip: Clip,
+        totalMemory: Long,
+        cpuCores: Int
+    ): ClipLoadResult = withContext(Dispatchers.IO) {
+        // For multi-chunk files, we must sort the URIs to ensure the native layer
+        // receives them in the correct order (.MLV, then .M00, .M01, etc.).
+        // We achieve this by mapping the primary ".MLV" extension to "0" so it
+        // always comes first in an alphanumeric sort.
+        val sortedUrisAndNames = clip.uris.zip(clip.fileNames).sortedWith(compareBy { (_, fileName) ->
+            val extension = fileName.substringAfterLast('.', "")
+            if (extension.equals("MLV", ignoreCase = true)) {
+                "0"
+            } else {
+                extension
+            }
+        })
+
+        val fileDescriptors = sortedUrisAndNames.mapNotNull { (uri, _) ->
+            runCatching {
+                contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    pfd.detachFd()
+                }
+            }.getOrNull()
+        }.toIntArray()
+
+        if (fileDescriptors.isEmpty()) {
+            return@withContext ClipLoadResult(clip, focusPixelRequirement = null)
+        }
+
+        val primaryFileName = sortedUrisAndNames.firstOrNull()?.second ?: clip.displayName
+
+        val metadata = NativeLib.openClip(
+            fileDescriptors,
+            primaryFileName,
+            totalMemory,
+            cpuCores
+        )
+
+        val nativeHandle = metadata.nativeHandle
+        val requiredFocusPixelMap = buildFocusPixelRequirement(
+            nativeHandle = nativeHandle,
+            clipGuid = clip.guid
+        )
+
+        val audioBytesPerSample = NativeLib.getAudioBytesPerSample(nativeHandle)
+        val audioBufferSize = NativeLib.getAudioBufferSize(nativeHandle)
+        val timestamps = NativeLib.getVideoFrameTimestamps(nativeHandle) ?: LongArray(0)
+
+        val aperture = if (metadata.apertureHundredths > 0) {
+            String.format(
+                Locale.US,
+                "ƒ/%.1f",
+                metadata.apertureHundredths / 100.0
+            )
+        } else {
+            ""
+        }
+
+        val focalLength = if (metadata.focalLengthMm > 0) {
+            String.format(Locale.US, "%d mm", metadata.focalLengthMm)
+        } else {
+            ""
+        }
+
+        val hasAudio = metadata.hasAudio &&
+            metadata.audioChannels > 0 &&
+            metadata.audioSampleRate > 0 &&
+            audioBytesPerSample > 0 &&
+            audioBufferSize > 0L
+
+        val focusPixelMapName = NativeLib.getFpmName(nativeHandle)
+        val derivedCameraModelId = clip.cameraModelId.takeIf { it != 0 } ?: focusPixelMapName
+            .substringBefore('_')
+            .toIntOrNull(16)
+            ?: 0
+
+        val updatedClip = clip.copy(
+            mappPath = "", // Mapp logic removed
+            nativeHandle = nativeHandle,
+            cameraName = metadata.cameraName,
+            lens = metadata.lens,
+            frames = metadata.frames,
+            fps = metadata.fps,
+            duration = formatDuration(metadata.frames, metadata.fps),
+            focalLength = focalLength,
+            shutter = formatShutter(metadata.shutterUs, metadata.fps),
+            aperture = aperture,
+            iso = metadata.iso,
+            dualISO = metadata.dualIsoValid,
+            bitDepth = metadata.losslessBpp,
+            createdDate = String.format(
+                Locale.US,
+                "%04d-%02d-%02d %02d:%02d:%02d",
+                metadata.year,
+                metadata.month,
+                metadata.day,
+                metadata.hour,
+                metadata.min,
+                metadata.sec
+            ),
+            audioChannel = if (hasAudio) metadata.audioChannels else 0,
+            audioSampleRate = if (hasAudio) metadata.audioSampleRate.toLong() else 0L,
+            hasAudio = hasAudio,
+            audioBytesPerSample = if (hasAudio) audioBytesPerSample else 0,
+            audioBufferSize = if (hasAudio) audioBufferSize else 0L,
+            frameTimestamps = timestamps,
+            isMcraw = metadata.isMcraw,
+            cameraModelId = derivedCameraModelId,
+            focusPixelMapName = focusPixelMapName
+        )
+
+        ClipLoadResult(
+            clip = updatedClip,
+            focusPixelRequirement = requiredFocusPixelMap
+        )
+    }
+
+    fun ensureFocusPixelMap(fileName: String): Boolean =
+        focusPixelManager.ensureFocusPixelMap(appContext, fileName)
+
+    suspend fun downloadFocusPixelMap(fileName: String): Boolean =
+        focusPixelManager.downloadFocusPixelMap(appContext, fileName)
+
+    fun focusPixelRequirementForClip(clip: Clip): FocusPixelRequirement? {
+        if (clip.isMcraw) return null
+        buildFocusPixelRequirementFromMetadata(clip)?.let { return it }
+        return buildFocusPixelRequirement(
+            nativeHandle = clip.nativeHandle,
+            clipGuid = clip.guid
+        )
+    }
+
+    suspend fun resolveFocusPixelRequirementForExport(
+        clip: Clip,
+        totalMemory: Long,
+        cpuCores: Int
+    ): FocusPixelRequirement? = withContext(Dispatchers.IO) {
+        if (clip.isMcraw) return@withContext null
+        focusPixelRequirementForClip(clip)?.let { return@withContext it }
+
+        val pairs = if (clip.fileNames.size == clip.uris.size && clip.fileNames.isNotEmpty()) {
+            clip.uris.zip(clip.fileNames)
+        } else {
+            clip.uris.map { uri -> uri to (uri.lastPathSegment ?: "") }
+        }
+
+        val sortedPairs = pairs.sortedWith(compareBy { (_, fileName) ->
+            val extension = fileName.substringAfterLast('.', "")
+            if (extension.equals("MLV", ignoreCase = true)) {
+                "0"
+            } else {
+                extension
+            }
+        })
+
+        if (sortedPairs.isEmpty()) return@withContext null
+
+        val fileDescriptors = sortedPairs.mapNotNull { (uri, _) ->
+            runCatching {
+                contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    pfd.detachFd()
+                }
+            }.getOrNull()
+        }.toIntArray()
+
+        if (fileDescriptors.isEmpty()) return@withContext null
+
+        val primaryFileName = sortedPairs.firstOrNull()?.second
+            ?: clip.fileNames.firstOrNull()
+            ?: clip.displayName.ifBlank { clip.uris.firstOrNull()?.lastPathSegment ?: "" }
+
+        if (primaryFileName.isBlank()) return@withContext null
+
+        runCatching {
+            val metadata = NativeLib.openClip(
+                fileDescriptors,
+                primaryFileName,
+                totalMemory,
+                cpuCores
+            )
+            try {
+                buildFocusPixelRequirement(
+                    nativeHandle = metadata.nativeHandle,
+                    clipGuid = clip.guid
+                )
+            } finally {
+                NativeLib.closeClip(metadata.nativeHandle)
+            }
+        }.getOrNull()
+    }
+
+    suspend fun downloadFocusPixelMapsForCamera(
+        cameraId: String
+    ): FocusPixelManager.DownloadAllResult =
+        focusPixelManager.downloadFocusPixelMapsForCamera(appContext, cameraId)
+
+    fun refreshFocusPixelMap(handle: Long) {
+        NativeLib.refreshFocusPixelMap(handle)
+    }
+
+    private fun buildFocusPixelRequirement(
+        nativeHandle: Long,
+        clipGuid: Long
+    ): FocusPixelRequirement? {
+        if (nativeHandle == 0L) return null
+        val focusMode = NativeLib.checkCameraModel(nativeHandle)
+        if (focusMode == 0) return null
+        NativeLib.setFixRawMode(nativeHandle, true)
+        NativeLib.setFocusPixelMode(nativeHandle, focusMode)
+        val requiredMap = NativeLib.getFpmName(nativeHandle)
+        if (requiredMap.isBlank()) {
+            return null
+        }
+        val resolved = focusPixelManager.ensureFocusPixelMap(appContext, requiredMap)
+        return if (resolved) {
+            null
+        } else {
+            FocusPixelRequirement(
+                clipGuid = clipGuid,
+                requiredFile = requiredMap
+            )
+        }
+    }
+
+    private fun buildFocusPixelRequirementFromMetadata(
+        clip: Clip
+    ): FocusPixelRequirement? {
+        if (clip.isMcraw) return null
+        val requiredMap = clip.focusPixelMapName.ifBlank { return null }
+        val resolved = focusPixelManager.ensureFocusPixelMap(appContext, requiredMap)
+        return if (resolved) {
+            null
+        } else {
+            FocusPixelRequirement(
+                clipGuid = clip.guid,
+                requiredFile = requiredMap
+            )
+        }
+    }
+
+    private fun resolveFileName(uri: Uri): String? {
+        var result: String? = uri.lastPathSegment
+        query(uri) { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex != -1) {
+                    result = cursor.getString(nameIndex)
+                }
+            }
+        }
+        return result
+    }
+
+    private inline fun query(uri: Uri, block: (Cursor) -> Unit) {
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            block(cursor)
+        }
+    }
+}
+
+data class ClipChunk(
+    val uri: Uri,
+    val fileName: String,
+    val guid: Long,
+    val width: Int,
+    val height: Int,
+    val thumbnail: ImageBitmap,
+    val stretchFactorX: Float = 1.0f,
+    val stretchFactorY: Float = 1.0f,
+    val cameraModelId: Int = 0,
+    val focusPixelMapName: String = "",
+    val isMcraw: Boolean = false
+)
+
+data class ClipLoadResult(
+    val clip: Clip,
+    val focusPixelRequirement: FocusPixelRequirement?
+)
+
+data class FocusPixelRequirement(
+    val clipGuid: Long,
+    val requiredFile: String
+)

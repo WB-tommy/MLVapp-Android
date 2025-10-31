@@ -58,6 +58,8 @@ Each section can change freely — completed tasks should be marked `[x]`, new o
 ---
 
 ## Completed
+- [x] Phase 3 – Export CinemaDNG (CDNG) image sequence support.
+- [x] Phase 3 – Add audio-only export option.
 - [x] Phase 1 - Confirm native library loads on all supported ABIs.
 - [x] Phase 1 – Set up JNI bridge for `mlv-core` (openClip, fillFrame16, closeClip).
 - [x] Phase 1 – Decode first frame and display via `GLSurfaceView`.

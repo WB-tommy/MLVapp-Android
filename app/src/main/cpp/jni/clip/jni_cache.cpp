@@ -71,7 +71,7 @@ bool CacheBitmapClasses(JNIEnv *env, JniCache &cache) {
 }
 
 bool CacheClipClasses(JNIEnv *env, JniCache &cache) {
-    jclass localPreviewCls = env->FindClass("fm/forum/mlvapp/data/ClipPreviewData");
+    jclass localPreviewCls = env->FindClass("fm/magiclantern/forum/data/ClipPreviewData");
     if (!localPreviewCls) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to find ClipPreviewData class");
         return false;
@@ -92,7 +92,7 @@ bool CacheClipClasses(JNIEnv *env, JniCache &cache) {
         return false;
     }
 
-    jclass localMetaCls = env->FindClass("fm/forum/mlvapp/data/ClipMetaData");
+    jclass localMetaCls = env->FindClass("fm/magiclantern/forum/data/ClipMetaData");
     if (!localMetaCls) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to find ClipMetaData class");
         return false;

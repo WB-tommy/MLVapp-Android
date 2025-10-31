@@ -36,7 +36,7 @@ static export_options_t parse_export_options(JNIEnv *env, jobject exportOptions)
     export_options_t options{};
     jclass optionsClass = env->GetObjectClass(exportOptions);
 
-    jfieldID codecField = env->GetFieldID(optionsClass, "codec", "Lfm/forum/mlvapp/export/ExportCodec;");
+    jfieldID codecField = env->GetFieldID(optionsClass, "codec", "Lfm/magiclantern/forum/export/ExportCodec;");
     jobject codecObj = env->GetObjectField(exportOptions, codecField);
     options.codec = get_enum_ordinal(env, codecObj);
     env->DeleteLocalRef(codecObj);
@@ -44,12 +44,12 @@ static export_options_t parse_export_options(JNIEnv *env, jobject exportOptions)
     jfieldID codecOptionField = env->GetFieldID(optionsClass, "codecOption", "I");
     options.codec_option = env->GetIntField(exportOptions, codecOptionField);
 
-    jfieldID namingField = env->GetFieldID(optionsClass, "cdngNaming", "Lfm/forum/mlvapp/export/CdngNaming;");
+    jfieldID namingField = env->GetFieldID(optionsClass, "cdngNaming", "Lfm/magiclantern/forum/export/CdngNaming;");
     jobject namingObj = env->GetObjectField(exportOptions, namingField);
     options.naming_scheme = get_enum_ordinal(env, namingObj);
     env->DeleteLocalRef(namingObj);
 
-    jfieldID cdngVariantField = env->GetFieldID(optionsClass, "cdngVariant", "Lfm/forum/mlvapp/export/CdngVariant;");
+    jfieldID cdngVariantField = env->GetFieldID(optionsClass, "cdngVariant", "Lfm/magiclantern/forum/export/CdngVariant;");
     jobject cdngVariantObj = env->GetObjectField(exportOptions, cdngVariantField);
     options.cdng_variant = get_enum_ordinal(env, cdngVariantObj);
     env->DeleteLocalRef(cdngVariantObj);
@@ -99,7 +99,7 @@ static export_options_t parse_export_options(JNIEnv *env, jobject exportOptions)
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_cancelExport(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_cancelExport(
         JNIEnv *, jobject /*thiz*/) {
     g_cancel_requested.store(true, std::memory_order_relaxed);
 }
@@ -202,7 +202,7 @@ static int acquire_audio_fd(void *, const char *relative_name) {
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_fm_forum_mlvapp_NativeInterface_NativeLib_exportHandler(
+Java_fm_magiclantern_forum_NativeInterface_NativeLib_exportHandler(
         JNIEnv *env,
         jobject /* thiz */,
         jlong cacheSize,
