@@ -1,6 +1,6 @@
 package fm.magiclantern.forum.data
 
-class ClipMetaData(
+data class ClipMetaData(
     val nativeHandle: Long,
     // Metadata (mirrors desktop MainWindow.cpp updateMetadata inputs)
     val cameraName: String,
