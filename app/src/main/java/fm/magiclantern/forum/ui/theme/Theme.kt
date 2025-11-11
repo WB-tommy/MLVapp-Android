@@ -66,7 +66,7 @@ fun MLVappTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = if (darkTheme) Color.Black.toArgb() else colorScheme.primary.toArgb()
+            window.statusBarColor = if (darkTheme) Color.Black.toArgb() else Color.White.toArgb()
             WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
         }
     }

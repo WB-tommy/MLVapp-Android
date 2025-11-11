@@ -1,18 +1,17 @@
 package fm.magiclantern.forum
 
-import android.util.Log
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -20,34 +19,35 @@ fun TheTopBar(
     onAddFileClick: () -> Unit,
     onSettingClick: () -> Unit,
     onExportClick: () -> Unit,
-    showSettingsButton: Boolean = true
 ) {
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            titleContentColor = MaterialTheme.colorScheme.primary,
+            containerColor = Color(0xFF686868),
+            titleContentColor = Color(0xFFFFFFFF),
         ),
         title = { Text("") },
         actions = {
             IconButton(onClick = onExportClick) {
                 Icon(
-                    imageVector = Icons.Outlined.Share,
-                    contentDescription = "Export"
+                    imageVector = Icons.Default.Share,
+                    contentDescription = "Export",
+                    tint = Color.White
+
                 )
             }
             IconButton(onClick = onAddFileClick) {
                 Icon(
-                    imageVector = Icons.Rounded.Add,
-                    contentDescription = "Add File"
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Add File",
+                    tint = Color.White
                 )
             }
-            if (showSettingsButton) {
-                IconButton(onClick = onSettingClick) {
-                    Icon(
-                        imageVector = Icons.Rounded.Settings,
-                        contentDescription = "Settings"
-                    )
-                }
+            IconButton(onClick = onSettingClick) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = Color.White
+                )
             }
         },
     )

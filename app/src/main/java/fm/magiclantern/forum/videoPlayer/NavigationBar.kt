@@ -50,6 +50,7 @@ fun NavigationBar(
 
     Column(
         modifier = modifier
+            .background(Color(0xFF686868))
             .padding(horizontal = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -67,10 +68,15 @@ fun NavigationBar(
                 steps = (totalFrames - 1).coerceAtLeast(0),
                 modifier = Modifier.weight(1f),
                 colors = SliderDefaults.colors(
-                    inactiveTrackColor = Color.White
+                    activeTrackColor = Color.White,
+                    inactiveTrackColor = Color.White,
+                    thumbColor = Color.White,
                 )
             )
-            Text(text = "${if (totalFrames == 0) 0 else currentFrame + 1}/$totalFrames")
+            Text(
+                text = "${if (totalFrames == 0) 0 else currentFrame + 1}/$totalFrames",
+                color = Color.White
+            )
         }
 
         Row(
@@ -79,25 +85,39 @@ fun NavigationBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = { if (viewModel.clipHandle.value != 0L && !isLoading) viewModel.goToFirstFrame() }) {
-                Icon(imageVector = Icons.Default.FastRewind, contentDescription = "First Frame")
+                Icon(
+                    imageVector = Icons.Default.FastRewind,
+                    contentDescription = "First Frame",
+                    tint = Color.White
+                )
             }
             IconButton(onClick = { if (viewModel.clipHandle.value != 0L && !isLoading) viewModel.previousFrame() }) {
                 Icon(
                     imageVector = Icons.Default.SkipPrevious,
-                    contentDescription = "Previous Frame"
+                    contentDescription = "Previous Frame",
+                    tint = Color.White
                 )
             }
             IconButton(onClick = { if (viewModel.clipHandle.value != 0L && !isLoading) viewModel.togglePlayback() }) {
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play"
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    tint = Color.White
                 )
             }
             IconButton(onClick = { if (viewModel.clipHandle.value != 0L && !isLoading) viewModel.nextFrame() }) {
-                Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next Frame")
+                Icon(
+                    imageVector = Icons.Default.SkipNext,
+                    contentDescription = "Next Frame",
+                    tint = Color.White
+                )
             }
             IconButton(onClick = { if (viewModel.clipHandle.value != 0L && !isLoading) viewModel.goToLastFrame() }) {
-                Icon(imageVector = Icons.Default.FastForward, contentDescription = "Last Frame")
+                Icon(
+                    imageVector = Icons.Default.FastForward,
+                    contentDescription = "Last Frame",
+                    tint = Color.White
+                )
             }
         }
     }
