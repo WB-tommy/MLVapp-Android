@@ -13,10 +13,14 @@ android {
         applicationId = "fm.magiclantern.forum"
         minSdk = 29
         targetSdk = 36
-        versionCode = 6
-        versionName = "2.1"
+        versionCode = 7
+        versionName = "2.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
