@@ -13,7 +13,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.documentfile.provider.DocumentFile
-import fm.magiclantern.forum.NativeInterface.NativeLib
+import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.R
 import java.io.File
 import java.util.Collections
@@ -230,7 +230,21 @@ class ExportService : Service() {
             return
         }
 
-        val clipOutputDir = createClipOutputDirectory(outputDir, clipName, exportSettings)
+        // Only create a subdirectory for multi-file exports (image sequences)
+        // Single-file video exports go directly in the output directory
+        val needsSubdirectory = exportSettings.codec in listOf(
+            ExportCodec.CINEMA_DNG,
+            ExportCodec.TIFF,
+            ExportCodec.PNG,
+            ExportCodec.JPEG2000
+        )
+        
+        val clipOutputDir = if (needsSubdirectory) {
+            createClipOutputDirectory(outputDir, clipName, exportSettings)
+        } else {
+            outputDir
+        }
+        
         val clipUriPath = clipOutputDir.uri.toString()
         val audioTempDir = filesDir.absolutePath
         val sourceFileName = clip.primaryFileName
@@ -243,11 +257,7 @@ class ExportService : Service() {
             stretchFactorY = clip.stretchFactorY
         )
 
-        val provider = if (exportSettings.codec == ExportCodec.CINEMA_DNG) {
-            ExportFdProvider(contentResolver, clipOutputDir)
-        } else {
-            null
-        }
+        val provider = ExportFdProvider(contentResolver, clipOutputDir)
 
         val total = totalClips.coerceAtLeast(1)
 
@@ -313,7 +323,23 @@ class ExportService : Service() {
             clipUriPath = clipUriPath,
             audioTempDir = audioTempDir,
             stretchFactorX = stretchFactorX,
-            stretchFactorY = stretchFactorY
+            stretchFactorY = stretchFactorY,
+            proResProfile = proResProfile,
+            proResEncoder = proResEncoder,
+            h264Quality = h264Quality,
+            h264Container = h264Container,
+            h265BitDepth = h265BitDepth,
+            h265Quality = h265Quality,
+            h265Container = h265Container,
+            pngBitDepth = pngBitDepth,
+            dnxhrProfile = dnxhrProfile,
+            dnxhdProfile = dnxhdProfile,
+            vp9Quality = vp9Quality,
+            debayerQuality = debayerQuality,
+            smoothing = smoothing,
+            resize = resize,
+            hdrBlending = hdrBlending,
+            antiAliasing = antiAliasing
         )
     }
 
@@ -509,7 +535,15 @@ class ExportService : Service() {
             deleteQuietly(tempAudio)
             return
         }
-        if (exportSettings.codec == ExportCodec.CINEMA_DNG || exportSettings.codec == ExportCodec.AUDIO_ONLY) {
+        // Move audio to subdirectory for multi-file exports (image sequences)
+        val hasSubdirectory = exportSettings.codec in listOf(
+            ExportCodec.CINEMA_DNG,
+            ExportCodec.TIFF,
+            ExportCodec.PNG,
+            ExportCodec.JPEG2000,
+            ExportCodec.AUDIO_ONLY
+        )
+        if (hasSubdirectory) {
             val targetName = tempAudio.name ?: "$baseClipName.wav"
             val moved = moveAudioToTarget(tempAudio, clipOutputDir, targetName)
             if (!moved) {

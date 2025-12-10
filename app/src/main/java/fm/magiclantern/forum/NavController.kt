@@ -1,27 +1,34 @@
 package fm.magiclantern.forum
 
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import fm.magiclantern.forum.clips.ClipRepository
 import fm.magiclantern.forum.clips.ClipViewModel
 import fm.magiclantern.forum.clips.ClipViewModelFactory
-import fm.magiclantern.forum.clips.ClipRepository
 import fm.magiclantern.forum.export.ExportLocationScreen
-import fm.magiclantern.forum.export.ExportProgressScreen
 import fm.magiclantern.forum.export.ExportPreferences
+import fm.magiclantern.forum.export.ExportProgressScreen
 import fm.magiclantern.forum.export.ExportSelectionScreen
 import fm.magiclantern.forum.export.ExportSettingsScreen
 import fm.magiclantern.forum.export.ExportViewModel
 import fm.magiclantern.forum.export.ExportViewModelFactory
 import fm.magiclantern.forum.settings.SettingsRepository
 import fm.magiclantern.forum.settings.SettingsScreen
+import fm.magiclantern.forum.videoPlayer.FullScreenView
+import fm.magiclantern.forum.videoPlayer.VideoViewModel
+import fm.magiclantern.forum.videoPlayer.VideoViewModelFactory
 
 
 private const val ROUTE_HOME = "home"
+private const val ROUTE_FULLSCREEN = "fullscreen"
 private const val ROUTE_SETTINGS = "settings"
 private const val ROUTE_EXPORT_SELECTION = "export_selection"
 private const val ROUTE_EXPORT_SETTINGS = "export_settings"
@@ -45,6 +52,12 @@ fun NavController(
         }
     )
     val clipUiState by clipViewModel.uiState.collectAsState()
+
+    val videoViewModel: VideoViewModel = viewModel(
+        factory = remember(settingsRepository) {
+            VideoViewModelFactory(settingsRepository)
+        }
+    )
 
     val exportPreferences = remember(context.applicationContext) { ExportPreferences(context.applicationContext) }
 
@@ -70,7 +83,17 @@ fun NavController(
                 cpuCores = cores,
                 navController = navController,
                 settingsRepository = settingsRepository,
-                clipViewModel = clipViewModel
+                clipViewModel = clipViewModel,
+                videoViewModel = videoViewModel
+            )
+        }
+
+        //
+        composable(ROUTE_FULLSCREEN) {
+            FullScreenView(
+                navController = navController,
+                videoViewModel = videoViewModel,
+                cpuCores = cores,
             )
         }
 

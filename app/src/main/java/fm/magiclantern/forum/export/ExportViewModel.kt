@@ -194,85 +194,19 @@ class ExportViewModel(
     }
 
     fun startExport(context: Context) {
-        val selectedIds = uiState.value.selectedClips
         val outputDirectory = uiState.value.outputDirectory ?: return
-        if (selectedIds.isEmpty()) {
+        
+        // Use cached export payload and clips from the selection phase
+        // FPM validation was already done in onSelectionNextRequested()
+        val exportPayload = pendingExportPayload
+        if (exportPayload.isEmpty()) {
+            Log.w("ExportViewModel", "No cached export payload available. Please select clips first.")
             return
         }
 
-        val clipsForExport = uiState.value.clips.filter { it.guid in selectedIds }
-        if (clipsForExport.isEmpty()) {
-            return
-        }
-
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    isFocusPixelCheckInProgress = true,
-                    navigateToProgress = false,
-                    focusPixelPromptStage = FocusPixelPromptStage.EXPORT
-                )
-            }
-
-            val exportPayload = if (pendingExportPayload.isNotEmpty() &&
-                pendingExportClips.map { clip -> clip.guid }.toSet() == clipsForExport.map { it.guid }.toSet()
-            ) {
-                pendingExportPayload
-            } else {
-                val payload = buildExportPayload(clipsForExport)
-                pendingExportClips = clipsForExport
-                pendingExportPayload = payload
-                payload
-            }
-            if (exportPayload.isEmpty()) {
-                _uiState.update { current ->
-                    current.copy(
-                        isFocusPixelCheckInProgress = false,
-                        focusPixelPromptStage = null
-                    )
-                }
-                resetPendingExportData()
-                return@launch
-            }
-
-            pendingOutputDirectory = outputDirectory
-
-            val missingMaps = clipViewModel.findMissingFocusPixelMapsForExport(clipsForExport)
-            if (missingMaps.isNotEmpty()) {
-                val requirements = missingMaps.mapNotNull { requirement: FocusPixelRequirement ->
-                    val clip = clipsForExport.firstOrNull { it.guid == requirement.clipGuid } ?: return@mapNotNull null
-                    FocusPixelExportRequirement(
-                        clipGuid = clip.guid,
-                        clipName = clipDisplayName(clip),
-                        nativeHandle = clip.nativeHandle,
-                        requiredFile = requirement.requiredFile
-                    )
-                }
-
-                _uiState.update {
-                    it.copy(
-                        isFocusPixelCheckInProgress = false,
-                        focusPixelRequirements = requirements,
-                        isFocusPixelDownloadInProgress = false,
-                        navigateToProgress = false,
-                        focusPixelPromptStage = FocusPixelPromptStage.EXPORT
-                    )
-                }
-                return@launch
-            }
-
-            _uiState.update {
-                it.copy(
-                    isFocusPixelCheckInProgress = false,
-                    focusPixelRequirements = emptyList(),
-                    isFocusPixelDownloadInProgress = false,
-                    navigateToProgress = false,
-                    focusPixelPromptStage = null
-                )
-            }
-            launchExport(context, exportPayload, outputDirectory)
-            resetPendingExportData()
-        }
+        // Trust the cached validation - FPM checks were already performed during selection
+        launchExport(context, exportPayload, outputDirectory)
+        resetPendingExportData()
     }
 
     private fun buildExportPayload(clips: List<Clip>): List<ExportClipPayload> = buildList {
@@ -665,6 +599,48 @@ class ExportViewModel(
         updateSettings { it.copy(proResEncoder = encoder) }
     }
 
+    // H.264 options
+    fun onH264QualitySelected(quality: H264Quality) {
+        updateSettings { it.copy(h264Quality = quality) }
+    }
+
+    fun onH264ContainerSelected(container: H264Container) {
+        updateSettings { it.copy(h264Container = container) }
+    }
+
+    // H.265 options
+    fun onH265BitDepthSelected(bitDepth: H265BitDepth) {
+        updateSettings { it.copy(h265BitDepth = bitDepth) }
+    }
+
+    fun onH265QualitySelected(quality: H265Quality) {
+        updateSettings { it.copy(h265Quality = quality) }
+    }
+
+    fun onH265ContainerSelected(container: H265Container) {
+        updateSettings { it.copy(h265Container = container) }
+    }
+
+    // PNG options
+    fun onPngBitDepthSelected(bitDepth: PngBitDepth) {
+        updateSettings { it.copy(pngBitDepth = bitDepth) }
+    }
+
+    // DNxHR options
+    fun onDnxhrProfileSelected(profile: DnxhrProfile) {
+        updateSettings { it.copy(dnxhrProfile = profile) }
+    }
+
+    // DNxHD options
+    fun onDnxhdProfileSelected(profile: DnxhdProfile) {
+        updateSettings { it.copy(dnxhdProfile = profile) }
+    }
+
+    // VP9 options
+    fun onVp9QualitySelected(quality: Vp9Quality) {
+        updateSettings { it.copy(vp9Quality = quality) }
+    }
+
     fun onDebayerQualitySelected(quality: DebayerQuality) {
         updateSettings { it.copy(debayerQuality = quality) }
     }
@@ -711,9 +687,18 @@ class ExportViewModel(
         }
     }
 
-    fun onFrameRateSelected(preset: FrameRatePreset) {
+    fun onFrameRatePresetSelected(preset: FrameRatePreset) {
         updateSettings { settings ->
             settings.copy(frameRate = settings.frameRate.copy(value = preset.value))
+        }
+    }
+
+    fun onFrameRateChanged(fps: String) {
+        val value = fps.toFloatOrNull()
+        if (value != null && value >= 1.0f && value <= 120.0f) {
+            updateSettings { settings ->
+                settings.copy(frameRate = settings.frameRate.copy(value = value))
+            }
         }
     }
 
@@ -745,6 +730,12 @@ class ExportViewModel(
 
     private fun sanitizeSettings(settings: ExportSettings): ExportSettings {
         var sanitized = settings
+        if (sanitized.frameRate.enabled) {
+            sanitized = sanitized.copy(includeAudio = false)
+        }
+        if (sanitized.codec == ExportCodec.AUDIO_ONLY) {
+            sanitized = sanitized.copy(includeAudio = true)
+        }
         if (!sanitized.requiresRawProcessing) {
             sanitized = sanitized.copy(
                 smoothing = SmoothingOption.OFF,

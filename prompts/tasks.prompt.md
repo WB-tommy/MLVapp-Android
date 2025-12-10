@@ -18,19 +18,26 @@ Each section can change freely — completed tasks should be marked `[x]`, new o
 ---
 
 ## Phase 3 – Export (Raw)
-- [ ] Implement export action (basic RGB16F → video or image sequence)
-- [ ] Integrate FFmpeg mobile build
-- [ ] Verify exported video matches preview
-- [ ] Add progress and cancel support
+- [x] Integrate FFmpeg mobile build
+- [x] Add progress and cancel support
+- [x] Implement hybrid codec validation (MediaCodec for UI hints, FFmpeg for execution)
+- [x] Add hardware→software encoder fallback (h264_mediacodec → libx264, etc.)
+- [x] Implement structured error codes (CODEC_UNAVAILABLE, IO_ERROR, etc.)
+- [x] Add comprehensive logging at decision points
+- [x] Remove duplicate FPM checking (now done once at selection)
+- [ ] Verify exported video matches preview across all codecs
+- [ ] Add retry logic for transient I/O errors
 
 ---
 
-## Phase 4 – Processing Tools
+## Phase 4 – Processing Tools *(Deferred - Lower Priority)*
 - [ ] Expose native controls for exposure, white balance, and contrast.
 - [ ] Apply adjustments in preview and verify visual effect.
 - [ ] Create Compose sliders for processing parameters.
 - [ ] Add reset and default value handling.
 - [ ] Optimize JNI calls to minimize latency.
+
+**Note:** Native processing core already supports these features. UI integration deferred until export pipeline is fully stable and validated.
 
 ---
 
@@ -54,6 +61,9 @@ Each section can change freely — completed tasks should be marked `[x]`, new o
 - [ ] Batch import/export multiple clips.
 - [ ] GPU or Vulkan path for preview acceleration.
 - [ ] Share/export receipts between desktop and Android versions.
+- [ ] Codec capability probing (pre-test with dummy frames).
+- [ ] Adaptive bitrate based on device performance.
+- [ ] Telemetry for encoder success/failure stats.
 
 ---
 

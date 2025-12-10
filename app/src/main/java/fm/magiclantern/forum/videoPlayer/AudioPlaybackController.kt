@@ -5,7 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
-import fm.magiclantern.forum.NativeInterface.NativeLib
+import fm.magiclantern.forum.nativeInterface.NativeLib
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicLong

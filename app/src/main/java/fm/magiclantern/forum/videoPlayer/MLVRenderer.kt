@@ -3,7 +3,7 @@ package fm.magiclantern.forum.videoPlayer
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.util.Log
-import fm.magiclantern.forum.NativeInterface.NativeLib
+import fm.magiclantern.forum.nativeInterface.NativeLib
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -68,6 +68,7 @@ class MlvRenderer(
     private val textureCoords = floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        Log.d(tag, "onSurfaceCreated")
         GLES30.glClearColor(0.0f, 0.0f, 0.0f, 1.0f)
 
         program = createProgram(vertexShaderCode, fragmentShaderCode)
@@ -116,13 +117,20 @@ class MlvRenderer(
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+        Log.d(tag, "onSurfaceChanged: width=$width, height=$height")
         GLES30.glViewport(0, 0, width, height)
         this.viewWidth = width
         this.viewHeight = height
         textureAllocated = false
     }
 
+    fun onSurfaceDestroyed() {
+        Log.d(tag, "onSurfaceDestroyed")
+        frameBuffer = null
+    }
+
     override fun onDrawFrame(gl: GL10?) {
+        Log.d(tag, "onDrawFrame: currentFrame=${viewModel.currentFrame.value}, clipHandle=${viewModel.clipHandle.value}")
         val videoWidth = viewModel.width.value
         val videoHeight = viewModel.height.value
 

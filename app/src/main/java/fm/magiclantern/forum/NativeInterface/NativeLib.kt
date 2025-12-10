@@ -1,4 +1,4 @@
-package fm.magiclantern.forum.NativeInterface
+package fm.magiclantern.forum.nativeInterface
 
 import fm.magiclantern.forum.export.ExportOptions
 import java.nio.ByteBuffer
@@ -95,4 +95,8 @@ object NativeLib {
         progressListener: Any,
         fileProvider: Any?
     )
+
+    external fun testEncoderConfiguration(
+        options: ExportOptions
+    ): Boolean
 }

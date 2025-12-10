@@ -2,7 +2,7 @@ package fm.magiclantern.forum
 
 import android.content.Context
 import android.util.Log
-import fm.magiclantern.forum.NativeInterface.NativeLib
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray

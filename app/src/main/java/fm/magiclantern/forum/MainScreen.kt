@@ -58,31 +58,14 @@ fun MainScreen(
     cpuCores: Int,
     navController: NavHostController,
     settingsRepository: SettingsRepository,
-    clipViewModel: ClipViewModel
+    clipViewModel: ClipViewModel,
+    videoViewModel: VideoViewModel
 ) {
     val context = LocalContext.current
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { /* no-op */ }
-
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && context is Activity) {
-            val permission = Manifest.permission.POST_NOTIFICATIONS
-            if (ContextCompat.checkSelfPermission(
-                    context,
-                    permission
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                notificationPermissionLauncher.launch(permission)
-            }
-        }
-    }
-
-    // Create ViewModels
-    val videoViewModel: VideoViewModel = viewModel(
-        factory = remember(settingsRepository) { VideoViewModelFactory(settingsRepository) }
-    )
 
     val clipUiState by clipViewModel.uiState.collectAsState()
     val isPlaying by videoViewModel.isPlaying.collectAsState()
@@ -207,7 +190,7 @@ private fun MobileLayout(
         }
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding)) {
-            VideoPlayerScreen(16f, videoViewModel, cpuCores)
+            VideoPlayerScreen(navController,16f, videoViewModel, cpuCores)
             NavigationBar(
                 Modifier
                     .fillMaxWidth()
@@ -263,7 +246,7 @@ private fun TabletLayout(
         ) {
             // Left Panel (Player and File List)
             Column(modifier = Modifier.weight(2f)) {
-                VideoPlayerScreen(21f, videoViewModel, cpuCores)
+                VideoPlayerScreen(navController, 21f, videoViewModel, cpuCores)
                 NavigationBar(
                     Modifier
                         .fillMaxWidth()

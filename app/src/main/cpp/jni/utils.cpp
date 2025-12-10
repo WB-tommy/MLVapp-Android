@@ -6,9 +6,9 @@
 
 extern "C" {
 JNIEXPORT void JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_setBaseDir(
-        JNIEnv *env, jobject /* this */, jstring baseDir) {
-    const char *path = env->GetStringUTFChars(baseDir, nullptr);
-    chdir(path);
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setBaseDir(
+    JNIEnv *env, jobject /* this */, jstring baseDir) {
+  const char *path = env->GetStringUTFChars(baseDir, nullptr);
+  chdir(path);
 }
 }

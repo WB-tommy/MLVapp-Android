@@ -70,6 +70,7 @@ include_directories(
         ${CMAKE_SOURCE_DIR}/jni/
         ${CMAKE_SOURCE_DIR}/jni/clip/
         ${CMAKE_SOURCE_DIR}/jni/export/
+        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/
         ${MLV_SRC_DIR}/
         ${MLV_SRC_DIR}/avir/
         ${MLV_SRC_DIR}/ca_correct/
@@ -77,12 +78,24 @@ include_directories(
         ${MLV_SRC_DIR}/dng/
         ${MLV_SRC_DIR}/matrix/
         ${MLV_SRC_DIR}/mlv/
-        ${MLV_SRC_DIR}/mlv_include.h/
         ${MLV_SRC_DIR}/processing/
         ${MLV_SRC_DIR}/librtprocess/src/include/
 )
 
 add_subdirectory(src/librtprocess)
+
+include_directories(${CMAKE_SOURCE_DIR}/include)
+
+set(FFMPEG_LIB_DIR ${CMAKE_SOURCE_DIR}/libs/${ANDROID_ABI})
+set(FFMPEG_LIBS c++_shared avcodec avformat avutil avfilter swscale swresample)
+
+foreach(LIB ${FFMPEG_LIBS})
+    add_library(${LIB} SHARED IMPORTED)
+    set_target_properties(${LIB} PROPERTIES
+            IMPORTED_LOCATION ${FFMPEG_LIB_DIR}/lib${LIB}.so)
+endforeach()
+
+find_library(mediandk-lib mediandk)
 
 # Create the main mlvcore shared library (.so/.dylib)
 add_library(${CMAKE_PROJECT_NAME} SHARED
@@ -94,6 +107,10 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         ${CMAKE_SOURCE_DIR}/jni/pixel_focus_map.cpp
         ${CMAKE_SOURCE_DIR}/jni/export/export_handler.cpp
         ${CMAKE_SOURCE_DIR}/jni/export/export_jni.cpp
+        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/ffmpeg_handler.cpp
+        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/ffmpeg_presets.cpp
+        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/ffmpeg_audio.cpp
+        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/ffmpeg_utils.cpp
 )
 
 # For AndroidBitmap_* functions
@@ -115,6 +132,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
         rtprocess
         m
         ${jnigraphics-lib}
+        ${FFMPEG_LIBS}
+        ${mediandk-lib}
 )
 
 # Set the output name to be consistent

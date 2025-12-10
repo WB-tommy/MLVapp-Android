@@ -8,7 +8,7 @@ import android.provider.OpenableColumns
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import fm.magiclantern.forum.FocusPixelManager
-import fm.magiclantern.forum.NativeInterface.NativeLib
+import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.data.Clip
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers

@@ -3,7 +3,7 @@ package fm.magiclantern.forum.videoPlayer
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import fm.magiclantern.forum.NativeInterface.NativeLib
+import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.data.Clip
 import fm.magiclantern.forum.data.ClipProcessingData
 import fm.magiclantern.forum.settings.DebayerMode
@@ -254,6 +254,7 @@ class VideoViewModel(
     }
 
     fun releaseCurrentClip() {
+        Log.d(tag, "releaseCurrentClip: Releasing clip handle ${clipHandle.value}")
         playbackEngine.stop()
         NativeLib.closeClip(clipHandle.value)
         _clipHandle.value = 0L
@@ -317,6 +318,7 @@ class VideoViewModel(
     }
 
     override fun onCleared() {
+        Log.d(tag, "onCleared: Closing clip handle ${clipHandle.value}")
         playbackEngine.stop()
         NativeLib.closeClip(clipHandle.value)
         super.onCleared()

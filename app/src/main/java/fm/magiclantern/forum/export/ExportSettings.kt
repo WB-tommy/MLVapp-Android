@@ -14,6 +14,22 @@ data class ExportSettings(
     val cdngVariant: CdngVariant = CdngVariant.UNCOMPRESSED,
     val proResProfile: ProResProfile = ProResProfile.PRORES_422_HQ,
     val proResEncoder: ProResEncoder = ProResEncoder.FFMPEG_KOSTYA,
+    // H.264 options
+    val h264Quality: H264Quality = H264Quality.HIGH,
+    val h264Container: H264Container = H264Container.MOV,
+    // H.265 options
+    val h265BitDepth: H265BitDepth = H265BitDepth.BIT_10,
+    val h265Quality: H265Quality = H265Quality.HIGH,
+    val h265Container: H265Container = H265Container.MOV,
+    // PNG options
+    val pngBitDepth: PngBitDepth = PngBitDepth.BIT_16,
+    // DNxHR options
+    val dnxhrProfile: DnxhrProfile = DnxhrProfile.HQ,
+    // DNxHD options
+    val dnxhdProfile: DnxhdProfile = DnxhdProfile.P1080_10BIT,
+    // VP9 options
+    val vp9Quality: Vp9Quality = Vp9Quality.GOOD,
+    // General settings
     val debayerQuality: DebayerQuality = DebayerQuality.AMAZE,
     val smoothing: SmoothingOption = SmoothingOption.OFF,
     val resize: ResizeSettings = ResizeSettings(),
@@ -64,14 +80,14 @@ enum class ExportCodec(
         allowsFrameRateOverride = true
     ),
     H265(
-        displayName = "H.265",
+        displayName = "H.265/HEVC",
         allowsResize = true,
         requiresProcessing = true,
         allowsAudioToggle = true,
         allowsFrameRateOverride = true
     ),
     TIFF(
-        displayName = "TIFF",
+        displayName = "TIFF (16-bit)",
         allowsResize = true,
         requiresProcessing = true,
         allowsAudioToggle = true,
@@ -84,6 +100,34 @@ enum class ExportCodec(
         allowsAudioToggle = true,
         allowsFrameRateOverride = false
     ),
+    JPEG2000(
+        displayName = "JPEG 2000",
+        allowsResize = true,
+        requiresProcessing = true,
+        allowsAudioToggle = true,
+        allowsFrameRateOverride = false
+    ),
+    DNXHR(
+        displayName = "DNxHR",
+        allowsResize = true,
+        requiresProcessing = true,
+        allowsAudioToggle = true,
+        allowsFrameRateOverride = true
+    ),
+    DNXHD(
+        displayName = "DNxHD",
+        allowsResize = true,
+        requiresProcessing = true,
+        allowsAudioToggle = true,
+        allowsFrameRateOverride = true
+    ),
+    VP9(
+        displayName = "VP9/WebM",
+        allowsResize = true,
+        requiresProcessing = true,
+        allowsAudioToggle = true,
+        allowsFrameRateOverride = true
+    ),
     AUDIO_ONLY(
         displayName = "Audio Only",
         allowsResize = false,
@@ -93,7 +137,19 @@ enum class ExportCodec(
     );
 
     companion object {
-        val defaultOrder: List<ExportCodec> = listOf(CINEMA_DNG, AUDIO_ONLY)
+        val defaultOrder: List<ExportCodec> = listOf(
+            CINEMA_DNG,
+            PRORES,
+            H264,
+            H265,
+            DNXHR,
+            DNXHD,
+            VP9,
+            TIFF,
+            PNG,
+            JPEG2000,
+            AUDIO_ONLY
+        )
     }
 }
 
@@ -120,6 +176,65 @@ enum class ProResProfile(val displayName: String) {
 enum class ProResEncoder(val displayName: String) {
     FFMPEG_KOSTYA("ffmpeg Kostya"),
     FFMPEG_ANATOLYI("ffmpeg Anatolyi")
+}
+
+// H.264 Options
+enum class H264Quality(val displayName: String) {
+    HIGH("High Quality (CRF 14)"),
+    MEDIUM("Medium Quality (CRF 24)")
+}
+
+enum class H264Container(val displayName: String) {
+    MOV("QuickTime (.mov)"),
+    MP4("MPEG-4 (.mp4)"),
+    MKV("Matroska (.mkv)")
+}
+
+// H.265/HEVC Options
+enum class H265BitDepth(val displayName: String) {
+    BIT_8("8-bit"),
+    BIT_10("10-bit"),
+    BIT_12("12-bit 4:4:4")
+}
+
+enum class H265Quality(val displayName: String) {
+    HIGH("High Quality (CRF 18)"),
+    MEDIUM("Medium Quality (CRF 24)")
+}
+
+enum class H265Container(val displayName: String) {
+    MOV("QuickTime (.mov)"),
+    MP4("MPEG-4 (.mp4)"),
+    MKV("Matroska (.mkv)")
+}
+
+// PNG Options
+enum class PngBitDepth(val displayName: String) {
+    BIT_16("16-bit"),
+    BIT_8("8-bit")
+}
+
+// DNxHR Options
+enum class DnxhrProfile(val displayName: String) {
+    LB("LB - Low Bandwidth"),
+    SQ("SQ - Standard Quality"),
+    HQ("HQ - High Quality"),
+    HQX("HQX - High Quality 10-bit"),
+    P444("444 - 4:4:4 10-bit")
+}
+
+// DNxHD Options (matches desktop presets)
+enum class DnxhdProfile(val displayName: String) {
+    P1080_10BIT("1080p 10-bit"),
+    P1080_8BIT("1080p 8-bit"),
+    P720_10BIT("720p 10-bit"),
+    P720_8BIT("720p 8-bit")
+}
+
+// VP9 Options
+enum class Vp9Quality(val displayName: String) {
+    GOOD("Good Quality (CRF 18)"),
+    LOSSLESS("Lossless")
 }
 
 enum class DebayerQuality(val displayName: String) {

@@ -22,10 +22,7 @@ extern "C" {
 #include <cinttypes>
 
 // Logging macros
-#define LOG_TAG "fm.magiclantern.forum.jni"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+const char *const TAG = "fm.magiclantern.forum.jni";
 
 mlvObject_t *getMlvObject(
         JNIEnv *env,
@@ -35,26 +32,26 @@ mlvObject_t *getMlvObject(
         bool isFull);
 
 JNIEXPORT jobject JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_openClipForPreview(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
         JNIEnv *env, jobject /* this */,
         jint fd,
         jstring fileName, jlong cacheSize,
         jint cores);
 
 JNIEXPORT jobject JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_openClip(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
         JNIEnv *env, jobject /* this */,
         jintArray fds,
         jstring fileName, jlong cacheSize,
         jint cores);
 
 JNIEXPORT jlongArray JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_getVideoFrameTimestamps(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
         JNIEnv *env, jobject /* this */,
         jlong handle);
 
 JNIEXPORT jboolean JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_fillFrame16(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
         JNIEnv *env, jclass /*clazz*/,
         jlong handle,
         jint frameIndex,
@@ -64,17 +61,17 @@ Java_fm_magiclantern_forum_NativeInterface_NativeLib_fillFrame16(
         jint height);
 
 JNIEXPORT jlong JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_getAudioBufferSize(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_getAudioBufferSize(
         JNIEnv *env, jobject /* this */,
         jlong handle);
 
 JNIEXPORT jint JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_getAudioBytesPerSample(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_getAudioBytesPerSample(
         JNIEnv *env, jobject /* this */,
         jlong handle);
 
 JNIEXPORT jint JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_readAudioBuffer(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_readAudioBuffer(
         JNIEnv *env, jobject /* this */,
         jlong handle,
         jlong offsetBytes,
@@ -82,38 +79,38 @@ Java_fm_magiclantern_forum_NativeInterface_NativeLib_readAudioBuffer(
         jobject dstByteBuffer);
 
 JNIEXPORT void JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_closeClip(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_closeClip(
         JNIEnv *env, jobject /* this */,
         jlong handle);
 
 JNIEXPORT jstring JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_getFpmName(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_getFpmName(
         JNIEnv *env, jobject /* this */,
         jlong handle);
 
 JNIEXPORT jint JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_checkCameraModel(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_checkCameraModel(
         JNIEnv *env, jobject thiz,
         jlong handle);
 
 JNIEXPORT void JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_setBaseDir(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setBaseDir(
         JNIEnv *env, jobject /* this */, jstring baseDir);
 
 JNIEXPORT void JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_refreshFocusPixelMap(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_refreshFocusPixelMap(
         JNIEnv *env, jobject /* this */, jlong handle);
 
 JNIEXPORT void JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_setFocusPixelMode(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setFocusPixelMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode);
 
 JNIEXPORT void JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_setFixRawMode(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setFixRawMode(
         JNIEnv *env, jobject /* this */, jlong handle, jboolean enabled);
 
 JNIEXPORT void JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_setDebayerMode(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setDebayerMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode);
 
 }

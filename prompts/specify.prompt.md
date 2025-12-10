@@ -136,19 +136,38 @@ Below are detailed specs for a few key features; you can expand this for all fea
 
 - UI:
   - Export screen with format selector, codec options, resolution, frame range (start/end), audio inclusion toggle
+  - Hardware acceleration badges (informational, based on MediaCodec scan)
   - Progress indicator and cancel option
+  - Clear error messages on failure
+  
 - Logic:
+  - **Focus Pixel Map (FPM) Validation**: Performed once during clip selection, cached for export
   - Given a clip and processing pipeline, walk each frame, apply processing, encode to target format
   - If video + audio: mux processed video and audio streams
   - Support trimming (only export a subsection)
   - Support batch exports (multiple clips) if memory allows
+  
 - Backend:
-  - Use FFmpeg (via mobile FFmpeg wrapper) or built-in encoding libraries
+  - **FFmpeg** as primary export engine
+  - **Hybrid Codec Validation**:
+    - `MediaCodecSupportHelper.kt`: Scans device capabilities, provides UI hints only
+    - `ffmpeg_handler.cpp`: Attempts hardware encoder first (e.g., h264_mediacodec), falls back to software (libx264) automatically
+    - Only report errors if all encoder options fail
+  - **Structured Error Codes**: CODEC_UNAVAILABLE, IO_ERROR, INSUFFICIENT_MEMORY, INVALID_PARAMETERS, etc.
+  - Comprehensive logging at decision points (encoder selection, fallback triggers, dimension calculations)
   - Manage threading / buffering
+  
 - Edge cases:
   - Fail gracefully on resource exhaustion (storage, memory)
   - Clean up partial output on cancel
+  - Automatic fallback from hardware to software encoders (transparent to user)
+  - Retry logic for transient I/O errors
   - Ensure correct profile & bit depth support (if underlying codec supports it on mobile)
+
+**Error Handling:**
+- User-facing errors only for genuine failures (all encoders failed, I/O errors, invalid params)
+- Internal fallback attempts logged but not surfaced to user
+- Clear, actionable error messages with specific failure reasons
 
 ---
 

@@ -47,7 +47,7 @@ inline void convertSamples(
 // Fills a direct ByteBuffer with RGB32F (float) pixels.
 // Java side must allocate: capacity = width * height * 3 * sizeof(float)
 extern "C" JNIEXPORT jboolean JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_fillFrame16(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
         JNIEnv *env, jclass /*clazz*/,
         jlong handle,
         jint frameIndex,
@@ -128,7 +128,7 @@ Java_fm_magiclantern_forum_NativeInterface_NativeLib_fillFrame16(
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_getAudioBufferSize(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_getAudioBufferSize(
         JNIEnv *env, jobject /* this */,
         jlong handle) {
     auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
@@ -146,7 +146,7 @@ Java_fm_magiclantern_forum_NativeInterface_NativeLib_getAudioBufferSize(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_getAudioBytesPerSample(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_getAudioBytesPerSample(
         JNIEnv *env, jobject /* this */,
         jlong handle) {
     auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
@@ -166,7 +166,7 @@ Java_fm_magiclantern_forum_NativeInterface_NativeLib_getAudioBytesPerSample(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_fm_magiclantern_forum_NativeInterface_NativeLib_readAudioBuffer(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_readAudioBuffer(
         JNIEnv *env, jobject /* this */,
         jlong handle,
         jlong offsetBytes,

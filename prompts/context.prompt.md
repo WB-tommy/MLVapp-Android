@@ -59,9 +59,14 @@ The goal is to make MLV workflows portable — quick previews, metadata inspecti
 - Real-time preview approximations; full-precision for export.
 
 ### Export / Encoding
-- Export to H.264/H.265 or image sequences.  
-- FFmpeg mobile backend.  
+- Export to ProRes, H.264/H.265, CinemaDNG, TIFF, PNG.  
+- **FFmpeg** as primary export engine.  
+- **Hybrid codec validation**: MediaCodec for UI hints, FFmpeg for execution with automatic fallback.  
+- Hardware acceleration attempted first (h264_mediacodec, hevc_mediacodec), falls back to software (libx264, libx265).  
+- **Structured error codes** for better diagnostics (CODEC_UNAVAILABLE, IO_ERROR, etc.).  
+- **Single-phase FPM validation**: Focus Pixel Map checks done once at selection, cached for export.  
 - Progress / cancel handling; audio muxing; trimming.  
+- Comprehensive logging at decision points.  
 - Clean resource handling on cancel or error.
 
 ### Session / Receipts
@@ -81,17 +86,19 @@ The goal is to make MLV workflows portable — quick previews, metadata inspecti
 |-------|--------------|--------|
 | **1 – Core Integration** | JNI bridge to mlv-core, initial frame decode. | ✅ Completed |
 | **2 – Playback Loop** | Frame stepping, play/pause, scrub controls. | ✅ Completed |
-| **3 – Export (Raw)** | Raw RGB16F export pipeline, FFmpeg integration. | 🔄 In Progress |
-| **4 – Processing Tools** | Exposure/WB/contrast controls, UI sliders, reset logic. | 🔄 In Progress |
+| **3 – Export (Raw)** | FFmpeg export with hybrid codec validation, error handling, logging. | ✅ Mostly Complete |
+| **4 – Processing Tools** | Exposure/WB/contrast controls, UI sliders, reset logic. | ⏳ Deferred (Lower Priority) |
 | **5 – Processed Export** | Apply processing before encode; validate output vs preview. | ⏳ Planned |
 | **6 – UX / Polish** | Metadata display, persistent settings, error UI, tests. | ⏳ Planned |
 
 ### Backlog Ideas
 - Histogram & waveform scopes  
-- Audio playback sync  
 - Batch import/export  
 - GPU / Vulkan acceleration  
 - Receipt sharing with desktop version  
+- Color grading UI (native core ready, UI deferred)  
+- Codec capability probing  
+- Adaptive bitrate encoding  
 
 ---
 
@@ -99,10 +106,12 @@ The goal is to make MLV workflows portable — quick previews, metadata inspecti
 
 - Heavy processing → native C++ (`mlv-core`) for performance.  
 - Mobile resource limits → background threads, async UI.  
-- Kotlin for UI and state logic; C++ for decode/processing.  
+- Kotlin for UI and state logic; C++ for decode/processing/export.  
 - Use OpenGL ES 3.0 for preview rendering.  
 - Storage access via Android SAF.  
 - Maintain visual fidelity with desktop MLV-App color science.  
+- **Export priority**: Stable FFmpeg export is prerequisite for color grading UI.  
+- **Error handling**: User-facing errors only for genuine failures; internal fallbacks are transparent.  
 
 ---
 

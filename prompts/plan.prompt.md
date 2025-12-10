@@ -44,12 +44,15 @@ This project exists to make MLV workflows portable — quick previews, metadata 
  - Support multi-chunk `.M00/.M01...` MLV sets.
 
 3. **Export (Raw)**  
- - Add export of unprocessed frames via FFmpeg or native encoder.  
+ - Export processed frames via FFmpeg with hybrid codec validation.  
+ - Hardware acceleration attempted first (h264_mediacodec, hevc_mediacodec), automatic fallback to software (libx264, libx265).  
+ - Structured error codes for better diagnostics.  
  - Validate end-to-end decode → render → encode pipeline.
 
-4. **Processing Tools**  
- - Add exposure, white balance, and contrast controls.  
- - Apply adjustments in real-time preview.
+4. **Processing Tools** *(Lower Priority - Deferred)*  
+ - Native processing core already supports exposure, white balance, contrast, curves, etc.  
+ - UI integration deferred until export pipeline is stable.  
+ - Color grading is useless without working export functionality.
 
 5. **Processed Export**  
  - Extend export pipeline to apply processing before encoding.  
@@ -57,6 +60,18 @@ This project exists to make MLV workflows portable — quick previews, metadata 
 
 6. **User Experience & Polish**  
  - Add metadata display, persistent settings, error UI, and performance optimizations.
+
+---
+
+## Codec Validation Strategy
+
+**Hybrid Approach**:
+- **MediaCodecSupportHelper** scans device capabilities at startup, provides UI hints only.
+- **FFmpeg** handles actual encoding with automatic hardware→software fallback.
+- Users see clear error messages only when all encoder options fail.
+- Focus Pixel Map (FPM) validation happens once during clip selection, cached for export.
+
+**Rationale**: Keeps UI informative while letting FFmpeg's robust fallback handle device variability.
 
 ---
 

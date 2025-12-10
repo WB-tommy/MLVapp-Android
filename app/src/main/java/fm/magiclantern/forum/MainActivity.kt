@@ -11,7 +11,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.ui.Modifier
-import fm.magiclantern.forum.NativeInterface.NativeLib
+import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.settings.SettingsRepository
 import fm.magiclantern.forum.ui.theme.MLVappTheme
 

@@ -204,7 +204,7 @@ int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * un
 
         if (ret <= 0)
         {
-            DEBUG( printf("mcraw decoder: Failed with error code (%d)\n", ret); )
+            DEBUG( printf("mcraw decoder: Failed with error code (%ld)\n", ret); )
             free(raw_frame);
             return 1;
         }
