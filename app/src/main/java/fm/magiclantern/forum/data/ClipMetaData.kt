@@ -24,6 +24,8 @@ data class ClipMetaData(
     val hasAudio: Boolean,
     val audioChannels: Int,
     val audioSampleRate: Int,
+    val originalBlackLevel: Int,
+    val originalWhiteLevel: Int,
     val isMcraw: Boolean,
 ) {
 }

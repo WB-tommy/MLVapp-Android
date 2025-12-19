@@ -2,8 +2,10 @@ package fm.magiclantern.forum
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -19,6 +21,9 @@ fun TheTopBar(
     onAddFileClick: () -> Unit,
     onSettingClick: () -> Unit,
     onExportClick: () -> Unit,
+    currentPanel: MobilePanelType? = null, // null for tablet (no switching)
+    onPanelSwapClick: (() -> Unit)? = null,
+    onDeleteFileClick: () -> Unit
 ) {
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
@@ -27,6 +32,21 @@ fun TheTopBar(
         ),
         title = { Text("") },
         actions = {
+            // Panel swap button - only visible on mobile
+            if (currentPanel != null && onPanelSwapClick != null) {
+                IconButton(onClick = onPanelSwapClick) {
+                    Icon(
+                        imageVector = Icons.Default.SwapHoriz,
+                        contentDescription = when (currentPanel) {
+                            MobilePanelType.FILE_LIST -> "Switch to grading"
+                            MobilePanelType.GRADING -> "Switch to file list"
+                        },
+                        tint = Color.White
+                    )
+                }
+            }
+
+
             IconButton(onClick = onExportClick) {
                 Icon(
                     imageVector = Icons.Default.Share,
@@ -39,6 +59,13 @@ fun TheTopBar(
                 Icon(
                     imageVector = Icons.Default.Add,
                     contentDescription = "Add File",
+                    tint = Color.White
+                )
+            }
+            IconButton(onClick = onDeleteFileClick) {
+                Icon(
+                    imageVector = Icons.Default.Remove,
+                    contentDescription = "Remove Clips",
                     tint = Color.White
                 )
             }

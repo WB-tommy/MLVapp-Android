@@ -32,5 +32,38 @@
 # Proguard would otherwise remove or obfuscate them, causing crashes in JNI_OnLoad
 # when the native code can't find the expected classes or fields.
 -keep class fm.magiclantern.forum.data.ClipMetaData { *; }
--keep class fm.magiclantern.forum.data.Clip { *; }
 -keep class fm.magiclantern.forum.data.ClipPreviewData { *; }
+-keep class fm.magiclantern.forum.data.ProcessingData { *; }
+
+# Export model classes accessed by JNI (moved to features.export.model after refactor)
+-keep class fm.magiclantern.forum.features.export.model.ExportCodec { *; }
+-keep class fm.magiclantern.forum.features.export.model.ExportOptions { *; }
+-keep class fm.magiclantern.forum.features.export.model.ExportSettings { *; }
+-keep class fm.magiclantern.forum.features.export.model.CdngNaming { *; }
+-keep class fm.magiclantern.forum.features.export.model.CdngVariant { *; }
+-keep class fm.magiclantern.forum.features.export.model.ProResProfile { *; }
+-keep class fm.magiclantern.forum.features.export.model.ProResEncoder { *; }
+-keep class fm.magiclantern.forum.features.export.model.DebayerQuality { *; }
+-keep class fm.magiclantern.forum.features.export.model.SmoothingOption { *; }
+-keep class fm.magiclantern.forum.features.export.model.H264Quality { *; }
+-keep class fm.magiclantern.forum.features.export.model.H264Container { *; }
+-keep class fm.magiclantern.forum.features.export.model.H265BitDepth { *; }
+-keep class fm.magiclantern.forum.features.export.model.H265Quality { *; }
+-keep class fm.magiclantern.forum.features.export.model.H265Container { *; }
+-keep class fm.magiclantern.forum.features.export.model.PngBitDepth { *; }
+-keep class fm.magiclantern.forum.features.export.model.DnxhrProfile { *; }
+-keep class fm.magiclantern.forum.features.export.model.DnxhdProfile { *; }
+-keep class fm.magiclantern.forum.features.export.model.Vp9Quality { *; }
+-keep class fm.magiclantern.forum.features.export.model.ResizeSettings { *; }
+-keep class fm.magiclantern.forum.features.export.model.ScalingAlgorithm { *; }
+-keep class fm.magiclantern.forum.features.export.model.FrameRateOverride { *; }
+
+# JNI callback interfaces - JNI calls these methods by name
+-keep interface fm.magiclantern.forum.features.export.model.ProgressListener { *; }
+-keep class fm.magiclantern.forum.features.export.ExportFdProvider { *; }
+
+# Domain model classes accessed by JNI (referenced from ExportOptions)
+-keep class fm.magiclantern.forum.domain.model.RawCorrectionSettings { *; }
+-keep class fm.magiclantern.forum.domain.model.ClipGradingData { *; }
+-keep class fm.magiclantern.forum.domain.model.ColorGradingSettings { *; }
+-keep class fm.magiclantern.forum.domain.model.DebayerAlgorithm { *; }

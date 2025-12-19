@@ -4,28 +4,28 @@
     <selectionStates>
       <SelectionState runConfigName="app">
         <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2025-12-09T23:55:18.560904Z">
+        <DropdownSelection timestamp="2025-12-19T08:45:11.758923Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="PhysicalDevice" identifier="serial=a02d9c25" />
+              <DeviceId pluginId="LocalEmulator" identifier="path=/Users/sm/.android/avd/Pixel_9a.avd" />
             </handle>
           </Target>
         </DropdownSelection>
         <DialogSelection />
       </SelectionState>
-      <SelectionState runConfigName="scanHardwareCapabilities()">
+      <SelectionState runConfigName="benchmarkH264_Software()">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="compareHardwareVsSoftware()">
+      <SelectionState runConfigName="benchmarkH265_8bit_Hardware()">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="HardwareAccelerationDiagnosticsTest">
+      <SelectionState runConfigName="benchmarkH265_8bit_Software()">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="testH265HardwareAcceleration()">
+      <SelectionState runConfigName="DebayerSelectScreenPreview">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="EncoderBenchmarkTest">
+      <SelectionState runConfigName="ExportAllCodecsTest">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
     </selectionStates>

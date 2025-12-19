@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(MLV_SRC_DIR ${CMAKE_SOURCE_DIR}/src)
+set(JNI_DIR ${CMAKE_SOURCE_DIR}/jni)
 
 add_library(processing STATIC
         ${MLV_SRC_DIR}/processing/blur_threaded.c
@@ -67,10 +68,11 @@ add_library(mlv STATIC
 )
 
 include_directories(
-        ${CMAKE_SOURCE_DIR}/jni/
-        ${CMAKE_SOURCE_DIR}/jni/clip/
-        ${CMAKE_SOURCE_DIR}/jni/export/
-        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/
+        ${JNI_DIR}/
+        ${JNI_DIR}/clip/
+        ${JNI_DIR}/export/
+        ${JNI_DIR}/ffmpeg/
+        ${JNI_DIR}/grading/
         ${MLV_SRC_DIR}/
         ${MLV_SRC_DIR}/avir/
         ${MLV_SRC_DIR}/ca_correct/
@@ -100,17 +102,19 @@ find_library(mediandk-lib mediandk)
 # Create the main mlvcore shared library (.so/.dylib)
 add_library(${CMAKE_PROJECT_NAME} SHARED
         ${MLV_SRC_DIR}/mlvcore.c
-        ${CMAKE_SOURCE_DIR}/jni/utils.cpp
-        ${CMAKE_SOURCE_DIR}/jni/clip/jni_cache.cpp
-        ${CMAKE_SOURCE_DIR}/jni/clip/handle_clip.cpp
-        ${CMAKE_SOURCE_DIR}/jni/clip/handle_playback.cpp
-        ${CMAKE_SOURCE_DIR}/jni/pixel_focus_map.cpp
-        ${CMAKE_SOURCE_DIR}/jni/export/export_handler.cpp
-        ${CMAKE_SOURCE_DIR}/jni/export/export_jni.cpp
-        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/ffmpeg_handler.cpp
-        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/ffmpeg_presets.cpp
-        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/ffmpeg_audio.cpp
-        ${CMAKE_SOURCE_DIR}/jni/ffmpeg/ffmpeg_utils.cpp
+        ${JNI_DIR}/utils.cpp
+        ${JNI_DIR}/clip/jni_cache.cpp
+        ${JNI_DIR}/clip/handle_clip.cpp
+        ${JNI_DIR}/clip/handle_playback.cpp
+        ${JNI_DIR}/pixel_focus_map.cpp
+        ${JNI_DIR}/export/export_handler.cpp
+        ${JNI_DIR}/export/export_jni.cpp
+        ${JNI_DIR}/ffmpeg/ffmpeg_handler.cpp
+        ${JNI_DIR}/ffmpeg/ffmpeg_presets.cpp
+        ${JNI_DIR}/ffmpeg/ffmpeg_audio.cpp
+        ${JNI_DIR}/ffmpeg/ffmpeg_utils.cpp
+        ${JNI_DIR}/ffmpeg/batch_export_context.cpp
+        ${JNI_DIR}/grading/raw_correction.cpp
 )
 
 # For AndroidBitmap_* functions

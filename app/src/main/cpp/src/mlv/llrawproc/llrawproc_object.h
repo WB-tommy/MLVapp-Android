@@ -62,6 +62,8 @@ typedef struct
 
     /* external dark frame file name */
     char * dark_frame_filename;
+    /* external dark frame file fd (android c/cpp cannot open file using path) */
+    int dark_frame_fds[1];
     /* external dark frame block header */
     mlv_dark_hdr_t dark_frame_hdr;
     /* external dark frame buffer pointer and its size */

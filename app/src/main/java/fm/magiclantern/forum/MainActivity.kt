@@ -11,10 +11,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.ui.Modifier
+import dagger.hilt.android.AndroidEntryPoint
 import fm.magiclantern.forum.nativeInterface.NativeLib
-import fm.magiclantern.forum.settings.SettingsRepository
 import fm.magiclantern.forum.ui.theme.MLVappTheme
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -28,7 +29,7 @@ class MainActivity : ComponentActivity() {
         }
 
         NativeLib.setBaseDir(this.filesDir.absolutePath)
-        val settingsRepository = SettingsRepository.getInstance(applicationContext)
+        
         setContent {
             MLVappTheme {
                 Surface(
@@ -51,8 +52,7 @@ class MainActivity : ComponentActivity() {
                     NavController(
                         windowSizeClass = windowSizeClass,
                         cacheSize = cacheSize,
-                        cores = cores,
-                        settingsRepository = settingsRepository
+                        cores = cores
                     )
                 }
             }

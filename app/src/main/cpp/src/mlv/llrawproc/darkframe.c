@@ -88,7 +88,7 @@ static int df_load_ext(mlvObject_t * video, char * error_message)
     /* Parse dark frame MLV */
     mlvObject_t df_mlv = { 0 };
     char err_msg[256] = { 0 };
-    int ret = openMlvClip(&df_mlv, video->llrawproc->dark_frame_filename, 2, err_msg);
+    int ret = openMlvClip(&df_mlv, video->llrawproc->dark_frame_fds, 0, video->llrawproc->dark_frame_filename, 2, err_msg);
     if(ret != 0)
     {
 #ifndef STDOUT_SILENT

@@ -48,6 +48,16 @@ int startExportJob(mlvObject_t *mlv, const export_options_t &options,
                    const export_fd_provider_t &provider,
                    void (*progress_callback)(int progress));
 
+// Forward declaration for batch export context
+struct BatchExportContext;
+
+// Batch export functions - use these for exporting multiple clips with same
+// settings
+int startBatchExportJob(BatchExportContext &batch_ctx, mlvObject_t *mlv,
+                        const export_options_t &options,
+                        const export_fd_provider_t &provider,
+                        void (*progress_callback)(int progress));
+
 #ifdef __cplusplus
 bool is_export_cancelled();
 void reset_export_cancel_flag();

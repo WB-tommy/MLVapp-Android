@@ -3,6 +3,7 @@ extern "C" {
 #include "../../src/mlv/video_mlv.h"
 #include "../../src/processing/raw_processing.h"
 }
+#include "../ffmpeg/batch_export_context.h"
 #include "../ffmpeg/ffmpeg_handler.h"
 #include "export_handler.h"
 #include <android/log.h>
@@ -80,34 +81,79 @@ static bool get_bool_field(JNIEnv *env, jobject obj, jclass clazz,
   return env->GetBooleanField(obj, fid);
 }
 
+// Parse RawCorrectionSettings object from Kotlin
+static void parse_raw_correction(JNIEnv *env, jobject rawCorrectionObj,
+                                 raw_correction_options_t &out) {
+  if (!rawCorrectionObj) {
+    return; // Use defaults
+  }
+  jclass cls = env->GetObjectClass(rawCorrectionObj);
+
+  out.enabled = get_bool_field(env, rawCorrectionObj, cls, "enabled");
+  out.vertical_stripes =
+      get_int_field(env, rawCorrectionObj, cls, "verticalStripes");
+  out.focus_pixels = get_int_field(env, rawCorrectionObj, cls, "focusPixels");
+  out.fpi_method = get_int_field(env, rawCorrectionObj, cls, "fpiMethod");
+  out.bad_pixels = get_int_field(env, rawCorrectionObj, cls, "badPixels");
+  out.bps_method = get_int_field(env, rawCorrectionObj, cls, "bpsMethod");
+  out.bpi_method = get_int_field(env, rawCorrectionObj, cls, "bpiMethod");
+  out.chroma_smooth = get_int_field(env, rawCorrectionObj, cls, "chromaSmooth");
+  out.pattern_noise = get_int_field(env, rawCorrectionObj, cls, "patternNoise");
+  out.deflicker_target =
+      get_int_field(env, rawCorrectionObj, cls, "deflickerTarget");
+  out.dual_iso = get_int_field(env, rawCorrectionObj, cls, "dualIso");
+  out.dual_iso_forced =
+      get_bool_field(env, rawCorrectionObj, cls, "dualIsoForced");
+  out.dual_iso_interpolation =
+      get_int_field(env, rawCorrectionObj, cls, "dualIsoInterpolation");
+  out.dual_iso_alias_map =
+      get_bool_field(env, rawCorrectionObj, cls, "dualIsoAliasMap");
+  out.dual_iso_fr_blending =
+      get_bool_field(env, rawCorrectionObj, cls, "dualIsoFrBlending");
+  out.dual_iso_white =
+      get_int_field(env, rawCorrectionObj, cls, "dualIsoWhite");
+  out.dual_iso_black =
+      get_int_field(env, rawCorrectionObj, cls, "dualIsoBlack");
+  out.dark_frame_file_name =
+      get_string_field(env, rawCorrectionObj, cls, "darkFrameFileName");
+  out.dark_frame_enabled =
+      get_int_field(env, rawCorrectionObj, cls, "darkFrameEnabled");
+
+  env->DeleteLocalRef(cls);
+}
+
 export_options_t parse_export_options(JNIEnv *env, jobject exportOptions) {
   export_options_t options{};
   jclass cls = env->GetObjectClass(exportOptions);
 
-  options.codec = get_enum_field(env, exportOptions, cls, "codec",
-                                 "Lfm/magiclantern/forum/export/ExportCodec;");
+  options.codec = get_enum_field(
+      env, exportOptions, cls, "codec",
+      "Lfm/magiclantern/forum/features/export/model/ExportCodec;");
   options.codec_option = get_int_field(env, exportOptions, cls, "codecOption");
-  options.naming_scheme =
-      get_enum_field(env, exportOptions, cls, "cdngNaming",
-                     "Lfm/magiclantern/forum/export/CdngNaming;");
-  options.cdng_variant =
-      get_enum_field(env, exportOptions, cls, "cdngVariant",
-                     "Lfm/magiclantern/forum/export/CdngVariant;");
+  options.naming_scheme = get_enum_field(
+      env, exportOptions, cls, "cdngNaming",
+      "Lfm/magiclantern/forum/features/export/model/CdngNaming;");
+  options.cdng_variant = get_enum_field(
+      env, exportOptions, cls, "cdngVariant",
+      "Lfm/magiclantern/forum/features/export/model/CdngVariant;");
 
   // ProRes
-  options.prores_profile =
-      get_enum_field(env, exportOptions, cls, "proResProfile",
-                     "Lfm/magiclantern/forum/export/ProResProfile;");
-  options.prores_encoder =
-      get_enum_field(env, exportOptions, cls, "proResEncoder",
-                     "Lfm/magiclantern/forum/export/ProResEncoder;");
+  options.prores_profile = get_enum_field(
+      env, exportOptions, cls, "proResProfile",
+      "Lfm/magiclantern/forum/features/export/model/ProResProfile;");
+  options.prores_encoder = get_enum_field(
+      env, exportOptions, cls, "proResEncoder",
+      "Lfm/magiclantern/forum/features/export/model/ProResEncoder;");
 
-  options.debayer_quality =
-      get_enum_field(env, exportOptions, cls, "debayerQuality",
-                     "Lfm/magiclantern/forum/export/DebayerQuality;");
-  options.smoothing =
-      get_enum_field(env, exportOptions, cls, "smoothing",
-                     "Lfm/magiclantern/forum/export/SmoothingOption;");
+  options.debayer_quality = get_enum_field(
+      env, exportOptions, cls, "debayerQuality",
+      "Lfm/magiclantern/forum/features/export/model/DebayerQuality;");
+  // Per-clip debayer mode (native ID) used when debayerQuality is RECEIPT (0)
+  options.clip_debayer_mode =
+      get_int_field(env, exportOptions, cls, "clipDebayerMode");
+  options.smoothing = get_enum_field(
+      env, exportOptions, cls, "smoothing",
+      "Lfm/magiclantern/forum/features/export/model/SmoothingOption;");
 
   options.include_audio =
       get_bool_field(env, exportOptions, cls, "includeAudio");
@@ -147,40 +193,50 @@ export_options_t parse_export_options(JNIEnv *env, jobject exportOptions) {
   options.force_software =
       get_bool_field(env, exportOptions, cls, "forceSoftware");
 
+  // Raw correction settings (full object)
+  jfieldID rawCorrectionField = env->GetFieldID(
+      cls, "rawCorrection",
+      "Lfm/magiclantern/forum/domain/model/RawCorrectionSettings;");
+  jobject rawCorrectionObj =
+      env->GetObjectField(exportOptions, rawCorrectionField);
+  parse_raw_correction(env, rawCorrectionObj, options.raw_correction);
+  env->DeleteLocalRef(rawCorrectionObj);
+
   // Codec usage
-  options.h264_quality =
-      get_enum_field(env, exportOptions, cls, "h264Quality",
-                     "Lfm/magiclantern/forum/export/H264Quality;");
-  options.h264_container =
-      get_enum_field(env, exportOptions, cls, "h264Container",
-                     "Lfm/magiclantern/forum/export/H264Container;");
+  options.h264_quality = get_enum_field(
+      env, exportOptions, cls, "h264Quality",
+      "Lfm/magiclantern/forum/features/export/model/H264Quality;");
+  options.h264_container = get_enum_field(
+      env, exportOptions, cls, "h264Container",
+      "Lfm/magiclantern/forum/features/export/model/H264Container;");
 
-  options.h265_bitdepth =
-      get_enum_field(env, exportOptions, cls, "h265BitDepth",
-                     "Lfm/magiclantern/forum/export/H265BitDepth;");
-  options.h265_quality =
-      get_enum_field(env, exportOptions, cls, "h265Quality",
-                     "Lfm/magiclantern/forum/export/H265Quality;");
-  options.h265_container =
-      get_enum_field(env, exportOptions, cls, "h265Container",
-                     "Lfm/magiclantern/forum/export/H265Container;");
+  options.h265_bitdepth = get_enum_field(
+      env, exportOptions, cls, "h265BitDepth",
+      "Lfm/magiclantern/forum/features/export/model/H265BitDepth;");
+  options.h265_quality = get_enum_field(
+      env, exportOptions, cls, "h265Quality",
+      "Lfm/magiclantern/forum/features/export/model/H265Quality;");
+  options.h265_container = get_enum_field(
+      env, exportOptions, cls, "h265Container",
+      "Lfm/magiclantern/forum/features/export/model/H265Container;");
 
-  options.png_bitdepth =
-      get_enum_field(env, exportOptions, cls, "pngBitDepth",
-                     "Lfm/magiclantern/forum/export/PngBitDepth;");
-  options.dnxhr_profile =
-      get_enum_field(env, exportOptions, cls, "dnxhrProfile",
-                     "Lfm/magiclantern/forum/export/DnxhrProfile;");
-  options.dnxhd_profile =
-      get_enum_field(env, exportOptions, cls, "dnxhdProfile",
-                     "Lfm/magiclantern/forum/export/DnxhdProfile;");
-  options.vp9_quality =
-      get_enum_field(env, exportOptions, cls, "vp9Quality",
-                     "Lfm/magiclantern/forum/export/Vp9Quality;");
+  options.png_bitdepth = get_enum_field(
+      env, exportOptions, cls, "pngBitDepth",
+      "Lfm/magiclantern/forum/features/export/model/PngBitDepth;");
+  options.dnxhr_profile = get_enum_field(
+      env, exportOptions, cls, "dnxhrProfile",
+      "Lfm/magiclantern/forum/features/export/model/DnxhrProfile;");
+  options.dnxhd_profile = get_enum_field(
+      env, exportOptions, cls, "dnxhdProfile",
+      "Lfm/magiclantern/forum/features/export/model/DnxhdProfile;");
+  options.vp9_quality = get_enum_field(
+      env, exportOptions, cls, "vp9Quality",
+      "Lfm/magiclantern/forum/features/export/model/Vp9Quality;");
 
   // Resize settings
   jfieldID resizeField = env->GetFieldID(
-      cls, "resize", "Lfm/magiclantern/forum/export/ResizeSettings;");
+      cls, "resize",
+      "Lfm/magiclantern/forum/features/export/model/ResizeSettings;");
   jobject resizeObj = env->GetObjectField(exportOptions, resizeField);
   if (resizeObj) {
     jclass resizeClass = env->GetObjectClass(resizeObj);
@@ -189,11 +245,6 @@ export_options_t parse_export_options(JNIEnv *env, jobject exportOptions) {
     options.resize_width = get_int_field(env, resizeObj, resizeClass, "width");
     options.resize_height =
         get_int_field(env, resizeObj, resizeClass, "height");
-    options.resize_lock_aspect =
-        get_bool_field(env, resizeObj, resizeClass, "lockAspectRatio");
-    options.resize_algorithm =
-        get_enum_field(env, resizeObj, resizeClass, "algorithm",
-                       "Lfm/magiclantern/forum/export/ScalingAlgorithm;");
     env->DeleteLocalRef(resizeClass);
   }
   env->DeleteLocalRef(resizeObj);
@@ -425,6 +476,194 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportHandler(
       default:
         errorMessage =
             "Export failed: An unknown error occurred during export.";
+        break;
+      }
+      env->ThrowNew(exceptionCls, errorMessage);
+    }
+  }
+}
+
+// Batch export handler - processes multiple clips with shared encoder context
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportBatchHandler(
+    JNIEnv *env, jobject /* thiz */, jlong cacheSize, jint cores,
+    jobjectArray clipDataArray, jobject exportOptions, jobject progressListener,
+    jobject fileProvider) {
+
+  env->GetJavaVM(&g_vm);
+
+  // Setup progress listener
+  g_progress_listener = env->NewGlobalRef(progressListener);
+  jclass progressClazz = env->GetObjectClass(g_progress_listener);
+  g_on_progress_mid = env->GetMethodID(progressClazz, "onProgress", "(I)V");
+  env->DeleteLocalRef(progressClazz);
+
+  // Parse export options once for the entire batch
+  export_options_t baseOptions = parse_export_options(env, exportOptions);
+  reset_export_cancel_flag();
+
+  // Initialize batch context with export options
+  BatchExportContext batch_ctx;
+  init_batch_context(batch_ctx, baseOptions);
+
+  int clipCount = env->GetArrayLength(clipDataArray);
+  int lastResult = EXPORT_SUCCESS;
+
+  // Get ClipExportData class and field IDs
+  jclass clipDataClass = env->FindClass(
+      "fm/magiclantern/forum/features/export/model/ClipExportData");
+  jfieldID fdsFieldId = env->GetFieldID(clipDataClass, "fds", "[I");
+  jfieldID fileNameFieldId =
+      env->GetFieldID(clipDataClass, "fileName", "Ljava/lang/String;");
+  jfieldID baseNameFieldId =
+      env->GetFieldID(clipDataClass, "baseName", "Ljava/lang/String;");
+  jfieldID clipUriPathFieldId =
+      env->GetFieldID(clipDataClass, "clipUriPath", "Ljava/lang/String;");
+  jfieldID stretchXFieldId =
+      env->GetFieldID(clipDataClass, "stretchFactorX", "F");
+  jfieldID stretchYFieldId =
+      env->GetFieldID(clipDataClass, "stretchFactorY", "F");
+  jfieldID rawCorrectionFieldId = env->GetFieldID(
+      clipDataClass, "rawCorrection",
+      "Lfm/magiclantern/forum/domain/model/RawCorrectionSettings;");
+
+  for (int i = 0; i < clipCount; ++i) {
+    if (is_export_cancelled()) {
+      lastResult = EXPORT_CANCELLED;
+      break;
+    }
+
+    jobject clipData = env->GetObjectArrayElement(clipDataArray, i);
+
+    // Get clip-specific data
+    jintArray clipFds = (jintArray)env->GetObjectField(clipData, fdsFieldId);
+    jstring fileName = (jstring)env->GetObjectField(clipData, fileNameFieldId);
+    jstring baseName = (jstring)env->GetObjectField(clipData, baseNameFieldId);
+    jstring clipUriPath =
+        (jstring)env->GetObjectField(clipData, clipUriPathFieldId);
+    jfloat stretchX = env->GetFloatField(clipData, stretchXFieldId);
+    jfloat stretchY = env->GetFloatField(clipData, stretchYFieldId);
+    jobject rawCorrectionObj =
+        env->GetObjectField(clipData, rawCorrectionFieldId);
+
+    // Create per-clip options
+    export_options_t clipOptions = baseOptions;
+    clipOptions.source_file_name = jstring_to_string(env, fileName);
+    clipOptions.source_base_name = jstring_to_string(env, baseName);
+    clipOptions.clip_uri_path = jstring_to_string(env, clipUriPath);
+    clipOptions.stretch_factor_x = stretchX;
+    clipOptions.stretch_factor_y = stretchY;
+    parse_raw_correction(env, rawCorrectionObj, clipOptions.raw_correction);
+
+    // Setup file provider for this clip
+    if (fileProvider) {
+      g_file_provider = env->NewGlobalRef(fileProvider);
+      jclass providerClazz = env->GetObjectClass(g_file_provider);
+      g_open_frame_fd_mid = env->GetMethodID(providerClazz, "openFrameFd",
+                                             "(ILjava/lang/String;)I");
+      g_open_container_fd_mid = env->GetMethodID(
+          providerClazz, "openContainerFd", "(Ljava/lang/String;)I");
+      g_open_audio_fd_mid = env->GetMethodID(providerClazz, "openAudioFd",
+                                             "(Ljava/lang/String;)I");
+      env->DeleteLocalRef(providerClazz);
+    }
+
+    // Open clip
+    mlvObject_t *video =
+        getMlvObject(env, clipFds, fileName, cacheSize, cores, true);
+
+    if (video) {
+      setMlvProcessing(video, video->processing);
+      disableMlvCaching(video);
+      const int focusMode = llrpDetectFocusDotFixMode(video);
+      if (focusMode != 0) {
+        llrpSetFixRawMode(video, 1);
+        llrpSetFocusPixelMode(video, focusMode);
+        llrpResetFpmStatus(video);
+        llrpResetBpmStatus(video);
+        resetMlvCache(video);
+        resetMlvCachedFrame(video);
+      }
+
+      export_fd_provider_t provider = {};
+      if (g_file_provider) {
+        provider.acquire_frame_fd =
+            g_open_frame_fd_mid ? acquire_frame_fd : nullptr;
+        provider.acquire_container_fd =
+            g_open_container_fd_mid ? acquire_container_fd : nullptr;
+        provider.acquire_audio_fd =
+            g_open_audio_fd_mid ? acquire_audio_fd : nullptr;
+        provider.ctx = nullptr;
+      }
+
+      // Use batch export job (encoder caching)
+      lastResult = startBatchExportJob(batch_ctx, video, clipOptions, provider,
+                                       progress_callback);
+
+      freeProcessingObject(video->processing);
+      freeMlvObject(video);
+    } else {
+      lastResult = EXPORT_ERROR_GENERIC;
+    }
+
+    // Cleanup per-clip resources
+    if (g_file_provider) {
+      env->DeleteGlobalRef(g_file_provider);
+      g_file_provider = nullptr;
+    }
+    env->DeleteLocalRef(clipFds);
+    env->DeleteLocalRef(fileName);
+    env->DeleteLocalRef(baseName);
+    env->DeleteLocalRef(clipUriPath);
+    if (rawCorrectionObj)
+      env->DeleteLocalRef(rawCorrectionObj);
+    env->DeleteLocalRef(clipData);
+
+    if (lastResult != EXPORT_SUCCESS) {
+      break;
+    }
+  }
+
+  // Cleanup batch context
+  cleanup_batch_context(batch_ctx);
+
+  // Cleanup globals
+  env->DeleteLocalRef(clipDataClass);
+  env->DeleteGlobalRef(g_progress_listener);
+  g_progress_listener = nullptr;
+
+  // Handle errors
+  if (lastResult == EXPORT_CANCELLED) {
+    jclass cancellationCls =
+        env->FindClass("kotlin/coroutines/CancellationException");
+    if (!cancellationCls) {
+      env->ExceptionClear();
+      cancellationCls =
+          env->FindClass("java/util/concurrent/CancellationException");
+    }
+    if (!cancellationCls) {
+      env->ExceptionClear();
+      cancellationCls = env->FindClass("java/lang/RuntimeException");
+    }
+    if (cancellationCls) {
+      env->ThrowNew(cancellationCls, "Export cancelled");
+    }
+  } else if (lastResult != EXPORT_SUCCESS) {
+    jclass exceptionCls = env->FindClass("java/lang/RuntimeException");
+    if (exceptionCls) {
+      const char *errorMessage;
+      switch (lastResult) {
+      case EXPORT_ERROR_CODEC_UNAVAILABLE:
+        errorMessage = "Export failed: No suitable video encoder available.";
+        break;
+      case EXPORT_ERROR_INSUFFICIENT_MEMORY:
+        errorMessage = "Export failed: Insufficient memory.";
+        break;
+      case EXPORT_ERROR_IO:
+        errorMessage = "Export failed: I/O error.";
+        break;
+      default:
+        errorMessage = "Export failed: An unknown error occurred.";
         break;
       }
       env->ThrowNew(exceptionCls, errorMessage);

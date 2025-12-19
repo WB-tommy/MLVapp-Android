@@ -12,47 +12,42 @@
 #include <cstring>
 
 extern "C" {
-void get_mlv_processed_thumbnail_8(mlvObject_t *video,
-                                   int frame_index, int downscale_factor,
-                                   int cpu_cores,
+void get_mlv_processed_thumbnail_8(mlvObject_t *video, int frame_index,
+                                   int downscale_factor, int cpu_cores,
                                    unsigned char *out_buffer);
 }
 
 namespace {
-constexpr const char *kJniTag = "MLVApp-JNI";
+    constexpr const char *kJniTag = "MLVApp-JNI";
 
-inline void resolveStretchFactors(mlvObject_t *clip, float &stretchX, float &stretchY) {
-    stretchX = STRETCH_H_100;
-    stretchY = STRETCH_V_100;
-
-    if (!clip) {
-        return;
-    }
-
-    float ratioV = getMlvAspectRatio(clip);
-    if (ratioV == 0.0f) {
-        ratioV = 1.0f;
-    }
-
-    if (ratioV > 0.9f && ratioV < 1.1f) {
+    inline void resolveStretchFactors(mlvObject_t *clip, float &stretchX,
+                                      float &stretchY) {
+        stretchX = STRETCH_H_100;
         stretchY = STRETCH_V_100;
-    } else if (ratioV > 1.6f && ratioV < 1.7f) {
-        stretchY = STRETCH_V_167;
-    } else if (ratioV > 2.9f && ratioV < 3.1f) {
-        stretchY = STRETCH_V_300;
-    } else {
-        stretchY = STRETCH_V_033;
-    }
-}
-}
 
-mlvObject_t *getMlvObject(
-        JNIEnv *env,
-        jintArray fds,
-        jstring fileName,
-        jlong cacheSize,
-        jint cores,
-        bool isFull) {
+        if (!clip) {
+            return;
+        }
+
+        float ratioV = getMlvAspectRatio(clip);
+        if (ratioV == 0.0f) {
+            ratioV = 1.0f;
+        }
+
+        if (ratioV > 0.9f && ratioV < 1.1f) {
+            stretchY = STRETCH_V_100;
+        } else if (ratioV > 1.6f && ratioV < 1.7f) {
+            stretchY = STRETCH_V_167;
+        } else if (ratioV > 2.9f && ratioV < 3.1f) {
+            stretchY = STRETCH_V_300;
+        } else {
+            stretchY = STRETCH_V_033;
+        }
+    }
+} // namespace
+
+mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
+                          jlong cacheSize, jint cores, bool isFull) {
     int mlvErr = MLV_ERR_NONE;
     char mlvErrMsg[256] = {0};
 
@@ -64,36 +59,28 @@ mlvObject_t *getMlvObject(
     if (filePath != nullptr) { // Always check for null after GetStringUTFChars
         size_t len = strlen(filePath);
 
-        bool isMlv = (len >= 4) &&
-                     ((strncmp(filePath + len - 4, ".mlv", 4) == 0) ||
-                      (strncmp(filePath + len - 4, ".MLV", 4) == 0));
+        bool isMlv = (len >= 4) && ((strncmp(filePath + len - 4, ".mlv", 4) == 0) ||
+                                    (strncmp(filePath + len - 4, ".MLV", 4) == 0));
 
         jint *fdArray = env->GetIntArrayElements(fds, nullptr);
         jsize numFds = env->GetArrayLength(fds);
 
         if (isMlv) {
-            nativeClip = initMlvObjectWithClip(
-                    fdArray,
-                    (int) numFds,
-                    (char *) filePath,
-                    openMode,
-                    &mlvErr,
-                    mlvErrMsg);
+            nativeClip = initMlvObjectWithClip(fdArray, (int) numFds, (char *) filePath,
+                                               openMode, &mlvErr, mlvErrMsg);
 
             env->ReleaseIntArrayElements(fds, fdArray, JNI_ABORT);
         } else {
-            nativeClip = initMlvObjectWithMcrawClip(
-                    fdArray[0],
-                    (char *) filePath,
-                    openMode,
-                    &mlvErr,
-                    mlvErrMsg);
+            nativeClip = initMlvObjectWithMcrawClip(fdArray[0], (char *) filePath,
+                                                    openMode, &mlvErr, mlvErrMsg);
         }
     }
 
     if (!nativeClip || mlvErr != MLV_ERR_NONE) { /* handle error */
-        if (nativeClip) freeMlvObject(nativeClip);
-        if (filePath) env->ReleaseStringUTFChars(fileName, filePath);
+        if (nativeClip)
+            freeMlvObject(nativeClip);
+        if (filePath)
+            env->ReleaseStringUTFChars(fileName, filePath);
         return nullptr;
     }
 
@@ -106,18 +93,16 @@ mlvObject_t *getMlvObject(
     return nativeClip;
 }
 
-
 #ifdef __cplusplus
 extern "C" {
 JNIEXPORT jobject JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
-        JNIEnv *env, jobject /* this */,
-        jint fd,
-        jstring fileName, jlong cacheSize,
+        JNIEnv *env, jobject /* this */, jint fd, jstring fileName, jlong cacheSize,
         jint cores) {
 
     if (!EnsureJniCacheInitialized(env)) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "JNI cache not initialized");
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                            "JNI cache not initialized");
         return nullptr;
     }
 
@@ -127,7 +112,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
 
     jintArray fdArray = env->NewIntArray(1);
     if (!fdArray) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to allocate fdArray");
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                            "Failed to allocate fdArray");
         return nullptr;
     }
     env->SetIntArrayRegion(fdArray, 0, 1, &fd);
@@ -146,12 +132,13 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
     AndroidBitmapInfo info{};
     float stretchFactorX = 0.0f;
     float stretchFactorY = 0.0f;
-    int cameraModelId = 0;
+    u_int32_t cameraModelId = 0;
     jstring focusPixelMapNameJ = nullptr;
 
     nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores, false);
     if (!nativeClip) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to open clip for preview");
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                            "Failed to open clip for preview");
         goto cleanup;
     }
 
@@ -169,39 +156,37 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
     thumbW = width / downscaleFactor;
     thumbH = height / downscaleFactor;
 
-    bitmap = env->CallStaticObjectMethod(
-            cache.bitmapClass,
-            cache.bitmapCreateMethod,
-            thumbW,
-            thumbH,
-            cache.bitmapConfigArgb8888);
+    bitmap =
+            env->CallStaticObjectMethod(cache.bitmapClass, cache.bitmapCreateMethod,
+                                        thumbW, thumbH, cache.bitmapConfigArgb8888);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
     }
     if (!bitmap) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to create preview bitmap");
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                            "Failed to create preview bitmap");
         goto cleanup;
     }
 
-    if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS ||
+    if (AndroidBitmap_getInfo(env, bitmap, &info) !=
+        ANDROID_BITMAP_RESULT_SUCCESS ||
         info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Unexpected bitmap format for preview");
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                            "Unexpected bitmap format for preview");
         goto cleanup;
     }
 
-    if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS ||
+    if (AndroidBitmap_lockPixels(env, bitmap, &pixels) !=
+        ANDROID_BITMAP_RESULT_SUCCESS ||
         !pixels) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Unable to lock bitmap pixels");
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                            "Unable to lock bitmap pixels");
         goto cleanup;
     }
     pixelsLocked = true;
 
-    get_mlv_processed_thumbnail_8(
-            nativeClip,
-            0,
-            downscaleFactor,
-            cores,
-            static_cast<unsigned char *>(pixels));
+    get_mlv_processed_thumbnail_8(nativeClip, 0, downscaleFactor, cores,
+                                  static_cast<unsigned char *>(pixels));
 
     AndroidBitmap_unlockPixels(env, bitmap);
     pixelsLocked = false;
@@ -220,7 +205,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
         };
 
         auto hash_string = [&](const char *value) {
-            if (!value) return;
+            if (!value)
+                return;
             while (*value) {
                 hash = ((hash << 5) + hash) + static_cast<unsigned char>(*value++);
             }
@@ -257,13 +243,9 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
             mapHeight = getMlvHeight(nativeClip);
         }
 
-        std::snprintf(
-                focusPixelMapName,
-                sizeof(focusPixelMapName),
-                "%08X_%dx%d.fpm",
-                static_cast<unsigned int>(cameraModelId),
-                mapWidth,
-                mapHeight);
+        std::snprintf(focusPixelMapName, sizeof(focusPixelMapName),
+                      "%08X_%dx%d.fpm", static_cast<unsigned int>(cameraModelId),
+                      mapWidth, mapHeight);
         focusPixelMapName[sizeof(focusPixelMapName) - 1] = '\0';
     }
     focusPixelMapNameJ = env->NewStringUTF(focusPixelMapName);
@@ -275,22 +257,16 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
     freeMlvObject(nativeClip);
     nativeClip = nullptr;
 
-    result = env->NewObject(
-            cache.clipPreviewDataClass,
-            cache.clipPreviewCtor,
-            width,
-            height,
-            bitmap,
-            static_cast<jlong>(finalGuid),
-            stretchFactorX,
-            stretchFactorY,
-            cameraModelId,
-            focusPixelMapNameJ);
+    result = env->NewObject(cache.clipPreviewDataClass, cache.clipPreviewCtor,
+                            width, height, bitmap, static_cast<jlong>(finalGuid),
+                            stretchFactorX, stretchFactorY, cameraModelId,
+                            focusPixelMapNameJ);
     if (!result) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to instantiate ClipPreviewData");
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                            "Failed to instantiate ClipPreviewData");
     }
 
-cleanup:
+    cleanup:
     if (pixelsLocked) {
         AndroidBitmap_unlockPixels(env, bitmap);
     }
@@ -311,13 +287,12 @@ cleanup:
 
 JNIEXPORT jobject JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
-        JNIEnv *env, jobject /* this */,
-        jintArray fds,
-        jstring fileName, jlong cacheSize,
-        jint cores) {
+        JNIEnv *env, jobject /* this */, jintArray fds, jstring fileName,
+        jlong cacheSize, jint cores) {
 
     if (!EnsureJniCacheInitialized(env)) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "JNI cache not initialized");
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                            "JNI cache not initialized");
         return nullptr;
     }
 
@@ -335,20 +310,24 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
 
     wrapper = new(std::nothrow) JniClipWrapper();
     if (!wrapper) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to allocate clip wrapper");
+        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                            "Failed to allocate clip wrapper");
         goto cleanup;
     }
     wrapper->mlv_object = nativeClip;
     wrapper->processing_buffer_16bit = nullptr;
 
-    // This block isolates the variable initializations to prevent the 'goto' error.
+    // This block isolates the variable initializations to prevent the 'goto'
+    // error.
     {
         const int width = getMlvWidth(nativeClip);
         const int height = getMlvHeight(nativeClip);
-        const size_t rgbSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
+        const size_t rgbSize =
+                static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
         wrapper->processing_buffer_16bit = new(std::nothrow) uint16_t[rgbSize];
         if (!wrapper->processing_buffer_16bit) {
-            __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to allocate RGB buffer");
+            __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                                "Failed to allocate RGB buffer");
             goto cleanup;
         }
 
@@ -357,16 +336,19 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
 
         const float fps = getMlvFramerate(nativeClip);
         const int frames = static_cast<int>(getMlvFrames(nativeClip));
-        const char *camera = reinterpret_cast<const char *>(getMlvCamera(nativeClip));
+        const char *camera =
+                reinterpret_cast<const char *>(getMlvCamera(nativeClip));
         const char *lens = reinterpret_cast<const char *>(getMlvLens(nativeClip));
         const int focalLengthMm = static_cast<int>(getMlvFocalLength(nativeClip));
         const int shutterUs = static_cast<int>(getMlvShutter(nativeClip));
         const int apertureHundredths = static_cast<int>(getMlvAperture(nativeClip));
         const int iso = static_cast<int>(getMlvIso(nativeClip));
         const int disoVal = static_cast<int>(getMlv2ndIso(nativeClip));
-        const bool dualIsoValid = (llrpGetDualIsoValidity(nativeClip) == DISO_VALID);
+        const bool dualIsoValid =
+                (llrpGetDualIsoValidity(nativeClip) == DISO_VALID);
         const int losslessBpp = static_cast<int>(getLosslessBpp(nativeClip));
-        const char *compression = reinterpret_cast<const char *>(getMlvCompression(nativeClip));
+        const char *compression =
+                reinterpret_cast<const char *>(getMlvCompression(nativeClip));
         const int year = static_cast<int>(getMlvTmYear(nativeClip));
         const int month = static_cast<int>(getMlvTmMonth(nativeClip));
         const int day = static_cast<int>(getMlvTmDay(nativeClip));
@@ -374,60 +356,50 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
         const int min = static_cast<int>(getMlvTmMin(nativeClip));
         const int sec = static_cast<int>(getMlvTmSec(nativeClip));
         const bool hasAudio = doesMlvHaveAudio(nativeClip);
-        const int audioChannels = hasAudio ? static_cast<int>(getMlvAudioChannels(nativeClip)) : 0;
-        const int audioSampleRate = hasAudio ? static_cast<int>(getMlvSampleRate(nativeClip)) : 0;
+        const int audioChannels =
+                hasAudio ? static_cast<int>(getMlvAudioChannels(nativeClip)) : 0;
+        const int audioSampleRate =
+                hasAudio ? static_cast<int>(getMlvSampleRate(nativeClip)) : 0;
+        const int blackLevel = static_cast<int>(getMlvBlackLevel(nativeClip));
+        const int whiteLevel = static_cast<int>(getMlvWhiteLevel(nativeClip));
 
         jstring jCamera = env->NewStringUTF(camera ? camera : "");
         jstring jLens = env->NewStringUTF(lens ? lens : "");
         jstring jCompression = env->NewStringUTF(compression ? compression : "");
 
-        if ((camera && !jCamera) || (lens && !jLens) || (compression && !jCompression)) {
-            __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to allocate metadata strings");
-            if (jCamera) env->DeleteLocalRef(jCamera);
-            if (jLens) env->DeleteLocalRef(jLens);
-            if (jCompression) env->DeleteLocalRef(jCompression);
+        if ((camera && !jCamera) || (lens && !jLens) ||
+            (compression && !jCompression)) {
+            __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                                "Failed to allocate metadata strings");
+            if (jCamera)
+                env->DeleteLocalRef(jCamera);
+            if (jLens)
+                env->DeleteLocalRef(jLens);
+            if (jCompression)
+                env->DeleteLocalRef(jCompression);
             goto cleanup;
         }
 
         metadata = env->NewObject(
-                cache.clipMetaDataClass,
-                cache.clipMetaDataCtor,
-                reinterpret_cast<jlong>(wrapper),
-                jCamera,
-                jLens,
-                frames,
-                fps,
-                focalLengthMm,
-                shutterUs,
-                apertureHundredths,
-                iso,
-                disoVal,
-                dualIsoValid,
-                losslessBpp,
-                jCompression,
-                year,
-                month,
-                day,
-                hour,
-                min,
-                sec,
-                hasAudio,
-                audioChannels,
-                audioSampleRate,
-                isMcrawLoaded(nativeClip)
-        );
+                cache.clipMetaDataClass, cache.clipMetaDataCtor,
+                reinterpret_cast<jlong>(wrapper), jCamera, jLens, frames, fps,
+                focalLengthMm, shutterUs, apertureHundredths, iso, disoVal,
+                dualIsoValid, losslessBpp, jCompression, year, month, day, hour, min,
+                sec, hasAudio, audioChannels, audioSampleRate, blackLevel, whiteLevel,
+                isMcrawLoaded(nativeClip));
 
         env->DeleteLocalRef(jCamera);
         env->DeleteLocalRef(jLens);
         env->DeleteLocalRef(jCompression);
 
         if (!metadata) {
-            __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to instantiate ClipMetaData");
+            __android_log_print(ANDROID_LOG_ERROR, kJniTag,
+                                "Failed to instantiate ClipMetaData");
             goto cleanup;
         }
     }
 
-cleanup:
+    cleanup:
     if (!metadata) { // If we failed at any point
         if (wrapper) {
             delete[] wrapper->processing_buffer_16bit;
@@ -444,16 +416,17 @@ cleanup:
 
 JNIEXPORT jlongArray JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
-        JNIEnv *env, jobject /* this */,
-        jlong handle) {
+        JNIEnv *env, jobject /* this */, jlong handle) {
     auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
     auto *nativeClip = wrapper->mlv_object;
-    if (!nativeClip || nativeClip->frames == 0 || nativeClip->video_index == nullptr) {
+    if (!nativeClip || nativeClip->frames == 0 ||
+        nativeClip->video_index == nullptr) {
         return nullptr;
     }
 
     const uint32_t frameCount = nativeClip->frames;
-    if (frameCount == 0 || frameCount > static_cast<uint32_t>(std::numeric_limits<jsize>::max())) {
+    if (frameCount == 0 ||
+        frameCount > static_cast<uint32_t>(std::numeric_limits<jsize>::max())) {
         return nullptr;
     }
 
@@ -464,8 +437,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
 
     const bool isMcraw = isMcrawLoaded(nativeClip);
     const double fpsSource = (nativeClip->frame_rate > 0.0)
-        ? nativeClip->frame_rate
-        : nativeClip->real_frame_rate;
+                             ? nativeClip->frame_rate
+                             : nativeClip->real_frame_rate;
     const jlong frameDurationUs = static_cast<jlong>(
             fpsSource > 0.0 ? std::max(1.0, 1'000'000.0 / fpsSource) : 41'667.0);
 
@@ -486,8 +459,9 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
     } else if (isMcraw) {
         // mcraw audio timestamp is stored in 0 not like MLV file.
         // Mixing the raw values with audio timestamps
-        // would drift the playback clock, so we normalize the timeline to an evenly spaced
-        // synthetic sequence and let audio sync derive from that canonical cadence.
+        // would drift the playback clock, so we normalize the timeline to an evenly
+        // spaced synthetic sequence and let audio sync derive from that canonical
+        // cadence.
         needsFallback = true;
     } else {
         bool hasNonZero = false;
@@ -496,7 +470,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
             if (frameNumber >= frameCount) {
                 continue;
             }
-            jlong timestamp = static_cast<jlong>(nativeClip->video_index[i].frame_time);
+            jlong timestamp =
+                    static_cast<jlong>(nativeClip->video_index[i].frame_time);
             timestamps[frameNumber] = timestamp;
             if (timestamp != 0) {
                 hasNonZero = true;
@@ -506,12 +481,12 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
         if (!hasNonZero) {
             needsFallback = true;
         } else {
-            const jlong minExpectedDelta = frameDurationUs > 0
-                ? std::max<jlong>(1L, frameDurationUs / 5)
-                : 1L;
-            const jlong maxExpectedDelta = frameDurationUs > 0
-                ? std::max<jlong>(minExpectedDelta, frameDurationUs * 5)
-                : std::numeric_limits<jlong>::max();
+            const jlong minExpectedDelta =
+                    frameDurationUs > 0 ? std::max<jlong>(1L, frameDurationUs / 5) : 1L;
+            const jlong maxExpectedDelta =
+                    frameDurationUs > 0
+                    ? std::max<jlong>(minExpectedDelta, frameDurationUs * 5)
+                    : std::numeric_limits<jlong>::max();
 
             jlong prev = timestamps[0];
             if (prev < 0) {
@@ -538,15 +513,14 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
         timestamps = buildSyntheticTimeline(0);
     }
 
-    env->SetLongArrayRegion(result, 0, static_cast<jsize>(frameCount), timestamps.data());
+    env->SetLongArrayRegion(result, 0, static_cast<jsize>(frameCount),
+                            timestamps.data());
     return result;
 }
 
 JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_closeClip(
-        JNIEnv *env, jobject /* this */,
-        jlong handle
-) {
+        JNIEnv *env, jobject /* this */, jlong handle) {
     if (handle == 0) {
         return;
     }
@@ -560,10 +534,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_closeClip(
 
 JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_setDebayerMode(
-        JNIEnv *env, jobject /* this */,
-        jlong handle,
-        jint mode
-) {
+        JNIEnv *env, jobject /* this */, jlong handle, jint mode) {
     if (handle == 0) {
         return;
     }
@@ -589,16 +560,16 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_setDebayerMode(
         setMlvUseIgvDebayer(nativeClip);
             break;
         case 5:
-        setMlvUseAhdDebayer(nativeClip);
+        setMlvAlwaysUseAmaze(nativeClip);
             break;
         case 6:
-        setMlvUseRcdDebayer(nativeClip);
+        setMlvUseAhdDebayer(nativeClip);
             break;
         case 7:
-        setMlvUseDcbDebayer(nativeClip);
+        setMlvUseRcdDebayer(nativeClip);
             break;
         case 8:
-        setMlvAlwaysUseAmaze(nativeClip);
+        setMlvUseDcbDebayer(nativeClip);
             break;
         case 9:
         setMlvAlwaysUseAmaze(nativeClip);
@@ -615,7 +586,5 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_setDebayerMode(
         disableMlvCaching(nativeClip);
     }
 }
-
-
 }
 #endif

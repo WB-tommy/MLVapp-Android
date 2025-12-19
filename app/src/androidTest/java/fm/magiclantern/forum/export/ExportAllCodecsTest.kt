@@ -5,6 +5,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import fm.magiclantern.forum.features.export.model.*
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import org.junit.Before
 import org.junit.Test
@@ -13,20 +14,19 @@ import java.io.File
 
 /**
  * Comprehensive export test that exports a test clip with ALL codec and option combinations.
- * 
+ *
  * This test will create real output files for verification.
- * 
+ *
  * SETUP: First push test MLV file to device:
  *   adb push /path/to/M06-1456.MLV /data/local/tmp/test.mlv
- * 
+ *
  * Run with:
  * ./gradlew connectedDebugAndroidTest \
  *   -Pandroid.testInstrumentationRunnerArguments.class=fm.magiclantern.forum.export.ExportAllCodecsTest#exportAllCodecsAndOptions
- * 
- * Output files will be in: /sdcard/Android/media/<package>/export_test_output/
- * Or customize with: -Pandroid.testInstrumentationRunnerArguments.exportPath=/sdcard/Download/MLV_Exports
+ *
+ * Output files will be in: ${DownloadFolder}/MLV_Exports
  * (Ensure app has permissions to write to the custom path)
- * 
+ *
  * To see detailed native logs:
  *   adb logcat -s FFmpegHandler,ExportHandler,ExportAllCodecsTest
  */
@@ -142,7 +142,8 @@ class ExportAllCodecsTest {
             ProResEncoder.entries.forEach { encoder ->
                 // Skip prores_aw for 4444 profiles (not supported)
                 if (encoder == ProResEncoder.FFMPEG_ANATOLYI &&
-                    (profile == ProResProfile.PRORES_4444 || profile == ProResProfile.PRORES_4444_XQ)) {
+                    (profile == ProResProfile.PRORES_4444 || profile == ProResProfile.PRORES_4444_XQ)
+                ) {
                     return@forEach
                 }
                 configs.add(
@@ -315,7 +316,10 @@ class ExportAllCodecsTest {
     @Test
     fun listAllExportConfigurations() {
         Log.i(TAG, "Checking test file: ${testFile.absolutePath}")
-        Log.i(TAG, "File exists: ${testFile.exists()}, readable: ${testFile.canRead()}, size: ${testFile.length()}")
+        Log.i(
+            TAG,
+            "File exists: ${testFile.exists()}, readable: ${testFile.canRead()}, size: ${testFile.length()}"
+        )
 
         if (!testFile.exists()) {
             Log.e(TAG, "Test MLV file not found at: ${testFile.absolutePath}")
@@ -341,114 +345,6 @@ class ExportAllCodecsTest {
         }
 
         Log.i(TAG, "Total configurations: ${configs.size}")
-    }
-
-    @Test
-    fun exportCDNG() {
-        val configs = generateCinemaDNGConfigs()
-        configs.forEachIndexed { index, config ->
-            Log.i(TAG, "────────────────────────────────────────")
-            Log.i(TAG, "[${index + 1}/${configs.size}] Exporting: ${config.name}")
-            Log.i(TAG, "  Codec: ${config.settings.codec.displayName}")
-
-            val result = try {
-                exportWithConfig(testFile, config)
-            } catch (e: Exception) {
-                Log.e(TAG, "  ✗ FAILED: ${e.message}", e)
-                Log.e(TAG, "  Stack trace: ${e.stackTraceToString()}")
-                ExportResult(config.name, false, e.message ?: "Unknown error", 0)
-            }
-
-            if (result.success) Log.d(TAG, "O Success: ${config.name}")
-
-            if (result.success) {
-                Log.i(TAG, "  ✓ SUCCESS - Output: ${result.outputPath}")
-                Log.i(TAG, "  Size: ${formatFileSize(result.outputSize)}")
-            } else {
-                Log.e(TAG, "  ✗ FAILED: ${result.error}")
-            }
-        }
-    }
-
-    @Test
-    fun exportH265() {
-        val configs = generateH265Configs()
-        configs.forEachIndexed { index, config ->
-            Log.i(TAG, "────────────────────────────────────────")
-            Log.i(TAG, "[${index + 1}/${configs.size}] Exporting: ${config.name}")
-            Log.i(TAG, "  Codec: ${config.settings.codec.displayName}")
-
-            val result = try {
-                exportWithConfig(testFile, config)
-            } catch (e: Exception) {
-                Log.e(TAG, "  ✗ FAILED: ${e.message}", e)
-                Log.e(TAG, "  Stack trace: ${e.stackTraceToString()}")
-                ExportResult(config.name, false, e.message ?: "Unknown error", 0)
-            }
-
-            if (result.success) Log.d(TAG, "O Success: ${config.name}")
-
-            if (result.success) {
-                Log.i(TAG, "  ✓ SUCCESS - Output: ${result.outputPath}")
-                Log.i(TAG, "  Size: ${formatFileSize(result.outputSize)}")
-            } else {
-                Log.e(TAG, "  ✗ FAILED: ${result.error}")
-            }
-        }
-    }
-
-    @Test
-    fun exportPNG() {
-        val configs = generatePngConfigs()
-        configs.forEachIndexed { index, config ->
-            Log.i(TAG, "────────────────────────────────────────")
-            Log.i(TAG, "[${index + 1}/${configs.size}] Exporting: ${config.name}")
-            Log.i(TAG, "  Codec: ${config.settings.codec.displayName}")
-
-            val result = try {
-                exportWithConfig(testFile, config)
-            } catch (e: Exception) {
-                Log.e(TAG, "  ✗ FAILED: ${e.message}", e)
-                Log.e(TAG, "  Stack trace: ${e.stackTraceToString()}")
-                ExportResult(config.name, false, e.message ?: "Unknown error", 0)
-            }
-
-            if (result.success) Log.d(TAG, "O Success: ${config.name}")
-
-            if (result.success) {
-                Log.i(TAG, "  ✓ SUCCESS - Output: ${result.outputPath}")
-                Log.i(TAG, "  Size: ${formatFileSize(result.outputSize)}")
-            } else {
-                Log.e(TAG, "  ✗ FAILED: ${result.error}")
-            }
-        }
-    }
-
-    @Test
-    fun exportAudioOnly() {
-        val configs = generateAudioOnlyConfigs()
-        configs.forEachIndexed { index, config ->
-            Log.i(TAG, "────────────────────────────────────────")
-            Log.i(TAG, "[${index + 1}/${configs.size}] Exporting: ${config.name}")
-            Log.i(TAG, "  Codec: ${config.settings.codec.displayName}")
-
-            val result = try {
-                exportWithConfig(testFile, config)
-            } catch (e: Exception) {
-                Log.e(TAG, "  ✗ FAILED: ${e.message}", e)
-                Log.e(TAG, "  Stack trace: ${e.stackTraceToString()}")
-                ExportResult(config.name, false, e.message ?: "Unknown error", 0)
-            }
-
-            if (result.success) Log.d(TAG, "O Success: ${config.name}")
-
-            if (result.success) {
-                Log.i(TAG, "  ✓ SUCCESS - Output: ${result.outputPath}")
-                Log.i(TAG, "  Size: ${formatFileSize(result.outputSize)}")
-            } else {
-                Log.e(TAG, "  ✗ FAILED: ${result.error}")
-            }
-        }
     }
 
     @Test
@@ -486,6 +382,36 @@ class ExportAllCodecsTest {
                 Log.e(TAG, "  ✗ FAILED: ${result.error}")
             }
         }
+
+        // Define a persistent location on the device (e.g., /sdcard/Download/MLV_Test_Results)
+        val publicDir = File(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+            "export_test_output"
+        )
+
+        // Ensure the directory exists
+        if (!publicDir.exists()) {
+            publicDir.mkdirs()
+        }
+
+        Log.i(TAG, "╔════════════════════════════════════════════════════════════╗")
+        Log.i(TAG, "║ Copying artifacts to: ${publicDir.absolutePath} ║")
+        Log.i(TAG, "╚════════════════════════════════════════════════════════════╝")
+
+        // Copy everything from the internal test outputDir to the public folder
+        val success = outputDir.copyRecursively(
+            target = publicDir,
+            overwrite = true
+        ) { file, exception ->
+            Log.e(TAG, "Failed to copy ${file.name}: ${exception.message}")
+            OnErrorAction.SKIP
+        }
+
+        if (success) {
+            Log.i(TAG, "✓ Artifacts successfully backed up to public storage.")
+        } else {
+            Log.e(TAG, "✗ Some artifacts failed to copy.")
+        }
     }
 
     private fun exportWithConfig(testFile: File, config: ExportTestConfig): ExportResult {
@@ -493,7 +419,7 @@ class ExportAllCodecsTest {
         val tempAudioDir = if (config.settings.codec == ExportCodec.AUDIO_ONLY) {
             File(context.cacheDir, "export_audio_temp").also { it.mkdirs() }
         } else null
-        
+
         // For image sequences, create a subdirectory
         // For video files, output directly with extension
         val isImageSequence = config.settings.codec in listOf(
@@ -502,13 +428,13 @@ class ExportAllCodecsTest {
             ExportCodec.PNG,
             ExportCodec.JPEG2000
         )
-        
+
         var outputFile = if (isImageSequence) {
             File(outputDir, outputName) // Directory for image sequences
         } else {
             File(outputDir, outputName + config.extension) // Single file with extension
         }
-        
+
         // Delete existing output
         if (outputFile.exists()) {
             if (outputFile.isDirectory) {
@@ -517,7 +443,7 @@ class ExportAllCodecsTest {
                 outputFile.delete()
             }
         }
-        
+
         // Create output directory for image sequences
         val exportOutputDir = if (isImageSequence) {
             outputFile.mkdirs()
@@ -533,7 +459,7 @@ class ExportAllCodecsTest {
         )
 
         val clipFd = fd.detachFd()
-        
+
         // Create export options - use unique source name for each config so output files don't overwrite
         val uniqueSourceName = "test_${config.name}.mlv"
         val exportOptions = config.settings.toTestExportOptions(
@@ -541,12 +467,12 @@ class ExportAllCodecsTest {
             outputPath = exportOutputDir.absolutePath,
             audioTempDir = tempAudioDir?.absolutePath ?: exportOutputDir.absolutePath
         )
-        
+
         // Create file provider for output
         val fileProvider = TestFdProvider(exportOutputDir)
 
         val startTime = System.currentTimeMillis()
-        
+
         try {
             NativeLib.exportHandler(
                 memSize = 512 * 1024 * 1024L, // 512MB
@@ -565,7 +491,7 @@ class ExportAllCodecsTest {
         }
 
         val duration = System.currentTimeMillis() - startTime
-        
+
         // Check output - list all files in output directory for debugging
         Log.d(TAG, "  Checking output files in: ${exportOutputDir.absolutePath}")
         val filesInDir = exportOutputDir.listFiles() ?: emptyArray()
@@ -573,7 +499,7 @@ class ExportAllCodecsTest {
         filesInDir.forEach { f ->
             Log.d(TAG, "    - ${f.name} (${f.length()} bytes)")
         }
-        
+
         // Check output
         // For audio-only we first write to a temp cache directory, then move the WAV to the output dir
         if (config.settings.codec == ExportCodec.AUDIO_ONLY && tempAudioDir != null) {
@@ -594,11 +520,12 @@ class ExportAllCodecsTest {
         } else {
             // For single files, check if any file was created in the output dir with the expected name pattern
             val baseName = "test_${config.name}"
-            val matchingFiles = outputDir.listFiles()?.filter { it.name.startsWith(baseName) } ?: emptyList()
+            val matchingFiles =
+                outputDir.listFiles()?.filter { it.name.startsWith(baseName) } ?: emptyList()
             Log.d(TAG, "  Looking for files starting with '$baseName': found ${matchingFiles.size}")
             matchingFiles.sumOf { it.length() }
         }
-        
+
         val errorMsg = if (outputSize == 0L) {
             "No output file created. Check native logs with: adb logcat -s FFmpegHandler,ExportHandler"
         } else ""
@@ -684,7 +611,7 @@ class ExportAllCodecsTest {
      * Simple file-based provider for tests (no SAF needed)
      */
     class TestFdProvider(private val outputDir: File) {
-        
+
         fun openFrameFd(frameIndex: Int, relativeName: String): Int {
             return createFile(relativeName)
         }
@@ -703,7 +630,10 @@ class ExportAllCodecsTest {
             if (!file.exists()) {
                 file.createNewFile()
             }
-            val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_WRITE_ONLY or ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE)
+            val pfd = ParcelFileDescriptor.open(
+                file,
+                ParcelFileDescriptor.MODE_WRITE_ONLY or ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE
+            )
             return pfd.detachFd()
         }
     }

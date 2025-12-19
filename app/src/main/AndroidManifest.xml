@@ -14,6 +14,7 @@
     </queries>
 
     <application
+        android:name=".MLVApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -33,7 +34,7 @@
             </intent-filter>
         </activity>
         <service
-            android:name=".export.ExportService"
+            android:name=".features.export.ExportService"
             android:exported="false"
             android:foregroundServiceType="mediaProcessing" />
     </application>

@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "batch_export_context.h"
 #include "ffmpeg_audio.h"
 #include "ffmpeg_presets.h"
 #include "ffmpeg_utils.h"
@@ -58,5 +59,12 @@ int export_image_sequence(mlvObject_t *video, const export_options_t &options,
 int export_video_container(mlvObject_t *video, const export_options_t &options,
                            const export_fd_provider_t &provider,
                            void (*progress_callback)(int progress));
+
+// Batch video container export - uses shared encoder context
+int export_video_container_batch(BatchExportContext &batch_ctx,
+                                 mlvObject_t *video,
+                                 const export_options_t &options,
+                                 const export_fd_provider_t &provider,
+                                 void (*progress_callback)(int progress));
 
 #endif // MLVAPP_FFMPEG_HANDLER_H

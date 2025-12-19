@@ -16,6 +16,10 @@
 #include "../../src/mlv/macros.h"
 #include "../ffmpeg/ffmpeg_handler.h"
 
+extern "C" {
+#include "../../src/mlv/llrawproc/llrawproc.h"
+}
+
 static const int kCdngNamingDefault = 0;
 static const int kCdngNamingDaVinci = 1;
 
@@ -24,15 +28,68 @@ inline bool approximately(float value, float target, float epsilon = 1e-3f) {
   return std::fabs(value - target) < epsilon;
 }
 
-void apply_debayer_mode(mlvObject_t *video, const export_options_t &options) {
-  switch (options.debayer_quality) {
-  case 1:
+// Helper to apply debayer mode by native ID
+void apply_debayer_by_native_id(mlvObject_t *video, int native_id) {
+  switch (native_id) {
+  case 0: // NONE (monochrome)
+    setMlvUseNoneDebayer(video);
+    break;
+  case 1: // SIMPLE
+    setMlvUseSimpleDebayer(video);
+    break;
+  case 2: // BILINEAR
+    setMlvDontAlwaysUseAmaze(video);
+    break;
+  case 3: // LMMSE
     setMlvUseLmmseDebayer(video);
     break;
-  case 2:
+  case 4: // IGV
     setMlvUseIgvDebayer(video);
     break;
+  case 5: // AMAZE
+    setMlvAlwaysUseAmaze(video);
+    break;
+  case 6: // AHD
+    setMlvUseAhdDebayer(video);
+    break;
+  case 7: // RCD
+    setMlvUseRcdDebayer(video);
+    break;
+  case 8: // DCB
+    setMlvUseDcbDebayer(video);
+    break;
   default:
+    // Default to AMaZE for unknown modes
+    setMlvAlwaysUseAmaze(video);
+    break;
+  }
+}
+
+void apply_debayer_mode(mlvObject_t *video, const export_options_t &options) {
+  // debayer_quality is the ordinal of DebayerQuality enum:
+  // 0 = RECEIPT (use clip's per-clip debayer mode)
+  // 1 = Force BILINEAR (native ID 2)
+  // 2 = Force LMMSE (native ID 3)
+  // 3 = Force IGV (native ID 4)
+  // 4 = Force AMAZE (native ID 5)
+  switch (options.debayer_quality) {
+  case 0: // RECEIPT - use the per-clip debayer mode
+    apply_debayer_by_native_id(video, options.clip_debayer_mode);
+    break;
+  case 1: // Force BILINEAR
+    setMlvDontAlwaysUseAmaze(video);
+    break;
+  case 2: // Force LMMSE
+    setMlvUseLmmseDebayer(video);
+    break;
+  case 3: // Force IGV
+    setMlvUseIgvDebayer(video);
+    break;
+  case 4: // Force AMAZE
+    setMlvAlwaysUseAmaze(video);
+    break;
+  default:
+    // Default to AMaZE for unknown modes
     setMlvAlwaysUseAmaze(video);
     break;
   }
@@ -44,13 +101,68 @@ void reset_processing_state(mlvObject_t *video) {
   llrpComputeStripesOn(video);
   video->current_cached_frame_active = 0;
 }
+
+// Apply all raw correction settings from the options struct
+void apply_raw_correction(mlvObject_t *video,
+                          const raw_correction_options_t &opts) {
+
+  if (!opts.enabled) {
+    video->llrawproc->fix_raw = 0;
+    return;
+  }
+
+  video->llrawproc->fix_raw = 1;
+
+  // Vertical stripes
+  llrpSetVerticalStripeMode(video, opts.vertical_stripes);
+
+  // Focus pixels
+  llrpSetFocusPixelMode(video, opts.focus_pixels);
+  if (opts.focus_pixels > 0) {
+    llrpSetFocusPixelInterpolationMethod(video, opts.fpi_method);
+  }
+
+  // Bad pixels
+  llrpSetBadPixelMode(video, opts.bad_pixels);
+  if (opts.bad_pixels > 0) {
+    llrpSetBadPixelSearchMethod(video, opts.bps_method);
+    llrpSetBadPixelInterpolationMethod(video, opts.bpi_method);
+  }
+
+  // Chroma smooth
+  llrpSetChromaSmoothMode(video, opts.chroma_smooth);
+
+  // Pattern noise
+  llrpSetPatternNoiseMode(video, opts.pattern_noise);
+
+  // Deflicker
+  llrpSetDeflickerTarget(video, opts.deflicker_target);
+
+  // Dual ISO
+  llrpSetDualIsoMode(video, opts.dual_iso);
+  llrpSetDualIsoValidity(video, opts.dual_iso_forced ? 1 : 0);
+  llrpSetDualIsoInterpolationMethod(video, opts.dual_iso_interpolation);
+  llrpSetDualIsoAliasMapMode(video, opts.dual_iso_alias_map ? 1 : 0);
+  llrpSetDualIsoFullResBlendingMode(video, opts.dual_iso_fr_blending ? 1 : 0);
+
+  //        // Black and white levels
+  //        if (opts.dual_iso_white > 0) {
+  //            setMlvWhiteLevel(video, opts.dual_iso_white);
+  //        }
+  //        if (opts.dual_iso_black > 0) {
+  //            setMlvBlackLevel(video, opts.dual_iso_black);
+  //        }
+
+  // Dark frame
+  llrpSetDarkFrameMode(video, opts.dark_frame_enabled);
+  // Note: Dark frame file path would need to be applied via
+  // llrpSetDarkFrameFile if the file is accessible during export
+}
 } // namespace
 
 int startExportCdng(mlvObject_t *video, const export_options_t &options,
                     const export_fd_provider_t &provider,
                     void (*progress_callback)(int progress)) {
-  __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                      "=== Starting CinemaDNG Export ===");
 
   if (!provider.acquire_frame_fd) {
     __android_log_print(ANDROID_LOG_ERROR, "ExportHandler",
@@ -58,15 +170,9 @@ int startExportCdng(mlvObject_t *video, const export_options_t &options,
     return EXPORT_ERROR_INVALID_PARAMETERS;
   }
   if (is_export_cancelled()) {
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Export cancelled before start");
     return EXPORT_CANCELLED;
   }
 
-  __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                      "CinemaDNG settings: variant=%d, naming=%d, base_name=%s",
-                      options.cdng_variant, options.naming_scheme,
-                      options.source_base_name.c_str());
   float stretchFactorX = options.stretch_factor_x;
   if (stretchFactorX <= 0.0f) {
     stretchFactorX = STRETCH_H_100;
@@ -82,9 +188,8 @@ int startExportCdng(mlvObject_t *video, const export_options_t &options,
   llrpResetBpmStatus(video);
   llrpComputeStripesOn(video);
   video->current_cached_frame_active = 0;
-  if (options.enable_raw_fixes) {
-    video->llrawproc->fix_raw = 1;
-  }
+  // Apply raw correction settings (replaces enable_raw_fixes check)
+  apply_raw_correction(video, options.raw_correction);
 
   // Set aspect ratio of the picture
   int32_t picAR[4] = {0};
@@ -216,25 +321,16 @@ static std::string write_export_audio(mlvObject_t *video,
 int startExportPipe(mlvObject_t *video, const export_options_t &options,
                     const export_fd_provider_t &provider,
                     void (*progress_callback)(int progress)) {
-  __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                      "=== Starting Video Export ===");
 
   if (is_export_cancelled()) {
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Export cancelled before start");
+
     return EXPORT_CANCELLED;
   }
 
-  __android_log_print(
-      ANDROID_LOG_INFO, "ExportHandler",
-      "Export settings: codec=%d, debayer_quality=%d, raw_fixes=%d",
-      options.codec, options.debayer_quality, options.enable_raw_fixes);
-
   apply_debayer_mode(video, options);
   reset_processing_state(video);
-  if (options.enable_raw_fixes) {
-    video->llrawproc->fix_raw = 1;
-  }
+  // Apply raw correction settings (replaces enable_raw_fixes check)
+  apply_raw_correction(video, options.raw_correction);
 
   if (progress_callback) {
     progress_callback(0);
@@ -263,57 +359,36 @@ int startExportPipe(mlvObject_t *video, const export_options_t &options,
       dst_fmt = AV_PIX_FMT_YUV444P; // JPEG2000 uses YUV444
     }
 
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Exporting image sequence: format=%s, pixel_fmt=%d",
-                        ext, dst_fmt);
     return export_image_sequence(video, options, provider, codec_id, dst_fmt,
                                  ext, progress_callback);
   }
 
   // Video container exports (ProRes/H264/H265)
-  __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                      "Exporting video container");
+
   return export_video_container(video, options, provider, progress_callback);
 }
 
 int startExportJob(mlvObject_t *video, const export_options_t &options,
                    const export_fd_provider_t &provider,
                    void (*progress_callback)(int progress)) {
-  __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                      "======================================");
-  __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                      "Starting export job: codec=%d, frames=%d", options.codec,
-                      getMlvFrames(video));
 
   if (is_export_cancelled()) {
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Export cancelled before start");
     return EXPORT_CANCELLED;
   }
 
   // Prepare audio if needed
   export_options_t effectiveOptions = options;
   if (options.include_audio && options.codec != EXPORT_CODEC_AUDIO_ONLY) {
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Extracting audio...");
     effectiveOptions.audio_path = write_export_audio(video, options);
-    if (!effectiveOptions.audio_path.empty()) {
-      __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                          "Audio extracted to: %s",
-                          effectiveOptions.audio_path.c_str());
-    }
   } else if (options.codec == EXPORT_CODEC_AUDIO_ONLY) {
     // Audio-only exports write WAV directly to the provided temp directory
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Extracting audio (audio-only)...");
     const std::string audioPath = write_export_audio(video, options);
     if (audioPath.empty()) {
       __android_log_print(ANDROID_LOG_ERROR, "ExportHandler",
                           "Audio-only export failed: empty audio path");
       return EXPORT_ERROR_GENERIC;
     }
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Audio-only export wrote: %s", audioPath.c_str());
+
     if (progress_callback) {
       progress_callback(100);
     }
@@ -321,16 +396,13 @@ int startExportJob(mlvObject_t *video, const export_options_t &options,
   }
 
   if (is_export_cancelled()) {
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Export cancelled after audio extraction");
     return EXPORT_CANCELLED;
   }
 
   int result = EXPORT_ERROR_GENERIC;
   switch (effectiveOptions.codec) {
   case EXPORT_CODEC_CINEMA_DNG:
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Route: CinemaDNG export");
+
     result =
         startExportCdng(video, effectiveOptions, provider, progress_callback);
     break;
@@ -341,17 +413,113 @@ int startExportJob(mlvObject_t *video, const export_options_t &options,
     result = EXPORT_ERROR_GENERIC;
     break;
   default:
-    __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                        "Route: Video container export");
+
     result =
         startExportPipe(video, effectiveOptions, provider, progress_callback);
     break;
   }
 
-  __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                      "Export job completed with result: %d", result);
-  __android_log_print(ANDROID_LOG_INFO, "ExportHandler",
-                      "======================================");
+  return result;
+}
+
+// Batch export pipe - uses shared encoder context
+static int startBatchExportPipe(BatchExportContext &batch_ctx,
+                                mlvObject_t *video,
+                                const export_options_t &options,
+                                const export_fd_provider_t &provider,
+                                void (*progress_callback)(int progress)) {
+
+  if (is_export_cancelled()) {
+    return EXPORT_CANCELLED;
+  }
+
+  apply_debayer_mode(video, options);
+  reset_processing_state(video);
+  apply_raw_correction(video, options.raw_correction);
+
+  if (progress_callback) {
+    progress_callback(0);
+  }
+
+  // Image sequence exports don't benefit from batch context
+  if (options.codec == EXPORT_CODEC_TIFF || options.codec == EXPORT_CODEC_PNG ||
+      options.codec == EXPORT_CODEC_JPEG2000) {
+    const char *ext;
+    AVCodecID codec_id;
+    AVPixelFormat dst_fmt;
+
+    if (options.codec == EXPORT_CODEC_TIFF) {
+      ext = ".tif";
+      codec_id = AV_CODEC_ID_TIFF;
+      dst_fmt = AV_PIX_FMT_RGB48LE;
+    } else if (options.codec == EXPORT_CODEC_PNG) {
+      ext = ".png";
+      codec_id = AV_CODEC_ID_PNG;
+      dst_fmt = (options.png_bitdepth == PNG_8BIT) ? AV_PIX_FMT_RGB24
+                                                   : AV_PIX_FMT_RGB48BE;
+    } else {
+      ext = ".jp2";
+      codec_id = AV_CODEC_ID_JPEG2000;
+      dst_fmt = AV_PIX_FMT_YUV444P;
+    }
+
+    return export_image_sequence(video, options, provider, codec_id, dst_fmt,
+                                 ext, progress_callback);
+  }
+
+  // Video container exports - use batch context for encoder caching
+  return export_video_container_batch(batch_ctx, video, options, provider,
+                                      progress_callback);
+}
+
+int startBatchExportJob(BatchExportContext &batch_ctx, mlvObject_t *video,
+                        const export_options_t &options,
+                        const export_fd_provider_t &provider,
+                        void (*progress_callback)(int progress)) {
+
+  if (is_export_cancelled()) {
+    return EXPORT_CANCELLED;
+  }
+
+  // Prepare audio if needed
+  export_options_t effectiveOptions = options;
+  if (options.include_audio && options.codec != EXPORT_CODEC_AUDIO_ONLY) {
+    effectiveOptions.audio_path = write_export_audio(video, options);
+  } else if (options.codec == EXPORT_CODEC_AUDIO_ONLY) {
+    const std::string audioPath = write_export_audio(video, options);
+    if (audioPath.empty()) {
+      __android_log_print(ANDROID_LOG_ERROR, "ExportHandler",
+                          "Audio-only export failed: empty audio path");
+      return EXPORT_ERROR_GENERIC;
+    }
+    if (progress_callback) {
+      progress_callback(100);
+    }
+    return EXPORT_SUCCESS;
+  }
+
+  if (is_export_cancelled()) {
+    return EXPORT_CANCELLED;
+  }
+
+  int result = EXPORT_ERROR_GENERIC;
+  switch (effectiveOptions.codec) {
+  case EXPORT_CODEC_CINEMA_DNG:
+    // CDNG doesn't use video codec, so no batch optimization
+    result =
+        startExportCdng(video, effectiveOptions, provider, progress_callback);
+    break;
+  case EXPORT_CODEC_AUDIO_ONLY:
+    __android_log_print(ANDROID_LOG_ERROR, "ExportHandler",
+                        "Unexpected audio-only route fallthrough");
+    result = EXPORT_ERROR_GENERIC;
+    break;
+  default:
+    // Use batch export pipe with encoder caching
+    result = startBatchExportPipe(batch_ctx, video, effectiveOptions, provider,
+                                  progress_callback);
+    break;
+  }
 
   return result;
 }

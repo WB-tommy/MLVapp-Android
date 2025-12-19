@@ -1,6 +1,7 @@
 #ifndef MLVAPP_EXPORT_OPTIONS_H
 #define MLVAPP_EXPORT_OPTIONS_H
 
+#include "raw_correction_options.h"
 #include <string>
 
 // Codec types - matches Kotlin ExportCodec enum ordinals
@@ -102,6 +103,9 @@ struct export_options_t {
   int vp9_quality = VP9_QUALITY_GOOD;
 
   int debayer_quality = 0;
+  // Per-clip debayer mode (native ID) used when debayer_quality is RECEIPT (0)
+  // Default is 5 (AMaZE) to match Kotlin default
+  int clip_debayer_mode = 5;
   int smoothing = 0;
   bool include_audio = true;
   bool enable_raw_fixes = true;
@@ -121,6 +125,9 @@ struct export_options_t {
   std::string audio_path;
   float stretch_factor_x = 1.0f;
   float stretch_factor_y = 1.0f;
+
+  // Raw correction settings (full struct from Kotlin)
+  raw_correction_options_t raw_correction;
 
   // Benchmark / Diagnostics flags
   bool force_hardware = false;

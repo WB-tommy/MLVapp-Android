@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import fm.magiclantern.forum.export.ExportAllCodecsTest.ExportResult
 import fm.magiclantern.forum.export.ExportAllCodecsTest.TestFdProvider
+import fm.magiclantern.forum.features.export.model.*
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import org.junit.Before
 import org.junit.Test

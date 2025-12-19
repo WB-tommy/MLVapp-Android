@@ -4,8 +4,7 @@
 
 static const char *LOG_TAG = "FFmpegAudio";
 
-int init_audio_copy(const std::string &audio_path,
-                    AVFormatContext *output_fmt,
+int init_audio_copy(const std::string &audio_path, AVFormatContext *output_fmt,
                     AudioCopyContext &ctx) {
     if (audio_path.empty()) {
         return 0;
@@ -41,7 +40,8 @@ int copy_audio_packets(AudioCopyContext &ctx, AVFormatContext *output_fmt) {
         return 0;
     }
     AVPacket *pkt = av_packet_alloc();
-    if (!pkt) return AVERROR(ENOMEM);
+    if (!pkt)
+        return AVERROR(ENOMEM);
 
     int ret = 0;
 
@@ -81,72 +81,52 @@ void cleanup_audio_copy(AudioCopyContext &ctx) {
 
 namespace {
     const AVCodec *find_audio_encoder(bool prefer_opus, bool prefer_aac) {
-        LOGI(LOG_TAG, "Finding audio encoder: prefer_opus=%d, prefer_aac=%d",
-             prefer_opus, prefer_aac);
 
         if (prefer_aac) {
             const AVCodec *aac = avcodec_find_encoder_by_name("aac");
             if (!aac) {
                 aac = avcodec_find_encoder(AV_CODEC_ID_AAC);
-                LOGI(LOG_TAG, "  AV_CODEC_ID_AAC: %s", aac ? "FOUND" : "not found");
             }
             if (aac) {
-                LOGI(LOG_TAG, "Selected AAC encoder: %s", aac->name);
                 return aac;
             }
         }
         if (prefer_opus) {
             const AVCodec *opus = avcodec_find_encoder_by_name("libopus");
-            LOGI(LOG_TAG, "  libopus: %s", opus ? "FOUND" : "not found");
             if (!opus) {
                 opus = avcodec_find_encoder(AV_CODEC_ID_OPUS);
-                LOGI(LOG_TAG, "  AV_CODEC_ID_OPUS: %s", opus ? "FOUND" : "not found");
             }
             if (opus) {
-                LOGI(LOG_TAG, "Selected Opus encoder: %s", opus->name);
                 return opus;
             }
             const AVCodec *vorbis = avcodec_find_encoder_by_name("libvorbis");
-            LOGI(LOG_TAG, "  libvorbis: %s", vorbis ? "FOUND" : "not found");
             if (!vorbis) {
                 vorbis = avcodec_find_encoder(AV_CODEC_ID_VORBIS);
-                LOGI(LOG_TAG, "  AV_CODEC_ID_VORBIS: %s", vorbis ? "FOUND" : "not found");
             }
             if (vorbis) {
-                LOGI(LOG_TAG, "Selected Vorbis encoder: %s", vorbis->name);
                 return vorbis;
             }
         }
         // Fallback order: AAC -> Opus -> Vorbis
-        LOGI(LOG_TAG, "Trying fallback audio encoders...");
         const AVCodec *aac = avcodec_find_encoder_by_name("aac");
-        LOGI(LOG_TAG, "  aac (native): %s", aac ? "FOUND" : "not found");
         if (!aac) {
             aac = avcodec_find_encoder(AV_CODEC_ID_AAC);
-            LOGI(LOG_TAG, "  AV_CODEC_ID_AAC: %s", aac ? "FOUND" : "not found");
         }
         if (aac) {
-            LOGI(LOG_TAG, "Selected AAC encoder (fallback): %s", aac->name);
             return aac;
         }
         const AVCodec *opus = avcodec_find_encoder_by_name("libopus");
-        LOGI(LOG_TAG, "  libopus: %s", opus ? "FOUND" : "not found");
         if (!opus) {
             opus = avcodec_find_encoder(AV_CODEC_ID_OPUS);
-            LOGI(LOG_TAG, "  AV_CODEC_ID_OPUS: %s", opus ? "FOUND" : "not found");
         }
         if (opus) {
-            LOGI(LOG_TAG, "Selected Opus encoder (fallback): %s", opus->name);
             return opus;
         }
         const AVCodec *vorbis = avcodec_find_encoder_by_name("libvorbis");
-        LOGI(LOG_TAG, "  libvorbis: %s", vorbis ? "FOUND" : "not found");
         if (!vorbis) {
             vorbis = avcodec_find_encoder(AV_CODEC_ID_VORBIS);
-            LOGI(LOG_TAG, "  AV_CODEC_ID_VORBIS: %s", vorbis ? "FOUND" : "not found");
         }
         if (vorbis) {
-            LOGI(LOG_TAG, "Selected Vorbis encoder (fallback): %s", vorbis->name);
             return vorbis;
         }
         LOGE(LOG_TAG, "No audio encoder found!");
@@ -166,21 +146,13 @@ namespace {
                 reinterpret_cast<const void **>(&fmts), nullptr);
 
         if (ret >= 0 && fmts) {
-            LOGI(LOG_TAG, "select_sample_format: using avcodec_get_supported_config");
-            // Log all supported formats
-            for (const AVSampleFormat *fmt = fmts; *fmt != AV_SAMPLE_FMT_NONE; ++fmt) {
-                LOGI(LOG_TAG, "  supported sample_fmt: %d (%s)", *fmt,
-                     av_get_sample_fmt_name(*fmt));
-            }
             // Prefer FLTP, then first available
             for (const AVSampleFormat *fmt = fmts; *fmt != AV_SAMPLE_FMT_NONE; ++fmt) {
                 if (*fmt == AV_SAMPLE_FMT_FLTP) {
-                    LOGI(LOG_TAG, "  selected: FLTP");
                     return *fmt;
                 }
             }
-            LOGI(LOG_TAG, "  selected: %d (%s)", fmts[0],
-                 av_get_sample_fmt_name(fmts[0]));
+
             return fmts[0];
         }
 
@@ -188,21 +160,12 @@ namespace {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
         if (codec->sample_fmts) {
-            LOGI(LOG_TAG, "select_sample_format: using deprecated codec->sample_fmts");
-            for (const AVSampleFormat *fmt = codec->sample_fmts;
-                 *fmt != AV_SAMPLE_FMT_NONE; ++fmt) {
-                LOGI(LOG_TAG, "  supported sample_fmt: %d (%s)", *fmt,
-                     av_get_sample_fmt_name(*fmt));
-            }
             for (const AVSampleFormat *fmt = codec->sample_fmts;
                  *fmt != AV_SAMPLE_FMT_NONE; ++fmt) {
                 if (*fmt == AV_SAMPLE_FMT_FLTP) {
-                    LOGI(LOG_TAG, "  selected: FLTP");
                     return *fmt;
                 }
             }
-            LOGI(LOG_TAG, "  selected: %d (%s)", codec->sample_fmts[0],
-                 av_get_sample_fmt_name(codec->sample_fmts[0]));
             return codec->sample_fmts[0];
         }
 #pragma GCC diagnostic pop
@@ -223,23 +186,18 @@ namespace {
                 reinterpret_cast<const void **>(&rates), nullptr);
 
         if (ret >= 0 && rates) {
-            LOGI(LOG_TAG, "select_sample_rate: using avcodec_get_supported_config");
             for (const int *rate = rates; *rate; ++rate) {
-                LOGI(LOG_TAG, "  supported rate: %d", *rate);
                 if (*rate == 48000) {
-                    LOGI(LOG_TAG, "  selected: 48000");
                     return 48000;
                 }
             }
             if (fallback_rate > 0) {
                 for (const int *rate = rates; *rate; ++rate) {
                     if (*rate == fallback_rate) {
-                        LOGI(LOG_TAG, "  selected (fallback): %d", fallback_rate);
                         return fallback_rate;
                     }
                 }
             }
-            LOGI(LOG_TAG, "  selected (first): %d", rates[0]);
             return rates[0] > 0 ? rates[0] : 48000;
         }
 
@@ -247,11 +205,8 @@ namespace {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
         if (codec->supported_samplerates) {
-            LOGI(LOG_TAG,
-                 "select_sample_rate: using deprecated codec->supported_samplerates");
             int chosen = 0;
             for (const int *rate = codec->supported_samplerates; *rate; ++rate) {
-                LOGI(LOG_TAG, "  supported rate: %d", *rate);
                 if (*rate == 48000)
                     return 48000;
                 if (!chosen)
@@ -263,8 +218,6 @@ namespace {
         }
 #pragma GCC diagnostic pop
 
-        LOGI(LOG_TAG, "select_sample_rate: no rates found, using fallback=%d",
-             fallback_rate);
         return fallback_rate > 0 ? fallback_rate : 48000;
     }
 
@@ -293,12 +246,9 @@ int init_audio_transcode(const std::string &audio_path,
                          AudioTranscodeContext &ctx, bool prefer_opus,
                          bool prefer_aac) {
     if (audio_path.empty()) {
-        LOGI(LOG_TAG, "Audio transcode: no audio path provided");
+
         return 0;
     }
-
-    LOGI(LOG_TAG, "Audio transcode init: path=%s, prefer_opus=%d, prefer_aac=%d",
-         audio_path.c_str(), prefer_opus, prefer_aac);
 
     int ret =
             avformat_open_input(&ctx.input_ctx, audio_path.c_str(), nullptr, nullptr);
@@ -328,8 +278,6 @@ int init_audio_transcode(const std::string &audio_path,
     }
 
     ctx.input_stream = ctx.input_ctx->streams[ctx.stream_index];
-    LOGI(LOG_TAG, "Audio transcode: found audio stream %d, codec_id=%d",
-         ctx.stream_index, ctx.input_stream->codecpar->codec_id);
 
     const AVCodec *decoder =
             avcodec_find_decoder(ctx.input_stream->codecpar->codec_id);
@@ -339,7 +287,6 @@ int init_audio_transcode(const std::string &audio_path,
         avformat_close_input(&ctx.input_ctx);
         return -1;
     }
-    LOGI(LOG_TAG, "Audio transcode: using decoder=%s", decoder->name);
 
     ctx.decoder_ctx = avcodec_alloc_context3(decoder);
     if (!ctx.decoder_ctx) {
@@ -438,8 +385,6 @@ int init_audio_transcode(const std::string &audio_path,
         avformat_close_input(&ctx.input_ctx);
         return -1;
     }
-    LOGI(LOG_TAG, "Audio transcode: encoder '%s' opened successfully",
-         encoder->name);
 
     ret = swr_alloc_set_opts2(
             &ctx.swr_ctx, &ctx.encoder_ctx->ch_layout, ctx.encoder_ctx->sample_fmt,
@@ -469,7 +414,6 @@ int init_audio_transcode(const std::string &audio_path,
         ctx.output_stream = nullptr;
         return -1;
     }
-    LOGI(LOG_TAG, "Audio transcode: resampler initialized");
 
     ctx.output_stream = avformat_new_stream(output_fmt, encoder);
     if (!ctx.output_stream) {
@@ -509,12 +453,6 @@ int init_audio_transcode(const std::string &audio_path,
         return -1;
     }
 
-    LOGI(LOG_TAG,
-         "Audio transcode initialized: encoder=%s, rate=%d, channels=%d, "
-         "sample_fmt=%d, frame_size=%d",
-         encoder->name, ctx.encoder_ctx->sample_rate,
-         ctx.encoder_ctx->ch_layout.nb_channels, ctx.encoder_ctx->sample_fmt,
-         ctx.encoder_ctx->frame_size);
     return 0;
 }
 
@@ -526,7 +464,6 @@ int transcode_audio_packets(AudioTranscodeContext &ctx,
     }
 
     const int frame_size = ctx.encoder_ctx->frame_size;
-    LOGI(LOG_TAG, "Audio transcode: starting, encoder frame_size=%d", frame_size);
 
     // Helper: encode and write frames from FIFO when we have enough samples
     auto encode_from_fifo = [&](bool flush) -> int {
@@ -573,7 +510,8 @@ int transcode_audio_packets(AudioTranscodeContext &ctx,
             }
 
             AVPacket *out_pkt = av_packet_alloc();
-            if (!out_pkt) return AVERROR(ENOMEM);
+            if (!out_pkt)
+                return AVERROR(ENOMEM);
 
             // Receive encoded packets
             while (true) {
@@ -670,8 +608,9 @@ int transcode_audio_packets(AudioTranscodeContext &ctx,
     }
 
     int ret = 0;
-    AVPacket *pkt= av_packet_alloc(); // Allocates the structure
-    if (!pkt) return AVERROR(ENOMEM);
+    AVPacket *pkt = av_packet_alloc(); // Allocates the structure
+    if (!pkt)
+        return AVERROR(ENOMEM);
 
     // Main decode loop
     while (av_read_frame(ctx.input_ctx, pkt) >= 0) {
@@ -747,7 +686,8 @@ int transcode_audio_packets(AudioTranscodeContext &ctx,
     if (ret == 0) {
         avcodec_send_frame(ctx.encoder_ctx, nullptr);
         AVPacket *out_pkt = av_packet_alloc();
-        if (!out_pkt) return AVERROR(ENOMEM);
+        if (!out_pkt)
+            return AVERROR(ENOMEM);
         while (true) {
             int recv_ret = avcodec_receive_packet(ctx.encoder_ctx, out_pkt);
             if (recv_ret == AVERROR(EAGAIN) || recv_ret == AVERROR_EOF) {
@@ -775,7 +715,6 @@ int transcode_audio_packets(AudioTranscodeContext &ctx,
     }
 
     av_frame_free(&decoded);
-    LOGI(LOG_TAG, "Audio transcode: completed with result=%d", ret);
     return ret;
 }
 

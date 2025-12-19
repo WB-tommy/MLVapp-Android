@@ -116,8 +116,7 @@ static AVRational snap_to_dnxhd_framerate(double fps) {
       closest = rate;
     }
   }
-  LOGI(LOG_TAG, "DNxHD: snapped fps %.3f to %d/%d (%.3f)", fps, closest.num,
-       closest.den, av_q2d(closest));
+
   return closest;
 }
 
@@ -171,11 +170,10 @@ void compute_dimensions(const export_options_t &options, int src_width,
     if (is_720p) {
       width = 1280;
       height = 720;
-      LOGI(LOG_TAG, "DNxHD: forcing resolution to 1280x720 for 720p profile");
+
     } else {
       width = 1920;
       height = 1080;
-      LOGI(LOG_TAG, "DNxHD: forcing resolution to 1920x1080 for 1080p profile");
     }
   }
 }
@@ -231,9 +229,7 @@ VideoPreset select_video_preset(const export_options_t &options) {
       preset.profile = AV_PROFILE_PRORES_HQ;
       break;
     }
-    LOGI(LOG_TAG, "ProRes profile: %d (4444=%s), pixel_format=%d",
-         options.prores_profile, is_4444_profile ? "yes" : "no",
-         preset.pixel_format);
+
     break;
   }
   case EXPORT_CODEC_H264: {
@@ -259,8 +255,7 @@ VideoPreset select_video_preset(const export_options_t &options) {
     }
     preset.encoder_candidates.push_back({"h264_mediacodec", true});
     preset.encoder_candidates.push_back({"libx264", false});
-    LOGI(LOG_TAG, "H.264: quality=%s, container=%s,", preset.crf.c_str(),
-         preset.container_format.c_str());
+
     break;
   }
   case EXPORT_CODEC_H265: {
@@ -296,9 +291,7 @@ VideoPreset select_video_preset(const export_options_t &options) {
     }
     preset.encoder_candidates.push_back({"hevc_mediacodec", true});
     preset.encoder_candidates.push_back({"libx265", false});
-    LOGI(LOG_TAG, "H.265: bitdepth=%d, quality=%s, container=%s",
-         options.h265_bitdepth, preset.crf.c_str(),
-         preset.container_format.c_str());
+
     break;
   }
   case EXPORT_CODEC_DNXHR: {
@@ -333,8 +326,7 @@ VideoPreset select_video_preset(const export_options_t &options) {
       break;
     }
     preset.encoder_candidates.push_back({"dnxhd", false});
-    LOGI(LOG_TAG, "DNxHR: profile=%s, pixel_format=%d",
-         preset.profile_opt.c_str(), preset.pixel_format);
+
     break;
   }
   case EXPORT_CODEC_DNXHD: {
@@ -361,8 +353,7 @@ VideoPreset select_video_preset(const export_options_t &options) {
       break;
     }
     preset.encoder_candidates.push_back({"dnxhd", false});
-    LOGI(LOG_TAG, "DNxHD: profile=%d, pixel_format=%d", options.dnxhd_profile,
-         preset.pixel_format);
+
     break;
   }
   case EXPORT_CODEC_VP9: {
@@ -377,8 +368,7 @@ VideoPreset select_video_preset(const export_options_t &options) {
     }
     preset.encoder_candidates.push_back({"vp9_mediacodec", true});
     preset.encoder_candidates.push_back({"libvpx-vp9", false});
-    LOGI(LOG_TAG, "VP9: quality=%s",
-         options.vp9_quality == VP9_QUALITY_LOSSLESS ? "lossless" : "good");
+
     break;
   }
   default:

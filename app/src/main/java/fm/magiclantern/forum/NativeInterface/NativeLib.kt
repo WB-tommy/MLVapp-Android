@@ -1,6 +1,7 @@
 package fm.magiclantern.forum.nativeInterface
 
-import fm.magiclantern.forum.export.ExportOptions
+import fm.magiclantern.forum.features.export.model.ClipExportData
+import fm.magiclantern.forum.features.export.model.ExportOptions
 import java.nio.ByteBuffer
 
 object NativeLib {
@@ -96,7 +97,22 @@ object NativeLib {
         fileProvider: Any?
     )
 
+    /**
+     * Batch export handler - processes multiple clips with shared encoder context.
+     * More efficient than calling exportHandler for each clip when exporting
+     * a queue of clips with the same codec settings.
+     */
+    external fun exportBatchHandler(
+        memSize: Long,
+        cpuCores: Int,
+        clips: Array<ClipExportData>,
+        options: ExportOptions,
+        progressListener: Any,
+        fileProvider: Any?
+    )
+
     external fun testEncoderConfiguration(
         options: ExportOptions
     ): Boolean
 }
+

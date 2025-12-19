@@ -1,6 +1,5 @@
 package fm.magiclantern.forum
 
-import android.Manifest
 import android.app.Activity
 import android.net.Uri
 import android.view.WindowManager
@@ -8,6 +7,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
@@ -32,24 +31,23 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.core.content.ContextCompat
-import android.content.pm.PackageManager
-import android.os.Build
 import androidx.navigation.NavHostController
-import fm.magiclantern.forum.clips.ClipEvent
-import fm.magiclantern.forum.clips.ClipViewModel
-import fm.magiclantern.forum.clips.FocusPixelDownloadOutcome
-import fm.magiclantern.forum.settings.SettingsRepository
-import fm.magiclantern.forum.videoPlayer.NavigationBar
-import fm.magiclantern.forum.videoPlayer.VideoPlayerScreen
-import fm.magiclantern.forum.videoPlayer.VideoViewModel
-import fm.magiclantern.forum.videoPlayer.VideoViewModelFactory
+import fm.magiclantern.forum.features.clips.ui.FileListView
+import fm.magiclantern.forum.features.clips.viewmodel.ClipListEvent
+import fm.magiclantern.forum.features.clips.viewmodel.ClipListViewModel
+import fm.magiclantern.forum.features.clips.viewmodel.FocusPixelDownloadOutcome
+import fm.magiclantern.forum.features.grading.ui.ColorGradingScreen
+import fm.magiclantern.forum.features.grading.viewmodel.GradingViewModel
+import fm.magiclantern.forum.features.player.ui.NavigationBar
+import fm.magiclantern.forum.features.player.ui.VideoPlayerScreen
+import fm.magiclantern.forum.features.player.viewmodel.PlayerViewModel
 
 @Composable
 fun MainScreen(
@@ -57,9 +55,9 @@ fun MainScreen(
     totalMemory: Long,
     cpuCores: Int,
     navController: NavHostController,
-    settingsRepository: SettingsRepository,
-    clipViewModel: ClipViewModel,
-    videoViewModel: VideoViewModel
+    clipListViewModel: ClipListViewModel,
+    playerViewModel: PlayerViewModel,
+    gradingViewModel: GradingViewModel
 ) {
     val context = LocalContext.current
 
@@ -67,8 +65,8 @@ fun MainScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { /* no-op */ }
 
-    val clipUiState by clipViewModel.uiState.collectAsState()
-    val isPlaying by videoViewModel.isPlaying.collectAsState()
+    val clipUiState by clipListViewModel.uiState.collectAsState()
+    val isPlaying by playerViewModel.isPlaying.collectAsState()
 
     // Keep screen on when playing
     val view = LocalView.current
@@ -84,26 +82,16 @@ fun MainScreen(
         }
     }
 
-    // Connect ViewModels
+    // Connect loading state
     LaunchedEffect(clipUiState.isActivatingClip) {
-        videoViewModel.changeLoadingStatus(clipUiState.isActivatingClip)
-    }
-
-    LaunchedEffect(clipUiState.activeClip?.nativeHandle) {
-        val activeClip = clipUiState.activeClip
-        if (activeClip != null) {
-            videoViewModel.setMetadata(activeClip)
-            videoViewModel.changeDrawingStatus(true)
-        } else {
-            videoViewModel.changeDrawingStatus(false)
-        }
+        playerViewModel.changeLoadingStatus(clipUiState.isActivatingClip)
     }
 
     // Handle one-off events
-    LaunchedEffect(clipViewModel) {
-        clipViewModel.events.collect { event ->
+    LaunchedEffect(clipListViewModel) {
+        clipListViewModel.events.collect { event ->
             when (event) {
-                is ClipEvent.FocusPixelDownloadFeedback -> {
+                is ClipListEvent.FocusPixelDownloadFeedback -> {
                     val messageRes = when (event.outcome) {
                         FocusPixelDownloadOutcome.SINGLE_SUCCESS, FocusPixelDownloadOutcome.ALL_SUCCESS -> R.string.focus_pixel_download_success
                         FocusPixelDownloadOutcome.SINGLE_FAILURE, FocusPixelDownloadOutcome.ALL_FAILURE -> R.string.focus_pixel_download_failed
@@ -113,11 +101,11 @@ fun MainScreen(
                     Toast.makeText(context, messageRes, Toast.LENGTH_SHORT).show()
                 }
 
-                is ClipEvent.LoadFailed -> {
+                is ClipListEvent.LoadFailed -> {
                     Toast.makeText(context, R.string.clip_load_failed, Toast.LENGTH_LONG).show()
                 }
 
-                is ClipEvent.ClipPreparationFailed -> {
+                is ClipListEvent.ClipPreparationFailed -> {
                     val message = context.getString(
                         R.string.clip_preparation_failed,
                         event.failedCount,
@@ -135,9 +123,9 @@ fun MainScreen(
         FocusPixelMapToast(
             requiredFileName = focusPixelPrompt.requiredFile,
             isBusy = clipUiState.isFocusPixelDownloadInProgress,
-            onSelectSingle = { clipViewModel.downloadFocusPixelMap() },
-            onSelectAll = { clipViewModel.downloadAllFocusPixelMaps() },
-            onDismiss = { clipViewModel.dismissFocusPixelPrompt() }
+            onSelectSingle = { clipListViewModel.downloadFocusPixelMap() },
+            onSelectAll = { clipListViewModel.downloadAllFocusPixelMaps() },
+            onDismiss = { clipListViewModel.dismissFocusPixelPrompt() }
         )
     }
 
@@ -145,19 +133,21 @@ fun MainScreen(
     when (windowSizeClass.widthSizeClass) {
         WindowWidthSizeClass.Expanded -> {
             TabletLayout(
-                clipViewModel = clipViewModel,
-                videoViewModel = videoViewModel,
+                clipListViewModel = clipListViewModel,
+                playerViewModel = playerViewModel,
                 navController = navController,
-                cpuCores = cpuCores
+                cpuCores = cpuCores,
+                gradingViewModel = gradingViewModel
             )
         }
 
         else -> {
             MobileLayout(
-                clipViewModel = clipViewModel,
-                videoViewModel = videoViewModel,
+                clipListViewModel = clipListViewModel,
+                playerViewModel = playerViewModel,
                 navController = navController,
-                cpuCores = cpuCores
+                cpuCores = cpuCores,
+                gradingViewModel = gradingViewModel
             )
         }
     }
@@ -165,18 +155,22 @@ fun MainScreen(
 
 @Composable
 private fun MobileLayout(
-    clipViewModel: ClipViewModel,
-    videoViewModel: VideoViewModel,
+    clipListViewModel: ClipListViewModel,
+    playerViewModel: PlayerViewModel,
     navController: NavHostController,
-    cpuCores: Int
+    cpuCores: Int,
+    gradingViewModel: GradingViewModel
 ) {
-    val clipUiState by clipViewModel.uiState.collectAsState()
-    val curClipGuid by videoViewModel.clipGUID.collectAsState()
-    val isPlaying by videoViewModel.isPlaying.collectAsState()
+    val clipUiState by clipListViewModel.uiState.collectAsState()
+    val curClipGuid by playerViewModel.clipGUID.collectAsState()
+    val isPlaying by playerViewModel.isPlaying.collectAsState()
+
+    // Panel state for mobile switching
+    var currentPanel by remember { mutableStateOf(MobilePanelType.FILE_LIST) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
-        onResult = { uris: List<Uri> -> if (uris.isNotEmpty()) clipViewModel.onFilesPicked(uris) }
+        onResult = { uris: List<Uri> -> if (uris.isNotEmpty()) clipListViewModel.onFilesPicked(uris) }
     )
 
     Scaffold(
@@ -185,48 +179,80 @@ private fun MobileLayout(
             TheTopBar(
                 onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) },
                 onSettingClick = { navController.navigate("settings") },
-                onExportClick = { navController.navigate("export_selection") }
+                onExportClick = { navController.navigate("export_selection") },
+                currentPanel = currentPanel,
+                onPanelSwapClick = {
+                    currentPanel = when (currentPanel) {
+                        MobilePanelType.FILE_LIST -> MobilePanelType.GRADING
+                        MobilePanelType.GRADING -> MobilePanelType.FILE_LIST
+                    }
+                },
+                onDeleteFileClick = { navController.navigate("clip_removal") }
             )
         }
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding)) {
-            VideoPlayerScreen(navController,16f, videoViewModel, cpuCores)
+            VideoPlayerScreen(navController, 16f, playerViewModel, cpuCores)
             NavigationBar(
                 Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.primaryContainer),
-                videoViewModel
+                playerViewModel
             )
             LoadingIndicatorBar(isLoading = clipUiState.isLoading)
-            FileListView(
-                clipList = clipUiState.clips,
-                onClipSelected = { selectedClip ->
-                    if (selectedClip.guid != curClipGuid && !clipUiState.isActivatingClip && !isPlaying) {
-                        clipViewModel.onClipSelected(selectedClip.guid)
-                    }
-                },
+
+            // Switchable panel with smooth transition
+            Crossfade(
+                targetState = currentPanel,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxSize()
-            )
+            ) { panel ->
+                when (panel) {
+                    MobilePanelType.FILE_LIST -> {
+                        val activeClip by gradingViewModel.activeClip.collectAsState()
+                        FileListView(
+                            clipList = clipUiState.clips,
+                            onClipSelected = { selectedClip ->
+                                if (selectedClip.guid != curClipGuid && !clipUiState.isActivatingClip && !isPlaying) {
+                                    clipListViewModel.onClipSelected(selectedClip.guid)
+                                }
+                            },
+                            getMetadataForClip = { guid ->
+                                activeClip?.takeIf { it.guid == guid }?.metadata
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    MobilePanelType.GRADING -> {
+                        // Use new ColorGradingScreen - no prop drilling!
+                        ColorGradingScreen(
+                            gradingViewModel = gradingViewModel,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun TabletLayout(
-    clipViewModel: ClipViewModel,
-    videoViewModel: VideoViewModel,
+    clipListViewModel: ClipListViewModel,
+    playerViewModel: PlayerViewModel,
     navController: NavHostController,
-    cpuCores: Int
+    cpuCores: Int,
+    gradingViewModel: GradingViewModel
 ) {
-    val clipUiState by clipViewModel.uiState.collectAsState()
-    val curClipGuid by videoViewModel.clipGUID.collectAsState()
-    val isPlaying by videoViewModel.isPlaying.collectAsState()
+    val clipUiState by clipListViewModel.uiState.collectAsState()
+    val curClipGuid by playerViewModel.clipGUID.collectAsState()
+    val isPlaying by playerViewModel.isPlaying.collectAsState()
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
-        onResult = { uris: List<Uri> -> if (uris.isNotEmpty()) clipViewModel.onFilesPicked(uris) }
+        onResult = { uris: List<Uri> -> if (uris.isNotEmpty()) clipListViewModel.onFilesPicked(uris) }
     )
 
     Scaffold(
@@ -235,7 +261,8 @@ private fun TabletLayout(
             TheTopBar(
                 onAddFileClick = { filePickerLauncher.launch(arrayOf("application/octet-stream")) },
                 onSettingClick = { navController.navigate("settings") },
-                onExportClick = { navController.navigate("export_selection") }
+                onExportClick = { navController.navigate("export_selection") },
+                onDeleteFileClick = { navController.navigate("clip_removal") }
             )
         }
     ) { innerPadding ->
@@ -246,20 +273,24 @@ private fun TabletLayout(
         ) {
             // Left Panel (Player and File List)
             Column(modifier = Modifier.weight(2f)) {
-                VideoPlayerScreen(navController, 21f, videoViewModel, cpuCores)
+                VideoPlayerScreen(navController, 21f, playerViewModel, cpuCores)
                 NavigationBar(
                     Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.primaryContainer),
-                    videoViewModel
+                    playerViewModel
                 )
                 LoadingIndicatorBar(isLoading = clipUiState.isLoading)
+                val activeClip by gradingViewModel.activeClip.collectAsState()
                 FileListView(
                     clipList = clipUiState.clips,
                     onClipSelected = { selectedClip ->
                         if (selectedClip.guid != curClipGuid && !clipUiState.isActivatingClip && !isPlaying) {
-                            clipViewModel.onClipSelected(selectedClip.guid)
+                            clipListViewModel.onClipSelected(selectedClip.guid)
                         }
+                    },
+                    getMetadataForClip = { guid ->
+                        activeClip?.takeIf { it.guid == guid }?.metadata
                     },
                     modifier = Modifier
                         .weight(1f)
@@ -267,14 +298,13 @@ private fun TabletLayout(
                 )
             }
 
-            // Right Panel
-            Column(
+            // Right Panel - Color Grading (no prop drilling!)
+            ColorGradingScreen(
+                gradingViewModel = gradingViewModel,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-            ) {
-                Text("Processing function will be coming soon!")
-            }
+            )
         }
     }
 }

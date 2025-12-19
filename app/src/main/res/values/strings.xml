@@ -11,4 +11,29 @@
     <string name="focus_pixel_download_index_unavailable">Focus pixel map index is currently unavailable.</string>
     <string name="clip_load_failed">Unable to load clip.</string>
     <string name="clip_preparation_failed">%1$d of %2$d files could not be opened. They may be unsupported.</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_toolbar_title">Quick Start Guide</string>
+    <string name="onboarding_toolbar_subtitle">Here\'s what each toolbar button does</string>
+
+    <string name="onboarding_button_add">Add Files</string>
+    <string name="onboarding_button_add_desc">Import MLV or RAW files from your device</string>
+
+    <string name="onboarding_button_remove">Remove Files</string>
+    <string name="onboarding_button_remove_desc">Remove clips from the app\'s file list</string>
+
+    <string name="onboarding_button_export">Export</string>
+    <string name="onboarding_button_export_desc">Export clips to ProRes, H.264, H.265, DNG, and more</string>
+
+    <string name="onboarding_button_settings">Settings</string>
+    <string name="onboarding_button_settings_desc">Playback settings like debayer algorithm and frame drop</string>
+
+    <string name="onboarding_button_swap">Swap View</string>
+    <string name="onboarding_button_swap_desc">Switch between file list and color grading (mobile only)</string>
+
+    <string name="onboarding_notification_title">Export Notifications</string>
+    <string name="onboarding_notification_body">Get notified when your exports complete in the background</string>
+
+    <string name="onboarding_button_get_started">Enable Notifications \u0026 Get Started</string>
+    <string name="onboarding_button_skip_permission">Skip for Now</string>
 </resources>
