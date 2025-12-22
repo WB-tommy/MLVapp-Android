@@ -52,6 +52,7 @@ import fm.magiclantern.forum.features.player.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
 
 private const val AUTO_HIDE_DELAY_MILLIS = 2000L
+private const val EXIT_DEBOUNCE_MS = 500L
 
 @Composable
 fun FullScreenView(
@@ -93,6 +94,9 @@ fun FullScreenView(
     var navBarBounds by remember { mutableStateOf<Rect?>(null) }
     var exitButtonBounds by remember { mutableStateOf<Rect?>(null) }
     var overlayOffsetInRoot by remember { mutableStateOf(Offset.Zero) }
+    
+    // Debounce for exit navigation to prevent crashes from rapid toggling
+    val lastExitNavigationTime = remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(clipGUID) {
         controlsVisible = true
@@ -172,7 +176,13 @@ fun FullScreenView(
                                 modifier = Modifier
                                     .align(Alignment.TopEnd)
                                     .onGloballyPositioned { exitButtonBounds = it.boundsInRoot() },
-                                onClick = { navController.popBackStack() }
+                                onClick = {
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastExitNavigationTime.longValue >= EXIT_DEBOUNCE_MS) {
+                                        lastExitNavigationTime.longValue = now
+                                        navController.popBackStack()
+                                    }
+                                }
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.FullscreenExit,

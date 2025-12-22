@@ -14,6 +14,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -21,6 +23,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation.NavHostController
 import fm.magiclantern.forum.features.player.MlvRenderer
 import fm.magiclantern.forum.features.player.viewmodel.PlayerViewModel
+
+private const val FULLSCREEN_DEBOUNCE_MS = 500L
 
 @Composable
 fun VideoPlayerScreen(
@@ -33,6 +37,9 @@ fun VideoPlayerScreen(
     val clipHandle by viewModel.clipHandle.collectAsState()
     val currentFrame by viewModel.currentFrame.collectAsState()
     val processingVersion by viewModel.processingVersion.collectAsState()
+    
+    // Debounce for fullscreen navigation to prevent crashes from rapid toggling
+    val lastFullscreenNavigationTime = remember { mutableLongStateOf(0L) }
 
 
     Box(
@@ -64,7 +71,13 @@ fun VideoPlayerScreen(
 
                 IconButton(
                     modifier = Modifier.align(Alignment.BottomEnd),
-                    onClick = { navController.navigate("fullscreen") }
+                    onClick = {
+                        val now = System.currentTimeMillis()
+                        if (now - lastFullscreenNavigationTime.longValue >= FULLSCREEN_DEBOUNCE_MS) {
+                            lastFullscreenNavigationTime.longValue = now
+                            navController.navigate("fullscreen")
+                        }
+                    }
                 ) {
                     Icon(
                         imageVector = Icons.Default.Fullscreen,

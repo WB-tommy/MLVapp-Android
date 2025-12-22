@@ -128,10 +128,12 @@ class MlvRenderer(
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        val clipHandle = viewModel.clipHandle.value
         val videoWidth = viewModel.width.value
         val videoHeight = viewModel.height.value
 
-        if (videoWidth <= 0 || videoHeight <= 0) {
+        // Safety check: ensure clip handle is still valid before rendering
+        if (clipHandle == 0L || videoWidth <= 0 || videoHeight <= 0) {
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
             return
         }
@@ -141,11 +143,14 @@ class MlvRenderer(
         }
         allocateFrameBufferIfNeeded(videoWidth, videoHeight)
 
-        val buf = frameBuffer!!
+        val buf = frameBuffer ?: run {
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            return
+        }
         buf.position(0)
         val decodeStart = System.nanoTime()
         val ok = NativeLib.fillFrame16(
-            viewModel.clipHandle.value,
+            clipHandle,
             viewModel.currentFrame.value,
             cpuCores,
             buf,
