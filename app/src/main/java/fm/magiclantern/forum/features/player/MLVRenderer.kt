@@ -63,7 +63,6 @@ class MlvRenderer(
     private var lastLoggedStretchY = 1f
 
     private var textureAllocated = false
-    private var frameBuffer: ByteBuffer? = null
 
     private val quadVertices = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
     private val textureCoords = floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)
@@ -124,7 +123,7 @@ class MlvRenderer(
     }
 
     fun onSurfaceDestroyed() {
-        frameBuffer = null
+        // Buffer is now managed by PlayerViewModel, no cleanup needed here
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -141,9 +140,9 @@ class MlvRenderer(
         if (!textureAllocated) {
             allocateTextureStorage(videoWidth, videoHeight)
         }
-        allocateFrameBufferIfNeeded(videoWidth, videoHeight)
 
-        val buf = frameBuffer ?: run {
+        // Use shared buffer from ViewModel to prevent OOM during rapid view transitions
+        val buf = viewModel.getOrAllocateFrameBuffer(videoWidth, videoHeight) ?: run {
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
             return
         }
@@ -254,13 +253,6 @@ class MlvRenderer(
 
     private fun sanitizeStretch(value: Float): Float {
         return if (value.isFinite() && value > 0f) value else 1f
-    }
-
-    private fun allocateFrameBufferIfNeeded(w: Int, h: Int) {
-        val needed = w * h * 3 * 4 // 3-channel 32-bit float
-        if (frameBuffer?.capacity() != needed) {
-            frameBuffer = ByteBuffer.allocateDirect(needed).order(ByteOrder.nativeOrder())
-        }
     }
 
     private fun allocateTextureStorage(w: Int, h: Int) {

@@ -68,6 +68,37 @@ class PlayerViewModel @Inject constructor(
     private var decodeEmaUs = 0.0
     private var renderEmaUs = 0.0
     private val smoothing = 0.1
+    
+    // Shared frame buffer for all renderers - prevents OOM during rapid view transitions
+    @Volatile
+    private var sharedFrameBuffer: java.nio.ByteBuffer? = null
+    private val bufferLock = Any()
+    
+    /**
+     * Gets or allocates a shared frame buffer for rendering.
+     * All MlvRenderers share this buffer to prevent OOM during rapid fullscreen toggles.
+     */
+    fun getOrAllocateFrameBuffer(width: Int, height: Int): java.nio.ByteBuffer? {
+        if (width <= 0 || height <= 0) return null
+        val needed = width * height * 3 * 4 // RGB 32-bit float
+        synchronized(bufferLock) {
+            val current = sharedFrameBuffer
+            if (current == null || current.capacity() != needed) {
+                sharedFrameBuffer = java.nio.ByteBuffer.allocateDirect(needed)
+                    .order(java.nio.ByteOrder.nativeOrder())
+            }
+            return sharedFrameBuffer
+        }
+    }
+    
+    /**
+     * Releases the shared frame buffer to free memory.
+     */
+    private fun releaseFrameBuffer() {
+        synchronized(bufferLock) {
+            sharedFrameBuffer = null
+        }
+    }
 
     // Derived from active clip
     val activeClip: StateFlow<ClipDetails?> = activeClipHolder.activeClip

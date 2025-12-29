@@ -15,8 +15,8 @@ android {
         applicationId = "fm.magiclantern.forum"
         minSdk = 29
         targetSdk = 36
-        versionCode = 9
-        versionName = "3.0"
+        versionCode = 11
+        versionName = "3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
