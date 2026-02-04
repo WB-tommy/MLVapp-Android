@@ -49,6 +49,7 @@ add_library(dng STATIC
 add_library(matrix STATIC
         ${MLV_SRC_DIR}/matrix/matrix.c
 )
+
 add_library(mlv STATIC
         ${MLV_SRC_DIR}/mlv/audio_mlv.c
         ${MLV_SRC_DIR}/mlv/frame_caching.c
@@ -62,12 +63,16 @@ add_library(mlv STATIC
         ${MLV_SRC_DIR}/mlv/llrawproc/patternnoise.c
         ${MLV_SRC_DIR}/mlv/llrawproc/pixelproc.c
         ${MLV_SRC_DIR}/mlv/llrawproc/stripes.c
+)
+
+add_library(mcraw STATIC
         ${MLV_SRC_DIR}/mlv/mcraw/RawData.cpp
         ${MLV_SRC_DIR}/mlv/mcraw/RawData_Legacy.cpp
         ${MLV_SRC_DIR}/mlv/mcraw/mcraw.c
 )
 
 include_directories(
+        ${CMAKE_SOURCE_DIR}/include
         ${JNI_DIR}/
         ${JNI_DIR}/clip/
         ${JNI_DIR}/export/
@@ -80,13 +85,12 @@ include_directories(
         ${MLV_SRC_DIR}/dng/
         ${MLV_SRC_DIR}/matrix/
         ${MLV_SRC_DIR}/mlv/
+        ${MLV_SRC_DIR}/mlv/mcraw
         ${MLV_SRC_DIR}/processing/
         ${MLV_SRC_DIR}/librtprocess/src/include/
 )
 
 add_subdirectory(src/librtprocess)
-
-include_directories(${CMAKE_SOURCE_DIR}/include)
 
 set(FFMPEG_LIB_DIR ${CMAKE_SOURCE_DIR}/libs/${ANDROID_ABI})
 set(FFMPEG_LIBS c++_shared avcodec avformat avutil avfilter swscale swresample)
@@ -133,6 +137,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
         dng
         matrix
         mlv
+        mcraw
         rtprocess
         m
         ${jnigraphics-lib}

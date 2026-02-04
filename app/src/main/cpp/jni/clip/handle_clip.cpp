@@ -3,6 +3,7 @@
 #include "jni_cache.h"
 #include "../export/StretchFactors.h"
 #include "../src/mlv/llrawproc/pixelproc.h"
+#include "utils.h"
 #include <android/bitmap.h>
 #include <android/log.h>
 #include <chrono>
@@ -12,9 +13,9 @@
 #include <cstring>
 
 extern "C" {
-void get_mlv_processed_thumbnail_8(mlvObject_t *video, int frame_index,
-                                   int downscale_factor, int cpu_cores,
-                                   unsigned char *out_buffer);
+void create_thumbnail_line_skip(mlvObject_t *video,
+                             int downscale_factor, int cpu_cores,
+                             unsigned char *out_buffer);
 }
 
 namespace {
@@ -125,7 +126,6 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
     bool pixelsLocked = false;
     int width = 0;
     int height = 0;
-    const int targetHeight = 192;
     int downscaleFactor = 1;
     int thumbW = 0;
     int thumbH = 0;
@@ -137,8 +137,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
 
     nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores, false);
     if (!nativeClip) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
-                            "Failed to open clip for preview");
+        LOGE(kJniTag, "Failed to open clip for preview");
         goto cleanup;
     }
 
@@ -150,43 +149,38 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
 
     resolveStretchFactors(nativeClip, stretchFactorX, stretchFactorY);
 
-    if (height > targetHeight) {
-        downscaleFactor = height / targetHeight;
-    }
+    if (width > 2000 && height > 1500) downscaleFactor = 13;
+    else if (width < 2000 && height < 1500) downscaleFactor = 7;
+    else downscaleFactor = 9;
+
     thumbW = width / downscaleFactor;
     thumbH = height / downscaleFactor;
 
-    bitmap =
-            env->CallStaticObjectMethod(cache.bitmapClass, cache.bitmapCreateMethod,
-                                        thumbW, thumbH, cache.bitmapConfigArgb8888);
+    bitmap = env->CallStaticObjectMethod(cache.bitmapClass, cache.bitmapCreateMethod,
+                                         thumbW, thumbH, cache.bitmapConfigArgb8888);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
     }
     if (!bitmap) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
-                            "Failed to create preview bitmap");
+        LOGE(kJniTag, "Failed to create preview bitmap");
         goto cleanup;
     }
 
-    if (AndroidBitmap_getInfo(env, bitmap, &info) !=
-        ANDROID_BITMAP_RESULT_SUCCESS ||
-        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
-                            "Unexpected bitmap format for preview");
+    if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS
+        || info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+        LOGE(kJniTag, "Unexpected bitmap format for preview");
         goto cleanup;
     }
 
     if (AndroidBitmap_lockPixels(env, bitmap, &pixels) !=
-        ANDROID_BITMAP_RESULT_SUCCESS ||
-        !pixels) {
-        __android_log_print(ANDROID_LOG_ERROR, kJniTag,
-                            "Unable to lock bitmap pixels");
+        ANDROID_BITMAP_RESULT_SUCCESS || !pixels) {
+        LOGE(kJniTag, "Unable to lock bitmap pixels");
         goto cleanup;
     }
     pixelsLocked = true;
 
-    get_mlv_processed_thumbnail_8(nativeClip, 0, downscaleFactor, cores,
-                                  static_cast<unsigned char *>(pixels));
+    create_thumbnail_line_skip(nativeClip, downscaleFactor, cores,
+                            static_cast<unsigned char *>(pixels));
 
     AndroidBitmap_unlockPixels(env, bitmap);
     pixelsLocked = false;

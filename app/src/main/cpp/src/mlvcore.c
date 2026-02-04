@@ -102,3 +102,90 @@ void get_mlv_processed_thumbnail_8(
     free(downscaled_image);
     free(raw_frame);
 }
+
+void create_thumbnail_line_skip(
+        mlvObject_t *video,
+        int downscale_factor,
+        int cpu_cores,
+        unsigned char *out_buffer) {
+
+    if (!video || !out_buffer) {
+        return;
+    }
+
+    /* Get RAW frame info */
+    int raw_w = video->RAWI.xRes;
+    int raw_h = video->RAWI.yRes;
+
+    if (raw_w <= 0 || raw_h <= 0) {
+        return;
+    }
+
+    /* Allocate memory for the full raw frame */
+    uint16_t *raw_frame = (uint16_t *) malloc(raw_w * raw_h * sizeof(uint16_t));
+    if (!raw_frame) {
+        return;
+    }
+
+    if (getMlvRawFrameUint16(video, 0, raw_frame)) {
+        free(raw_frame);
+        return;
+    }
+
+    int ds_w = raw_w / downscale_factor;
+    int ds_h = raw_h / downscale_factor;
+    int pixel_count = (ds_w) * (ds_h);
+
+    uint16_t *downscaled_frame = (uint16_t *) malloc(pixel_count * sizeof(uint16_t));
+    for (int i = 0; i < ds_h; i++)
+        for (int j = 0; j < ds_w; j++)
+            downscaled_frame[i * ds_w + j] = raw_frame[(i * downscale_factor) * raw_w +
+                                                       (j * downscale_factor)];
+
+    float *float_thumb = (float *) malloc(pixel_count * sizeof(float));
+    if (!float_thumb) {
+        free(raw_frame);
+        free(downscaled_frame);
+        return;
+    }
+    int shift_val = (llrpHQDualIso(video)) ? 0 : (16 - video->RAWI.raw_info.bits_per_pixel);
+    for (int i = 0; i < pixel_count; i++)
+        float_thumb[i] = (float) (downscaled_frame[i] << shift_val);
+
+    uint16_t *debayered_frame = (uint16_t *) malloc(pixel_count * 3 * sizeof(uint16_t));
+    if (!debayered_frame) {
+        free(raw_frame);
+        free(downscaled_frame);
+        free(float_thumb);
+        return;
+    }
+    debayerBasic(debayered_frame, float_thumb, ds_w, ds_h, 1);
+
+    uint16_t *processed_frame = (uint16_t *) malloc(pixel_count * 3 * sizeof(uint16_t));
+    if (!processed_frame) {
+        free(raw_frame);
+        free(downscaled_frame);
+        free(float_thumb);
+        free(debayered_frame);
+        return;
+    }
+    applyProcessingObject(video->processing,
+                          ds_w, ds_h,
+                          debayered_frame,
+                          processed_frame,
+                          cpu_cores, 1, 0);
+
+    for (int i = 0; i < pixel_count; i++) {
+        out_buffer[i * 4 + 0] = (uint8_t) (processed_frame[i * 3 + 0] >> 8); // R
+        out_buffer[i * 4 + 1] = (uint8_t) (processed_frame[i * 3 + 1] >> 8); // G
+        out_buffer[i * 4 + 2] = (uint8_t) (processed_frame[i * 3 + 2] >> 8); // B
+        out_buffer[i * 4 + 3] = 255; // A
+    }
+
+    // clean up
+    free(raw_frame);
+    free(downscaled_frame);
+    free(float_thumb);
+    free(debayered_frame);
+    free(processed_frame);
+}
