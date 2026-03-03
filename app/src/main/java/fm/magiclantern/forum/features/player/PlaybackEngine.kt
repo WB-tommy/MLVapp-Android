@@ -180,10 +180,9 @@ class PlaybackEngine(
                 if (candidateFrame != lastAppliedFrame) {
                     lastAppliedFrame = candidateFrame
                     frameUpdater(candidateFrame)
-                    if (ctx.hasAudio) {
-                        val syncTimeUs = timestamps.getOrElse(candidateFrame) { 0L }
-                        audioController.syncPosition(syncTimeUs)
-                    }
+                    // No syncPosition() here — the native audio buffer is pre-aligned to the
+                    // video timeline. Jumping the read offset mid-stream (without flushing the
+                    // AudioTrack hardware buffer) causes pitch-shift distortion (hawling).
                     spinCount = 0
                     if (candidateFrame >= frameCount - 1) {
                         break
@@ -250,10 +249,7 @@ class PlaybackEngine(
             val nextFrame =
                 (currentFrameProvider() + 1).coerceAtMost(ctx.frameCount - 1)
             frameUpdater(nextFrame)
-            if (ctx.hasAudio) {
-                val timestampUs = ctx.frameTimestamps.getOrElse(nextFrame) { 0L }
-                audioController.syncPosition(timestampUs)
-            }
+            // No syncPosition() here — audio streams continuously from the seekToUs() position.
             if (nextFrame >= ctx.frameCount - 1) {
                 break
             }

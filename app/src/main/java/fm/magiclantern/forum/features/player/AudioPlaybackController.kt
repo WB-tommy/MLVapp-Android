@@ -3,6 +3,7 @@ package fm.magiclantern.forum.features.player
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioTimestamp
 import android.media.AudioTrack
 import android.util.Log
 import fm.magiclantern.forum.nativeInterface.NativeLib
@@ -19,7 +20,21 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Streams PCM audio from the native MLV clip into an [android.media.AudioTrack] and exposes the playback clock.
+ * Streams PCM audio from the native MLV clip into an [android.media.AudioTrack] and exposes the
+ * playback clock.
+ *
+ * **Audio-video sync design**
+ * The native layer (`audio_mlv.c`) already pre-aligns the flat PCM buffer to the video timeline
+ * at load time by computing the byte offset that corresponds to the time delta between the first
+ * audio and video blocks.  Therefore, byte 0 of the audio buffer corresponds exactly to video
+ * frame 0, and the buffer only needs to be played forward from the byte offset that matches the
+ * seek position — no mid-stream byte-offset corrections are needed or safe on a streaming
+ * [AudioTrack].
+ *
+ * [syncPosition] is intentionally a **no-op while the track is playing**.  Jumping [nextReadOffset]
+ * while the hardware buffer still contains audio from a different position causes the
+ * pitch-shifting distortion ("hawling") that was observed with both MLV and mcraw clips.
+ * Use [seekToUs] for any actual repositioning; it stops, flushes, and restarts the stream.
  */
 class AudioPlaybackController(
     private val scope: CoroutineScope,
@@ -43,8 +58,8 @@ class AudioPlaybackController(
     private var audioEncoding: Int = AudioFormat.ENCODING_PCM_16BIT
     private var channelMask: Int = AudioFormat.CHANNEL_OUT_STEREO
 
-    private var lastHeadPosition: Long = 0L
-    private var wrapCount: Long = 0L
+    // Reused AudioTimestamp instance to avoid GC pressure on the hot path.
+    private val audioTimestamp = AudioTimestamp()
 
     private val ioDispatcher = Dispatchers.IO
 
@@ -85,8 +100,6 @@ class AudioPlaybackController(
         // Reset offsets for new clip or updated params.
         nextReadOffset.set(nextReadOffset.get().coerceIn(0L, audioBufferBytes))
         playbackBaseUs = playbackBaseUs.coerceAtLeast(0L)
-        lastHeadPosition = 0L
-        wrapCount = 0L
     }
 
     fun play() {
@@ -139,10 +152,8 @@ class AudioPlaybackController(
                     bytesPending -= written
                 }
 
-                // Only advance the offset if a concurrent sync call hasn't already moved it.
-                if (nextReadOffset.compareAndSet(currentOffset, currentOffset + read)) {
-                    // Successfully advanced offset
-                }
+                // Advance offset atomically. Only move forward — never jump backward.
+                nextReadOffset.compareAndSet(currentOffset, currentOffset + read)
             }
 
             if (isActive) {
@@ -173,8 +184,6 @@ class AudioPlaybackController(
         clipHandle = 0L
         playbackBaseUs = 0L
         nextReadOffset.set(0L)
-        lastHeadPosition = 0L
-        wrapCount = 0L
     }
 
     fun seekToUs(positionUs: Long) {
@@ -192,8 +201,6 @@ class AudioPlaybackController(
 
         val clamped = positionUs.coerceAtLeast(0L)
         playbackBaseUs = clamped
-        lastHeadPosition = 0L
-        wrapCount = 0L
 
         val bytesPerSecond = sampleRate.toLong() * bytesPerSample
         var offset = if (bytesPerSecond > 0) {
@@ -213,29 +220,55 @@ class AudioPlaybackController(
         }
     }
 
+    /**
+     * Returns the current playback position in microseconds.
+     *
+     * Uses [AudioTrack.getTimestamp] (API 19+) for a monotonic, accurate clock.  Falls back to
+     * the frame-based estimate if the hardware timestamp is not yet available (e.g., before the
+     * first audio chunk has been rendered by the DSP).
+     */
     fun playbackPositionUs(): Long {
         val track = audioTrack ?: return playbackBaseUs
-        val head = track.playbackHeadPosition.toLong() and 0xffffffffL
-        if (head < lastHeadPosition) {
-            wrapCount += 1
-        }
-        lastHeadPosition = head
 
-        val totalFrames = head + (wrapCount shl 32)
-        val elapsedUs = if (sampleRate > 0) {
-            (totalFrames * 1_000_000L) / sampleRate
-        } else {
-            0L
+        if (track.getTimestamp(audioTimestamp)) {
+            // audioTimestamp.framePosition: frames presented to audio hardware up to this point.
+            // audioTimestamp.nanoTime: the monotonic clock value at which that frame position was valid.
+            val elapsedSinceAnchorNs = System.nanoTime() - audioTimestamp.nanoTime
+            val elapsedSinceAnchorUs = elapsedSinceAnchorNs / 1_000L
+            val framesUs = if (sampleRate > 0) {
+                (audioTimestamp.framePosition * 1_000_000L) / sampleRate
+            } else {
+                0L
+            }
+            return playbackBaseUs + framesUs + elapsedSinceAnchorUs
         }
+
+        // Fallback: estimate from the 32-bit head-position counter (less accurate).
+        val head = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        val elapsedUs = if (sampleRate > 0) (head * 1_000_000L) / sampleRate else 0L
         return playbackBaseUs + elapsedUs
     }
 
     fun isRunning(): Boolean = streamingJob?.isActive == true
 
+    /**
+     * Hints the desired playback byte position for the **next** streaming window.
+     *
+     * **This is intentionally a no-op while the AudioTrack is actively playing.**
+     * Jumping [nextReadOffset] mid-stream without flushing the hardware buffer causes
+     * pitch-shifting distortion ("hawling") because the hardware continues consuming audio that
+     * was already written at the previous byte offset.
+     *
+     * If you need to reposition during active playback, call [seekToUs] instead — it properly
+     * stops the stream, flushes the hardware buffer, and restarts from the new offset.
+     */
     fun syncPosition(positionUs: Long) {
-        if (audioTrack == null || sampleRate <= 0 || bytesPerSample <= 0) {
+        val track = audioTrack ?: return
+        // Only adjust the read pointer when the track is not actively playing.
+        if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
             return
         }
+        if (sampleRate <= 0 || bytesPerSample <= 0) return
 
         val bytesPerSecond = sampleRate.toLong() * bytesPerSample
         var offset = if (bytesPerSecond > 0) {
@@ -301,8 +334,6 @@ class AudioPlaybackController(
 
         nextReadOffset.set(0L)
         playbackBaseUs = 0L
-        lastHeadPosition = 0L
-        wrapCount = 0L
     }
 
     private suspend fun waitForTrackDrain() {

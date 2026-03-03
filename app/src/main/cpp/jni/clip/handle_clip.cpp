@@ -16,6 +16,12 @@ extern "C" {
 void create_thumbnail_line_skip(mlvObject_t *video,
                              int downscale_factor, int cpu_cores,
                              unsigned char *out_buffer);
+
+void get_mlv_processed_thumbnail_8(
+        mlvObject_t *video,
+        int frame_index, int downscale_factor,
+        int cpu_cores,
+        unsigned char *out_buffer);
 }
 
 namespace {
@@ -179,7 +185,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
     }
     pixelsLocked = true;
 
-    create_thumbnail_line_skip(nativeClip, downscaleFactor, cores,
+    get_mlv_processed_thumbnail_8(nativeClip, 0, downscaleFactor, cores,
                             static_cast<unsigned char *>(pixels));
 
     AndroidBitmap_unlockPixels(env, bitmap);
