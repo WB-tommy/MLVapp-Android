@@ -80,7 +80,9 @@ class PlayerViewModel @Inject constructor(
      */
     fun getOrAllocateFrameBuffer(width: Int, height: Int): java.nio.ByteBuffer? {
         if (width <= 0 || height <= 0) return null
-        val needed = width * height * 3 * 4 // RGB 32-bit float
+        // 2 bytes per channel: uint16_t (GL_RG8 split-byte path).
+        // JNI writes width * height * 3 * sizeof(uint16_t) bytes.
+        val needed = width * height * 3 * 2
         synchronized(bufferLock) {
             val current = sharedFrameBuffer
             if (current == null || current.capacity() != needed) {

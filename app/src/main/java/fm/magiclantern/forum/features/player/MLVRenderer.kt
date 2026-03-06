@@ -12,6 +12,8 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
 
+// Note: FloatBuffer is still used for vertex/texcoord buffers.
+
 class MlvRenderer(
     private val cpuCores: Int,
     private val viewModel: PlayerViewModel
@@ -37,10 +39,23 @@ class MlvRenderer(
         #version 300 es
         precision highp float;
         uniform sampler2D uTexture;
+        uniform int uVideoWidth;
         in vec2 vTex;
         out vec4 fragColor;
         void main() {
-            fragColor = texture(uTexture, vTex);
+            // The texture is 3x the video width: one RG8 texel = one color channel's 2 bytes.
+            // low byte  → .r (normalized 0..1 = 0..255)
+            // high byte → .g (normalized 0..1 = 0..255)
+            float texW = float(uVideoWidth * 3);
+            float base = floor(vTex.x * float(uVideoWidth)) * 3.0;
+            vec2 rb = texture(uTexture, vec2((base + 0.5) / texW, vTex.y)).rg;
+            vec2 gb = texture(uTexture, vec2((base + 1.5) / texW, vTex.y)).rg;
+            vec2 bb = texture(uTexture, vec2((base + 2.5) / texW, vTex.y)).rg;
+            // Reconstruct 16-bit value: (high * 255 * 256 + low * 255) / 65535
+            float r = (rb.y * 65280.0 + rb.x * 255.0) / 65535.0;
+            float g = (gb.y * 65280.0 + gb.x * 255.0) / 65535.0;
+            float b = (bb.y * 65280.0 + bb.x * 255.0) / 65535.0;
+            fragColor = vec4(r, g, b, 1.0);
         }
     """.trimIndent()
 
@@ -54,6 +69,7 @@ class MlvRenderer(
     private var texUniformHandle = 0
     private var scaleUniformHandle = -1
     private var stretchUniformHandle = -1
+    private var widthUniformHandle = -1
 
     private var viewWidth = 1
     private var viewHeight = 1
@@ -78,6 +94,7 @@ class MlvRenderer(
         texUniformHandle = GLES30.glGetUniformLocation(program, "uTexture")
         scaleUniformHandle = GLES30.glGetUniformLocation(program, "uScale")
         stretchUniformHandle = GLES30.glGetUniformLocation(program, "uStretch")
+        widthUniformHandle = GLES30.glGetUniformLocation(program, "uVideoWidth")
 
         vertexBuffer =
             ByteBuffer.allocateDirect(quadVertices.size * 4).order(ByteOrder.nativeOrder())
@@ -165,15 +182,16 @@ class MlvRenderer(
         if (ok) {
             buf.position(0)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
+            // Upload raw uint16 bytes as GL_RG8: width = videoWidth * 3 (one texel per channel)
             GLES30.glTexSubImage2D(
                 GLES30.GL_TEXTURE_2D,
                 0,
                 0,
                 0,
-                videoWidth,
+                videoWidth * 3,
                 videoHeight,
-                GLES30.GL_RGB,
-                GLES30.GL_FLOAT,
+                GLES30.GL_RG,
+                GLES30.GL_UNSIGNED_BYTE,
                 buf
             )
             checkGlError("glTexSubImage2D")
@@ -181,6 +199,9 @@ class MlvRenderer(
 
         // Set uniforms and attributes
         GLES30.glUniform1i(texUniformHandle, 0)
+        if (widthUniformHandle >= 0) {
+            GLES30.glUniform1i(widthUniformHandle, videoWidth)
+        }
         val processing = viewModel.processingData.value
         val stretchX = sanitizeStretch(processing.stretchFactorX)
         val stretchY = sanitizeStretch(processing.stretchFactorY)
@@ -257,18 +278,19 @@ class MlvRenderer(
 
     private fun allocateTextureStorage(w: Int, h: Int) {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
+        // GL_RG8: 2 bytes per texel (low/high byte of uint16). Width = w * 3 (R, G, B channels).
         GLES30.glTexImage2D(
             GLES30.GL_TEXTURE_2D,
             0,
-            GLES30.GL_RGB32F,
-            w,
+            GLES30.GL_RG8,
+            w * 3,
             h,
             0,
-            GLES30.GL_RGB,
-            GLES30.GL_FLOAT,
+            GLES30.GL_RG,
+            GLES30.GL_UNSIGNED_BYTE,
             null
         )
-        checkGlError("glTexImage2D - RGB32F")
+        checkGlError("glTexImage2D - RG8")
         textureAllocated = true
     }
 

@@ -3,46 +3,12 @@
 //
 #include "clip_jni.h"
 #include "mlv_jni_wrapper.h"
-#include <algorithm>
-#include <thread>
-#include <vector>
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
-#include <arm_neon.h>
-#endif
+#include <cstring>
 
-namespace {
-
-constexpr float kNormalizationScale = 1.0f / 65535.0f;
-
-inline void convertSamples(const uint16_t *src, float *dst, size_t start,
-                           size_t end) {
-  if (start >= end) {
-    return;
-  }
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
-  size_t i = start;
-  const float32x4_t scale = vdupq_n_f32(kNormalizationScale);
-  for (; i + 8 <= end; i += 8) {
-    uint16x8_t vals16 = vld1q_u16(src + i);
-    uint32x4_t low32 = vmovl_u16(vget_low_u16(vals16));
-    uint32x4_t high32 = vmovl_u16(vget_high_u16(vals16));
-    float32x4_t lowf = vmulq_f32(vcvtq_f32_u32(low32), scale);
-    float32x4_t highf = vmulq_f32(vcvtq_f32_u32(high32), scale);
-    vst1q_f32(dst + i, lowf);
-    vst1q_f32(dst + i + 4, highf);
-  }
-#else
-  size_t i = start;
-#endif
-  for (; i < end; ++i) {
-    dst[i] = static_cast<float>(src[i]) * kNormalizationScale;
-  }
-}
-
-} // namespace
-
-// Fills a direct ByteBuffer with RGB32F (float) pixels.
-// Java side must allocate: capacity = width * height * 3 * sizeof(float)
+// Fills a direct ByteBuffer with raw uint16_t RGB pixels (Split-Byte / GL_RG8 path).
+// The 16-bit value for each channel is stored as 2 bytes in little-endian order,
+// which maps directly to GL_RG8 (low byte = .r, high byte = .g) in the shader.
+// Java side must allocate: capacity = width * height * 3 * sizeof(uint16_t) = 6 bytes/px
 extern "C" JNIEXPORT jboolean JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
     JNIEnv *env, jclass /*clazz*/, jlong handle, jint frameIndex, jint cores,
@@ -55,83 +21,40 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
   auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
 
   // Try to acquire the mutex without blocking - if we can't, another render is
-  // in progress This prevents deadlocks and crashes during rapid view
-  // transitions
+  // in progress. This prevents deadlocks and crashes during rapid view
+  // transitions.
   std::unique_lock<std::mutex> lock(wrapper->render_mutex, std::try_to_lock);
   if (!lock.owns_lock()) {
-    // Another render is in progress, skip this frame to prevent race conditions
     return JNI_FALSE;
   }
 
   mlvObject_t *nativeClip = wrapper->mlv_object;
   if (!nativeClip) {
-    return JNI_FALSE; // Clip has been released
+    return JNI_FALSE;
   }
 
   auto *dstBuf =
-      reinterpret_cast<float *>(env->GetDirectBufferAddress(dstByteBuffer));
+      reinterpret_cast<uint8_t *>(env->GetDirectBufferAddress(dstByteBuffer));
   const jlong cap = env->GetDirectBufferCapacity(dstByteBuffer);
+  // 6 bytes per pixel: 3 channels × 2 bytes (uint16_t)
   const size_t needed = static_cast<size_t>(width) *
-                        static_cast<size_t>(height) * 3u * sizeof(float);
+                        static_cast<size_t>(height) * 3u * sizeof(uint16_t);
 
   if (!dstBuf || cap < static_cast<jlong>(needed)) {
-    return JNI_FALSE; // buffer too small / not direct
+    return JNI_FALSE;
   }
 
-  // Use the pre-allocated buffer from the wrapper
   uint16_t *rgbBuf = wrapper->processing_buffer_16bit;
   if (!rgbBuf) {
-    return JNI_FALSE; // buffer not allocated
+    return JNI_FALSE;
   }
 
-  // Get the processed 16-bit RGB frame
+  // Decode the frame into the wrapper's 16-bit RGB buffer
   getMlvProcessedFrame16(nativeClip, frameIndex, rgbBuf, cores);
 
-  const size_t totalPixels =
-      static_cast<size_t>(width) * static_cast<size_t>(height);
-  const size_t totalSamples = totalPixels * 3u;
-  if (totalSamples == 0) {
-    return JNI_TRUE;
-  }
-
-  int workerCount = cores > 0 ? cores : 1;
-  const size_t minSamplesPerThread = 8192;
-  int maxUsefulWorkers = static_cast<int>(
-      (totalSamples + minSamplesPerThread - 1) / minSamplesPerThread);
-  if (maxUsefulWorkers < 1) {
-    maxUsefulWorkers = 1;
-  }
-  workerCount = std::clamp(workerCount, 1, maxUsefulWorkers);
-
-  const uint16_t *srcSamples = rgbBuf;
-  float *dstSamples = dstBuf;
-
-  size_t chunk = (totalSamples + static_cast<size_t>(workerCount) - 1) /
-                 static_cast<size_t>(workerCount);
-  if (chunk == 0) {
-    chunk = totalSamples;
-  }
-
-  std::vector<std::thread> workers;
-  if (workerCount > 1) {
-    workers.reserve(static_cast<size_t>(workerCount - 1));
-  }
-
-  size_t start = 0;
-  for (int w = 0; w < workerCount - 1; ++w) {
-    size_t end = std::min(totalSamples, start + chunk);
-    const size_t localStart = start;
-    const size_t localEnd = end;
-    workers.emplace_back([srcSamples, dstSamples, localStart, localEnd]() {
-      convertSamples(srcSamples, dstSamples, localStart, localEnd);
-    });
-    start = end;
-  }
-  convertSamples(srcSamples, dstSamples, start, totalSamples);
-
-  for (auto &worker : workers) {
-    worker.join();
-  }
+  // Zero-cost upload: raw uint16_t bytes are already in the correct layout
+  // for GL_RG8 (little-endian: low byte first, high byte second per texel).
+  memcpy(dstBuf, rgbBuf, needed);
 
   return JNI_TRUE;
 }
