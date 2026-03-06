@@ -12,18 +12,6 @@
 #include <limits>
 #include <cstring>
 
-extern "C" {
-void create_thumbnail_line_skip(mlvObject_t *video,
-                             int downscale_factor, int cpu_cores,
-                             unsigned char *out_buffer);
-
-void get_mlv_processed_thumbnail_8(
-        mlvObject_t *video,
-        int frame_index, int downscale_factor,
-        int cpu_cores,
-        unsigned char *out_buffer);
-}
-
 namespace {
     constexpr const char *kJniTag = "MLVApp-JNI";
 
@@ -185,8 +173,12 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
     }
     pixelsLocked = true;
 
-    get_mlv_processed_thumbnail_8(nativeClip, 0, downscaleFactor, cores,
-                            static_cast<unsigned char *>(pixels));
+    get_area_average_downscale_thumnail(
+            nativeClip,
+            static_cast<uint8_t *>(pixels),
+            downscaleFactor,
+            cores
+    );
 
     AndroidBitmap_unlockPixels(env, bitmap);
     pixelsLocked = false;

@@ -1,8 +1,7 @@
-/* The standard MLV App image profiles, more can be added here. */
-#include <stdint.h>
 #include "image_profile.h"
 #include "raw_processing.h"
 
+/* The standard MLV App image profiles, more can be added here. */
 static image_profile_t default_image_profiles[] =
 {
     { /* PROFILE_STANDARD */

@@ -1,0 +1,21 @@
+--- a/app/src/main/cpp/src/librtprocess/src/CMakeLists.txt
++++ b/app/src/main/cpp/src/librtprocess/src/CMakeLists.txt
+@@ -18,7 +18,8 @@ set(rtprocess_SRCS
+     demosaic/vng4.cc
+     demosaic/xtransfast.cc
+     preprocess/CA_correct.cc
+-    postprocess/hilite_recon.cc)
++    postprocess/hilite_recon.cc
++    include/librtprocesswrapper.cpp)
+ 
+ add_library(rtprocess ${rtprocess_SRCS})
+ target_include_directories(rtprocess
+@@ -36,7 +36,7 @@ set_property(TARGET
+              PROPERTY
+                  LINKER_FLAGS "${DEFAULT_LINK_FLAGS}"
+              PROPERTY
+-                 PUBLIC_HEADER "include/librtprocess.h")
++                 PUBLIC_HEADER "include/librtprocess.h;include/librtprocesswrapper.h")
+ 
+ set_property(TARGET
+                  rtprocess

@@ -1,0 +1,33 @@
+--- a/app/src/main/cpp/src/mlv/llrawproc/llrawproc_object.h
++++ b/app/src/main/cpp/src/mlv/llrawproc/llrawproc_object.h
+@@ -74,6 +74,8 @@
+ 
+     /* external dark frame file name */
+     char * dark_frame_filename;
++    /* Android: pre-opened file descriptor for dark frame (from Java SAF layer) */
++    int dark_frame_fds[1];
+     /* external dark frame block header */
+     mlv_dark_hdr_t dark_frame_hdr;
+     /* external dark frame buffer pointer and its size */
+--- a/app/src/main/cpp/src/mlv/llrawproc/darkframe.h
++++ b/app/src/main/cpp/src/mlv/llrawproc/darkframe.h
+@@ -24,7 +24,7 @@
+ #include "../mlv_object.h"
+ 
+ /* from video_mlv.c */
+-extern int openMlvClip(mlvObject_t * video, char * mlvPath, int open_mode, char * error_message);
++extern int openMlvClip(mlvObject_t * video, int * fds, int numFds, char * mlvPath, int open_mode, char * error_message);
+ /* from dng.c */
+ extern void dng_unpack_image_bits(uint16_t * input_buffer, uint16_t * output_buffer, int width, int height, uint32_t bpp);
+ 
+--- a/app/src/main/cpp/src/mlv/llrawproc/darkframe.c
++++ b/app/src/main/cpp/src/mlv/llrawproc/darkframe.c
+@@ -88,7 +88,7 @@
+     /* Parse dark frame MLV */
+     mlvObject_t df_mlv = { 0 };
+     char err_msg[256] = { 0 };
+-    int ret = openMlvClip(&df_mlv, video->llrawproc->dark_frame_filename, 2, err_msg);
++    int ret = openMlvClip(&df_mlv, &video->llrawproc->dark_frame_fds[0], 1, video->llrawproc->dark_frame_filename, 2, err_msg);
+     if(ret != 0)
+     {
+ #ifndef STDOUT_SILENT

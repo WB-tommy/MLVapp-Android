@@ -1178,7 +1178,7 @@ int saveDngFrame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_t frame_
     return 0;
 }
 
-/* save DNG file */
+/* save DNG frame to a pre-opened file descriptor (Android: Java opens fd via SAF) */
 int saveDngFrameFd(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_t frame_index, int fd, const char *prop_filename)
 {
     FILE* dngf = fdopen(fd, "wb");
@@ -1200,7 +1200,7 @@ int saveDngFrameFd(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_t fram
         fclose(dngf);
         return 1;
     }
-    
+
     /* write DNG image data */
     if (fwrite(dng_data->image_buf, dng_data->image_size, 1, dngf) != 1)
     {

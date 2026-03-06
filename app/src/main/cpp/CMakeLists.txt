@@ -12,10 +12,7 @@ set(JNI_DIR ${CMAKE_SOURCE_DIR}/jni)
 add_library(processing STATIC
         ${MLV_SRC_DIR}/processing/blur_threaded.c
         ${MLV_SRC_DIR}/processing/cube_lut.c
-        ${MLV_SRC_DIR}/processing/image_profiles.c
-        ${MLV_SRC_DIR}/processing/processing.c
         ${MLV_SRC_DIR}/processing/raw_processing.c
-        ${MLV_SRC_DIR}/processing/white_balance.c
         ${MLV_SRC_DIR}/processing/cafilter/ColorAberrationCorrection.c
         ${MLV_SRC_DIR}/processing/denoiser/denoiser_2d_median.c
         ${MLV_SRC_DIR}/processing/filter/filter.c
@@ -54,6 +51,7 @@ add_library(mlv STATIC
         ${MLV_SRC_DIR}/mlv/audio_mlv.c
         ${MLV_SRC_DIR}/mlv/frame_caching.c
         ${MLV_SRC_DIR}/mlv/video_mlv.c
+        ${MLV_SRC_DIR}/mlv/video_mlv_misc.c
         ${MLV_SRC_DIR}/mlv/camid/camera_id.c
         ${MLV_SRC_DIR}/mlv/liblj92/lj92.c
         ${MLV_SRC_DIR}/mlv/llrawproc/darkframe.c
@@ -69,6 +67,7 @@ add_library(mcraw STATIC
         ${MLV_SRC_DIR}/mlv/mcraw/RawData.cpp
         ${MLV_SRC_DIR}/mlv/mcraw/RawData_Legacy.cpp
         ${MLV_SRC_DIR}/mlv/mcraw/mcraw.c
+        ${MLV_SRC_DIR}/mlv/mcraw/cJSON.c
 )
 
 include_directories(
@@ -105,7 +104,6 @@ find_library(mediandk-lib mediandk)
 
 # Create the main mlvcore shared library (.so/.dylib)
 add_library(${CMAKE_PROJECT_NAME} SHARED
-        ${MLV_SRC_DIR}/mlvcore.c
         ${JNI_DIR}/utils.cpp
         ${JNI_DIR}/clip/jni_cache.cpp
         ${JNI_DIR}/clip/handle_clip.cpp

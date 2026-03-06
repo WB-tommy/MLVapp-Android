@@ -1,26 +1,3 @@
-#include <math.h>
-#include <stdint.h>
-#include "opt_med.h"
-
-#ifndef ABS
-#define ABS(a) ((a) > 0 ? (a) : -(a))
-#endif
-
-#ifndef COERCE
-#define COERCE(x,lo,hi) MAX(MIN((x),(hi)),(lo))
-#endif
-
-#ifndef EV_RESOLUTION
-#define EV_RESOLUTION 65536
-#endif
-
-#ifndef MIN
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#endif
-#ifndef MAX
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-#endif
-
 #ifdef CHROMA_SMOOTH_2X2
 #define CHROMA_SMOOTH_FUNC chroma_smooth_2x2
 #define CHROMA_SMOOTH_MAX_XY_IJ 2

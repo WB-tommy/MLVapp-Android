@@ -95,6 +95,7 @@ static int seek_to_next_known_block(FILE * in_file)
 }
 
 /* Spanned multichunk MLV file handling */
+/* Android version: accepts pre-opened file descriptors from Java layer */
 static FILE **load_all_chunks(int * fds, int numFds, int *entries)
 {
     FILE **files = malloc(sizeof(FILE*) * numFds);
@@ -108,7 +109,7 @@ static FILE **load_all_chunks(int * fds, int numFds, int *entries)
         files[i] = fdopen(fds[i], "rb");
         if (!files[i])
         {
-            // Cleanup previously opened files
+            /* Cleanup previously opened files */
             for (int j = 0; j < i; j++)
             {
                 fclose(files[j]);
@@ -204,7 +205,7 @@ int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * un
 
         if (ret <= 0)
         {
-            DEBUG( printf("mcraw decoder: Failed with error code (%ld)\n", ret); )
+            DEBUG( printf("mcraw decoder: Failed with error code (%d)\n", ret); )
             free(raw_frame);
             return 1;
         }
@@ -450,7 +451,7 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
 
     /* If frame was requested last time and is sitting in the "current" frame cache */
     if ( video->cached_frames[frameIndex] == MLV_FRAME_NOT_CACHED
-         && video->current_cached_frame_active
+         && video->current_cached_frame_active 
          && video->current_cached_frame == frameIndex )
     {
         memcpy(outputFrame, video->rgb_raw_current_frame, frame_size);
@@ -1535,7 +1536,7 @@ int saveMlvAVFrame(mlvObject_t * video, FILE * output_mlv, int export_audio, int
  * only puts metadata in to the mlvObject_t, no debayering or bit unpacking
  */
 int openMcrawClip(mlvObject_t * video, int fd, char * mcrawPath, int open_mode, char * error_message)
-{
+{    
     video->path = malloc( strlen(mcrawPath) + 1 );
     memcpy(video->path, mcrawPath, strlen(mcrawPath));
     video->path[strlen(mcrawPath)] = 0x0;
@@ -1689,7 +1690,7 @@ int openMcrawClip(mlvObject_t * video, int fd, char * mcrawPath, int open_mode, 
 
     memcpy(&video->IDNT.blockType, "IDNT", 4);
     video->IDNT.blockSize        = sizeof(mlv_idnt_hdr_t);
-    snprintf(video->IDNT.cameraName, 31, "%s %s", mr_get_manufacturer(ctx), mr_get_model(ctx));
+    snprintf((char *)video->IDNT.cameraName, 31, "%s", mr_get_model(ctx));
 
     memcpy(&video->LENS.blockType, "LENS", 4);
     video->LENS.blockSize        = sizeof(mlv_lens_hdr_t);

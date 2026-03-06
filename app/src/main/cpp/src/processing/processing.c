@@ -6,20 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
-#include <math.h>
 #include "processing_object.h"
 #include "raw_processing.h"
-#include "../matrix/matrix.h"
-
-#ifndef MIN
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#endif
-#ifndef MAX
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-#endif
-#ifndef LIMIT16
-#define LIMIT16(X) MAX(MIN(X, 65535), 0)
-#endif
 
 //Interpolation functions
 double interpol(double x, double x1, double x2, double q00, double q01) {
