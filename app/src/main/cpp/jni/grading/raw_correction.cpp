@@ -118,6 +118,10 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setFocusDotsMode(
     llrpSetFocusPixelMode(video, mode);
 
     if (mode > 0) llrpSetFocusPixelInterpolationMethod(video, interpolation);
+
+    // Trigger FPM reload and invalidate cached frame so the change is visible immediately
+    llrpResetFpmStatus(video);
+    video->current_cached_frame_active = 0;
 }
 
 /**
@@ -340,6 +344,256 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setRawWhiteLevel(
     processingSetWhiteLevel(video->processing, level, getMlvBitdepth(video));
     llrpResetFpmStatus(video);
     llrpResetBpmStatus(video);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+/**
+ * Set White Balance Temperature (Kelvin)
+ * JNI: setWhiteBalanceTemperature(J, I)V
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setWhiteBalanceTemperature(
+        JNIEnv *env, jobject /* this */, jlong handle, jint kelvin) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setWhiteBalanceTemperature: Invalid MLV object or processing");
+        return;
+    }
+
+    processingSetWhiteBalanceKelvin(video->processing, kelvin);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+/**
+ * Set White Balance Tint
+ * JNI: setWhiteBalanceTint(J, F)V
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setWhiteBalanceTint(
+        JNIEnv *env, jobject /* this */, jlong handle, jfloat tint) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setWhiteBalanceTint: Invalid MLV object or processing");
+        return;
+    }
+
+    processingSetWhiteBalanceTint(video->processing, tint / 10.0f);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+/**
+ * Set exposure stops
+ * JNI: setExposureStops(J, F)V
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setExposureStops(
+        JNIEnv *env, jobject /* this */, jlong handle, jfloat exposure) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setExposureStops: Invalid MLV object or processing");
+        return;
+    }
+
+    processingSetExposureStops(video->processing, (double)exposure);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setTonemappingFunction(
+        JNIEnv *env, jobject /* this */, jlong handle, jint tonemap) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setTonemappingFunction: Invalid MLV object or processing");
+        return;
+    }
+
+    processingSetTonemappingFunction(video->processing, tonemap);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setTransferFunction(
+        JNIEnv *env, jobject /* this */, jlong handle, jstring transferFunction) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setTransferFunction: Invalid MLV object or processing");
+        return;
+    }
+
+    char *function_c_str = const_cast<char *>(jstring_to_cstr(env, transferFunction));
+    if (!function_c_str) {
+        LOGE(RAW_TAG, "setTransferFunction: Invalid transfer function string");
+        return;
+    }
+
+    processingSetTransferFunction(video->processing, function_c_str);
+    release_cstr(env, transferFunction, function_c_str);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setGamut(
+        JNIEnv *env, jobject /* this */, jlong handle, jint gamut) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setGamut: Invalid MLV object or processing");
+        return;
+    }
+
+    processingSetGamut(video->processing, gamut);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+/**
+ * Set image profile preset
+ * JNI: setImageProfile(J, I)V
+ * Matches desktop: processingSetImageProfile + side effects from
+ * on_comboBoxProfile_currentIndexChanged
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setImageProfile(
+        JNIEnv *env, jobject /* this */, jlong handle, jint profileIndex) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setImageProfile: Invalid MLV object or processing");
+        return;
+    }
+
+    processingSetImageProfile(video->processing, profileIndex);
+    // Re-apply white balance to sync matrices with new gamut
+    processingSetWhiteBalance(video->processing,
+                              processingGetWhiteBalanceKelvin(video->processing),
+                              processingGetWhiteBalanceTint(video->processing));
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+/**
+ * Set camera matrix mode
+ * JNI: setCamMatrixMode(J, I)V
+ * Matches desktop: on_comboBoxUseCameraMatrix_currentIndexChanged
+ * Mode: 0=Don't use, 1=Use Camera Matrix, 2=Uncolorscience Fix (Danne)
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setCamMatrixMode(
+        JNIEnv *env, jobject /* this */, jlong handle, jint mode) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setCamMatrixMode: Invalid MLV object or processing");
+        return;
+    }
+
+    switch (mode) {
+        case 0:
+            processingDontUseCamMatrix(video->processing);
+            break;
+        case 1:
+            processingUseCamMatrix(video->processing);
+            break;
+        case 2:
+            processingUseCamMatrixDanne(video->processing);
+            break;
+        default:
+            break;
+    }
+
+    // Desktop side-effect: re-apply white balance when matrix changes
+    if (mode != 0) {
+        processingSetWhiteBalanceKelvin(video->processing,
+                                        processingGetWhiteBalanceKelvin(video->processing));
+    }
+
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+/**
+ * Set creative adjustments allowed
+ * JNI: setCreativeAdjustments(J, Z)V
+ * Matches desktop: on_checkBoxCreativeAdjustments_toggled
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setCreativeAdjustments(
+        JNIEnv *env, jobject /* this */, jlong handle, jboolean allow) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setCreativeAdjustments: Invalid MLV object or processing");
+        return;
+    }
+
+    if (allow) {
+        processingAllowCreativeAdjustments(video->processing);
+    } else {
+        processingDontAllowCreativeAdjustments(video->processing);
+    }
+
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+/**
+ * Set EXR mode (Cyan Highlight Fix)
+ * JNI: setExrMode(J, Z)V
+ * Matches desktop: on_checkBoxExrMode_toggled
+ * Note: Desktop has inverted logic (checked=disabled), we use natural logic here
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setExrMode(
+        JNIEnv *env, jobject /* this */, jlong handle, jboolean enable) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setExrMode: Invalid MLV object or processing");
+        return;
+    }
+
+    if (enable) {
+        processingEnableExr(video->processing);
+    } else {
+        processingDisableExr(video->processing);
+    }
+
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+/**
+ * Set AgX rendering transform
+ * JNI: setAgX(J, Z)V
+ * Matches desktop: on_checkBoxAgX_toggled
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setAgX(
+        JNIEnv *env, jobject /* this */, jlong handle, jboolean enable) {
+
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "setAgX: Invalid MLV object or processing");
+        return;
+    }
+
+    if (enable) {
+        processingEnableAgX(video->processing);
+    } else {
+        processingDisableAgX(video->processing);
+    }
+
     resetMlvCache(video);
     resetMlvCachedFrame(video);
 }

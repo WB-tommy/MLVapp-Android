@@ -8,6 +8,7 @@
 //
 
 #include "ffmpeg_handler.h"
+#include "ffmpeg_color_tags.h"
 #include "../export/export_handler.h"
 #include "../utils.h"
 
@@ -113,6 +114,11 @@ int export_image_sequence(mlvObject_t *video, const export_options_t &options,
     LOGE(LOG_TAG, "sws context is null.");
     return -1;
   }
+  // Set correct RGB→YUV matrix based on processing gamut
+  auto img_tags = resolve_color_tags(options.color_grading.gamut,
+                                     options.color_grading.tonemap,
+                                     options.color_grading.transfer_function);
+  apply_sws_color_matrix(sws_ctx, img_tags);
 
   // Find encoder once for all frames
   const AVCodec *codec = avcodec_find_encoder(codec_id);
@@ -161,6 +167,12 @@ int export_image_sequence(mlvObject_t *video, const export_options_t &options,
 
   std::vector<uint16_t> src_buffer(static_cast<size_t>(src_w) * src_h * 3);
   const int total_frames = getMlvFrames(video);
+
+  // Resolve cut range
+  uint32_t startFrame = 0, endFrame = static_cast<uint32_t>(total_frames);
+  resolve_cut_range(options, static_cast<uint32_t>(total_frames), startFrame, endFrame);
+  const uint32_t framesToExport = endFrame - startFrame;
+
   int ret = 0;
 
   // Allocate packet once for the whole sequence
@@ -173,7 +185,7 @@ int export_image_sequence(mlvObject_t *video, const export_options_t &options,
     return -1;
   }
 
-  for (int i = 0; i < total_frames; ++i) {
+  for (uint32_t i = startFrame; i < endFrame; ++i) {
     if (is_export_cancelled()) {
       ret = EXPORT_CANCELLED;
       break;
@@ -203,7 +215,7 @@ int export_image_sequence(mlvObject_t *video, const export_options_t &options,
     av_frame_make_writable(frame);
     sws_scale(sws_ctx, src_data, src_linesize, 0, src_h, frame->data,
               frame->linesize);
-    frame->pts = i;
+    frame->pts = i - startFrame;
 
     // Encode frame
     int enc_ret = avcodec_send_frame(codec_ctx, frame);
@@ -245,7 +257,7 @@ int export_image_sequence(mlvObject_t *video, const export_options_t &options,
     }
 
     if (progress_callback) {
-      progress_callback(static_cast<int>((i + 1) * 100.0f / total_frames));
+      progress_callback(static_cast<int>((i - startFrame + 1) * 100.0f / framesToExport));
     }
   }
 
@@ -318,7 +330,9 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
   }
 
   AVCodecContext *codec_ctx = try_open_encoder_with_fallback(
-      preset, dst_w, dst_h, fps, getMlvCpuCores(video), fmt_ctx, video_stream);
+      preset, dst_w, dst_h, fps, getMlvCpuCores(video), fmt_ctx, video_stream,
+      options.color_grading.gamut, options.color_grading.tonemap,
+      options.color_grading.transfer_function);
 
   if (!codec_ctx) {
     avformat_free_context(fmt_ctx);
@@ -375,10 +389,24 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
 
   // --- Main Video Export Loop ---
   const int total_frames = getMlvFrames(video);
+
+  // Resolve cut range
+  uint32_t startFrame = 0, endFrame = static_cast<uint32_t>(total_frames);
+  resolve_cut_range(options, static_cast<uint32_t>(total_frames), startFrame, endFrame);
+  const uint32_t framesToExport = endFrame - startFrame;
+
   const int scale_flags = select_scale_flags(options.resize_algorithm);
   SwsContext *sws_ctx =
       sws_getContext(src_w, src_h, AV_PIX_FMT_RGB48LE, dst_w, dst_h,
                      actual_pix_fmt, scale_flags, nullptr, nullptr, nullptr);
+
+  // Set correct RGB→YUV matrix based on processing gamut
+  if (sws_ctx) {
+    auto vid_tags = resolve_color_tags(options.color_grading.gamut,
+                                       options.color_grading.tonemap,
+                                       options.color_grading.transfer_function);
+    apply_sws_color_matrix(sws_ctx, vid_tags);
+  }
 
   if (!sws_ctx) {
     ret = EXPORT_ERROR_GENERIC;
@@ -419,10 +447,10 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
   }
 
   std::vector<uint16_t> src_buffer(static_cast<size_t>(src_w) * src_h * 3);
-  int frame_idx = 0;
+  uint32_t frame_idx = startFrame;
   int64_t pts = 0;
 
-  for (; frame_idx < total_frames; ++frame_idx) {
+  for (; frame_idx < endFrame; ++frame_idx) {
     if (is_export_cancelled()) {
       ret = EXPORT_CANCELLED;
       break;
@@ -482,7 +510,7 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
 
     if (progress_callback)
       progress_callback(
-          static_cast<int>((frame_idx + 1) * 100.0f / total_frames));
+          static_cast<int>((frame_idx - startFrame + 1) * 100.0f / framesToExport));
   }
 
   // Flush
@@ -584,7 +612,10 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
   // Use batch context to get codec (with caching)
   AVCodecContext *codec_ctx =
       get_batch_codec_context(batch_ctx, dst_w, dst_h, fps,
-                              getMlvCpuCores(video), fmt_ctx, video_stream);
+                              getMlvCpuCores(video), fmt_ctx, video_stream,
+                              options.color_grading.gamut,
+                              options.color_grading.tonemap,
+                              options.color_grading.transfer_function);
 
   if (!codec_ctx) {
     avformat_free_context(fmt_ctx);
@@ -642,10 +673,24 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
 
   // --- Main Video Export Loop ---
   const int total_frames = getMlvFrames(video);
+
+  // Resolve cut range
+  uint32_t startFrame = 0, endFrame = static_cast<uint32_t>(total_frames);
+  resolve_cut_range(options, static_cast<uint32_t>(total_frames), startFrame, endFrame);
+  const uint32_t framesToExport = endFrame - startFrame;
+
   const int scale_flags = select_scale_flags(options.resize_algorithm);
   SwsContext *sws_ctx =
       sws_getContext(src_w, src_h, AV_PIX_FMT_RGB48LE, dst_w, dst_h,
                      actual_pix_fmt, scale_flags, nullptr, nullptr, nullptr);
+
+  // Set correct RGB→YUV matrix based on processing gamut
+  if (sws_ctx) {
+    auto batch_tags = resolve_color_tags(options.color_grading.gamut,
+                                         options.color_grading.tonemap,
+                                         options.color_grading.transfer_function);
+    apply_sws_color_matrix(sws_ctx, batch_tags);
+  }
 
   if (!sws_ctx) {
     ret = EXPORT_ERROR_GENERIC;
@@ -685,10 +730,10 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
   }
 
   std::vector<uint16_t> src_buffer(static_cast<size_t>(src_w) * src_h * 3);
-  int frame_idx = 0;
+  uint32_t frame_idx = startFrame;
   int64_t pts = 0;
 
-  for (; frame_idx < total_frames; ++frame_idx) {
+  for (; frame_idx < endFrame; ++frame_idx) {
     if (is_export_cancelled()) {
       ret = EXPORT_CANCELLED;
       break;
@@ -748,7 +793,7 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
 
     if (progress_callback)
       progress_callback(
-          static_cast<int>((frame_idx + 1) * 100.0f / total_frames));
+          static_cast<int>((frame_idx - startFrame + 1) * 100.0f / framesToExport));
   }
 
   // Flush encoder

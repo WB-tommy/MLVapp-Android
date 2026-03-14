@@ -108,4 +108,81 @@ object RawCorrectionNative {
      * @param level White level value
      */
     external fun setRawWhiteLevel(mlvObjectPtr: Long, level: Int)
+
+    /**
+     * Set White Balance Temperature (Kelvin)
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param kelvin Temperature in Kelvin
+     */
+    external fun setWhiteBalanceTemperature(mlvObjectPtr: Long, kelvin: Int)
+
+    /**
+     * Set White Balance Tint
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param tint Tint value
+     */
+    external fun setWhiteBalanceTint(mlvObjectPtr: Long, tint: Float)
+
+    /**
+     * Set exposure stops
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param exposure Exposure in stops
+     */
+    external fun setExposureStops(mlvObjectPtr: Long, exposure: Float)
+
+    /**
+     * Set Tonemapping Function
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param tonemap Tonemap function index
+     */
+    external fun setTonemappingFunction(mlvObjectPtr: Long, tonemap: Int)
+
+    /**
+     * Set Transfer Function
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param function Transfer function expression string
+     */
+    external fun setTransferFunction(mlvObjectPtr: Long, function: String)
+
+    /**
+     * Set Gamut
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param gamut Gamut index
+     */
+    external fun setGamut(mlvObjectPtr: Long, gamut: Int)
+
+    /**
+     * Set image profile preset (applies gamut, tonemap, transfer function as a bundle)
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param profileIndex Profile index (0=Standard, 1=Tonemapped, ... matches image_profiles.c)
+     */
+    external fun setImageProfile(mlvObjectPtr: Long, profileIndex: Int)
+
+    /**
+     * Set camera matrix mode
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param mode 0=Don't use, 1=Use Camera Matrix, 2=Uncolorscience Fix (Danne)
+     */
+    external fun setCamMatrixMode(mlvObjectPtr: Long, mode: Int)
+
+    /**
+     * Set creative adjustments allowed
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param allow true to allow creative adjustments (sliders, curves, etc.)
+     */
+    external fun setCreativeAdjustments(mlvObjectPtr: Long, allow: Boolean)
+
+    /**
+     * Set EXR mode (Cyan Highlight Fix)
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param enable true to enable cyan highlight fix
+     */
+    external fun setExrMode(mlvObjectPtr: Long, enable: Boolean)
+
+    /**
+     * Set AgX rendering transform
+     * @param mlvObjectPtr Native pointer to MLV object
+     * @param enable true to enable AgX
+     */
+    external fun setAgX(mlvObjectPtr: Long, enable: Boolean)
 }

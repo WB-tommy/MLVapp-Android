@@ -1,5 +1,6 @@
 #include "../export/export_handler.h"
 #include "../ffmpeg/ffmpeg_presets.h"
+#include "../ffmpeg/ffmpeg_color_tags.h"
 #include "../utils.h"
 #include <algorithm>
 #include <jni.h>
@@ -20,7 +21,12 @@ AVCodecContext *try_open_encoder_with_fallback(const VideoPreset &preset,
                                                int width, int height,
                                                AVRational fps, int thread_count,
                                                AVFormatContext *fmt_ctx,
-                                               AVStream *stream) {
+                                               AVStream *stream,
+                                               int gamut,
+                                               int tonemap,
+                                               const std::string& transfer_function) {
+    // Resolve color tags based on actual gamut, tonemap, and transfer function
+    auto color_tags = resolve_color_tags(gamut, tonemap, transfer_function);
     AVCodecContext *codec_ctx = nullptr;
     for (size_t i = 0; i < preset.encoder_candidates.size(); ++i) {
         const auto &candidate = preset.encoder_candidates[i];
@@ -94,10 +100,10 @@ AVCodecContext *try_open_encoder_with_fallback(const VideoPreset &preset,
         } else if (preset.profile != AV_PROFILE_UNKNOWN) {
             codec_ctx->profile = preset.profile;
         }
-        codec_ctx->color_primaries = AVCOL_PRI_BT709;
-        codec_ctx->color_trc = AVCOL_TRC_BT709;
-        codec_ctx->colorspace = AVCOL_SPC_BT709;
-        codec_ctx->color_range = AVCOL_RANGE_MPEG;
+        codec_ctx->color_primaries = color_tags.color_primaries;
+        codec_ctx->color_trc = color_tags.color_trc;
+        codec_ctx->colorspace = color_tags.colorspace;
+        codec_ctx->color_range = color_tags.color_range;
 
         if (fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
             codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -202,10 +208,43 @@ AVCodecContext *try_open_encoder_with_fallback(const VideoPreset &preset,
                 codec_ctx->profile = preset.profile;
             if (fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
                 codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            // Apply resolved color tags (same as candidate path)
+            codec_ctx->color_primaries = color_tags.color_primaries;
+            codec_ctx->color_trc = color_tags.color_trc;
+            codec_ctx->colorspace = color_tags.colorspace;
+            codec_ctx->color_range = color_tags.color_range;
             if (!preset.crf.empty())
                 av_opt_set(codec_ctx->priv_data, "crf", preset.crf.c_str(), 0);
             if (!preset.preset.empty())
                 av_opt_set(codec_ctx->priv_data, "preset", preset.preset.c_str(), 0);
+            if (!preset.profile_opt.empty()) {
+                av_opt_set(codec_ctx->priv_data, "profile", preset.profile_opt.c_str(), 0);
+            }
+            if (preset.codec_id == AV_CODEC_ID_VP9 && preset.crf == "0") {
+                av_opt_set(codec_ctx->priv_data, "lossless", "1", 0);
+            }
+            // Set x265-params for HEVC encoding based on pixel format
+            if (preset.codec_id == AV_CODEC_ID_HEVC) {
+                if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV444P12LE) {
+                    av_opt_set(codec_ctx->priv_data, "x265-params",
+                               "output-depth=12:profile=main444-12", 0);
+                } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV422P12LE) {
+                    av_opt_set(codec_ctx->priv_data, "x265-params",
+                               "output-depth=12:profile=main422-12", 0);
+                } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV420P12LE) {
+                    av_opt_set(codec_ctx->priv_data, "x265-params",
+                               "output-depth=12:profile=main12", 0);
+                } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV444P10LE) {
+                    av_opt_set(codec_ctx->priv_data, "x265-params",
+                               "output-depth=10:profile=main444-10", 0);
+                } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV422P10LE) {
+                    av_opt_set(codec_ctx->priv_data, "x265-params",
+                               "output-depth=10:profile=main422-10", 0);
+                } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV420P10LE) {
+                    av_opt_set(codec_ctx->priv_data, "x265-params",
+                               "output-depth=10:profile=main10", 0);
+                }
+            }
 
             if (avcodec_open2(codec_ctx, fallback_codec, nullptr) == 0) {
                 if (avcodec_parameters_from_context(stream->codecpar, codec_ctx) >= 0) {
@@ -265,7 +304,8 @@ bool test_encoder_configuration(const export_options_t &originalOptions) {
     int thread_count = 4;
 
     AVCodecContext *ctx = try_open_encoder_with_fallback(
-            preset, width, height, fps, thread_count, fmt_ctx, stream);
+            preset, width, height, fps, thread_count, fmt_ctx, stream,
+            0 /* gamut: Rec709 */, 0 /* tonemap: None */, "x" /* tf: Linear */);
 
     bool success = (ctx != nullptr);
 

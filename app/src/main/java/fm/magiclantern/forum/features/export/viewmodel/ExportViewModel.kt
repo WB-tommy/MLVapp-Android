@@ -286,6 +286,7 @@ class ExportViewModel(
             // Look up grading for this clip
             val grading = allGrading[clip.guid]
             val rawCorrection = grading?.rawCorrection ?: RawCorrectionSettings()
+            val colorGrading = grading?.colorGrading ?: fm.magiclantern.forum.domain.model.ColorGradingSettings()
             // Use clip's debayer mode from grading, or default to AMAZE
             val debayerMode = grading?.debayerMode ?: fm.magiclantern.forum.domain.model.DebayerAlgorithm.AMAZE
 
@@ -297,7 +298,10 @@ class ExportViewModel(
                     stretchFactorX = clip.stretchFactorX,
                     stretchFactorY = clip.stretchFactorY,
                     debayerMode = debayerMode,
-                    rawCorrection = rawCorrection
+                    rawCorrection = rawCorrection,
+                    colorGrading = colorGrading,
+                    cutIn = grading?.cutIn ?: 1,
+                    cutOut = grading?.cutOut ?: 0
                 )
             )
         }

@@ -1,5 +1,6 @@
 package fm.magiclantern.forum.features.export.model
 
+import fm.magiclantern.forum.domain.model.ColorGradingSettings
 import fm.magiclantern.forum.domain.model.DebayerAlgorithm
 import fm.magiclantern.forum.domain.model.RawCorrectionSettings
 
@@ -16,7 +17,8 @@ data class ClipExportData(
     val stretchFactorX: Float,            // Horizontal stretch factor
     val stretchFactorY: Float,            // Vertical stretch factor
     val debayerMode: Int = DebayerAlgorithm.AMAZE.nativeId,  // Per-clip debayer mode (native ID)
-    val rawCorrection: RawCorrectionSettings = RawCorrectionSettings()
+    val rawCorrection: RawCorrectionSettings = RawCorrectionSettings(),
+    val colorGrading: ColorGradingSettings = ColorGradingSettings()
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -32,6 +34,7 @@ data class ClipExportData(
         if (stretchFactorY != other.stretchFactorY) return false
         if (debayerMode != other.debayerMode) return false
         if (rawCorrection != other.rawCorrection) return false
+        if (colorGrading != other.colorGrading) return false
 
         return true
     }
@@ -45,6 +48,7 @@ data class ClipExportData(
         result = 31 * result + stretchFactorY.hashCode()
         result = 31 * result + debayerMode.hashCode()
         result = 31 * result + rawCorrection.hashCode()
+        result = 31 * result + colorGrading.hashCode()
         return result
     }
 }

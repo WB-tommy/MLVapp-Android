@@ -10,6 +10,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import fm.magiclantern.forum.domain.model.ClipDetails
 import fm.magiclantern.forum.domain.model.ClipGradingData
 import fm.magiclantern.forum.domain.model.DebayerAlgorithm
+import fm.magiclantern.forum.domain.model.ProfilePreset
 import fm.magiclantern.forum.domain.session.ActiveClipHolder
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.nativeInterface.RawCorrectionNative
@@ -62,6 +63,14 @@ class GradingViewModel @Inject constructor(
         .map { it?.metadata?.originalWhiteLevel ?: 0 }
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
+    val originalWhiteBalanceKelvin: StateFlow<Int> = activeClipHolder.activeClip
+        .map { it?.metadata?.whiteBalanceKelvin ?: 6500 }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 6500)
+
+    val originalWhiteBalanceTint: StateFlow<Int> = activeClipHolder.activeClip
+        .map { it?.metadata?.whiteBalanceTint ?: 0 }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
     // Check if a clip is currently loaded
     val hasClipLoaded: StateFlow<Boolean> = activeClipHolder.activeClip
         .map { it != null && it.nativeHandle != 0L }
@@ -79,7 +88,12 @@ class GradingViewModel @Inject constructor(
         viewModelScope.launch {
             activeClipHolder.activeClip.collectLatest { details ->
                 if (details != null) {
-                    loadClipGradingState(details.guid)
+                    loadClipGradingState(
+                        details.guid,
+                        details.metadata.whiteBalanceKelvin,
+                        details.metadata.whiteBalanceTint,
+                        details.grading
+                    )
                 }
             }
         }
@@ -88,14 +102,21 @@ class GradingViewModel @Inject constructor(
     /**
      * Load grading state for UI display only
      */
-    private fun loadClipGradingState(guid: Long) {
+    private fun loadClipGradingState(guid: Long, kelvin: Int, tint: Int, seededGrading: ClipGradingData) {
         val grading = clipGradingStates.getOrPut(guid) {
-            ClipGradingData()
+            seededGrading.copy(
+                colorGrading = seededGrading.colorGrading.copy(
+                    temperature = kelvin,
+                    tint = tint
+                )
+            )
         }
         _currentGrading.value = grading
         
         // Sync receipt debayer mode to ActiveClipHolder for PlayerViewModel
         activeClipHolder.setReceiptDebayerMode(grading.debayerMode)
+        // Sync cut marks to ActiveClipHolder for PlayerViewModel playback bounds
+        activeClipHolder.setCutMarks(grading.cutIn, grading.cutOut)
     }
 
     /**
@@ -370,6 +391,272 @@ class GradingViewModel @Inject constructor(
         } catch (e: Exception) {
             Log.e("GradingViewModel", "Failed to set raw white level: ${e.message}", e)
         }
+    }
+
+    fun setExposure(exposure: Float) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(exposure = exposure))
+        }
+
+        try {
+            RawCorrectionNative.setExposureStops(handle, exposure)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set exposure: ${e.message}", e)
+        }
+    }
+
+    fun setTemperature(kelvin: Int) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        val clampedKelvin = kelvin.coerceIn(2000, 10000)
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(temperature = clampedKelvin))
+        }
+
+        try {
+            RawCorrectionNative.setWhiteBalanceTemperature(handle, clampedKelvin)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set temperature: ${e.message}", e)
+        }
+    }
+
+    fun setTint(tint: Int) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(tint = tint))
+        }
+
+        try {
+            RawCorrectionNative.setWhiteBalanceTint(handle, tint.toFloat())
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set tint: ${e.message}", e)
+        }
+    }
+
+    fun setTonemap(tonemap: Int) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(
+                tonemap = tonemap,
+                profileIndex = 0 // Manual tweak invalidates preset
+            ))
+        }
+
+        try {
+            RawCorrectionNative.setTonemappingFunction(handle, tonemap)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set tonemap: ${e.message}", e)
+        }
+    }
+
+    fun setTransferFunction(function: String) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(
+                transferFunction = function,
+                profileIndex = 0 // Manual tweak invalidates preset
+            ))
+        }
+
+        try {
+            RawCorrectionNative.setTransferFunction(handle, function)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set transfer function: ${e.message}", e)
+        }
+    }
+
+    fun setGamut(gamut: Int) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(
+                gamut = gamut,
+                profileIndex = 0 // Manual tweak invalidates preset
+            ))
+        }
+
+        try {
+            RawCorrectionNative.setGamut(handle, gamut)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set gamut: ${e.message}", e)
+        }
+    }
+
+    // ==================== Profile Preset Functions ====================
+
+    /**
+     * Apply an image profile preset.
+     * Atomically updates gamut, tonemap, transfer function, creative adjustments,
+     * and profileIndex. Then calls the native engine to apply the bundle.
+     * Matches desktop: on_comboBoxProfile_currentIndexChanged
+     */
+    fun applyProfilePreset(preset: ProfilePreset) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(
+                colorGrading = it.colorGrading.copy(
+                    profileIndex = preset.id + 1, // +1 because 0 = "Select Preset..."
+                    gamut = preset.gamut,
+                    tonemap = preset.tonemapFunction,
+                    transferFunction = preset.transferFunction,
+                    allowCreativeAdjustments = if (preset.allowCreativeAdjustments) 1 else 0
+                )
+            )
+        }
+
+        try {
+            RawCorrectionNative.setImageProfile(handle, preset.id)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to apply profile preset: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Set camera matrix mode.
+     * Mode: 0=Don't use, 1=Use Camera Matrix, 2=Uncolorscience Fix (Danne)
+     * Side-effect: re-applies white balance when matrix changes (matches desktop).
+     */
+    fun setCameraMatrix(mode: Int) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(camMatrixUsed = mode))
+        }
+
+        try {
+            RawCorrectionNative.setCamMatrixMode(handle, mode)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set camera matrix: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Set creative adjustments allowed.
+     * When disabled, processing sliders (contrast, saturation, curves, etc.) have no effect.
+     */
+    fun setCreativeAdjustments(allow: Boolean) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(
+                allowCreativeAdjustments = if (allow) 1 else 0
+            ))
+        }
+
+        try {
+            RawCorrectionNative.setCreativeAdjustments(handle, allow)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set creative adjustments: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Set EXR mode (Cyan Highlight Fix).
+     */
+    fun setExrMode(enable: Boolean) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(
+                exrMode = if (enable) 1 else 0
+            ))
+        }
+
+        try {
+            RawCorrectionNative.setExrMode(handle, enable)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set EXR mode: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Set AgX rendering transform.
+     */
+    fun setAgX(enable: Boolean) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = it.colorGrading.copy(
+                agx = if (enable) 1 else 0
+            ))
+        }
+
+        try {
+            RawCorrectionNative.setAgX(handle, enable)
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to set AgX: ${e.message}", e)
+        }
+    }
+
+    // ==================== Cut In / Cut Out Functions ====================
+
+    /**
+     * Set Cut In mark at the given 1-based frame number.
+     * Validates that cutIn does not exceed the current cutOut.
+     */
+    fun setCutIn(frame: Int) {
+        val currentCutOut = _currentGrading.value.cutOut
+        // If cutOut is set (> 0), don't allow cutIn beyond it
+        if (currentCutOut > 0 && frame > currentCutOut) return
+        if (frame < 1) return
+
+        updateGrading {
+            it.copy(cutIn = frame)
+        }
+        activeClipHolder.setCutMarks(frame, _currentGrading.value.cutOut)
+    }
+
+    /**
+     * Set Cut Out mark at the given 1-based frame number.
+     * Validates that cutOut is not before the current cutIn.
+     */
+    fun setCutOut(frame: Int) {
+        val currentCutIn = _currentGrading.value.cutIn
+        if (frame < currentCutIn) return
+        if (frame < 1) return
+
+        updateGrading {
+            it.copy(cutOut = frame)
+        }
+        activeClipHolder.setCutMarks(_currentGrading.value.cutIn, frame)
+    }
+
+    /**
+     * Reset Cut In to the first frame.
+     */
+    fun clearCutIn() {
+        updateGrading {
+            it.copy(cutIn = 1)
+        }
+        activeClipHolder.setCutMarks(1, _currentGrading.value.cutOut)
+    }
+
+    /**
+     * Reset Cut Out to "not set" (0 = use last frame).
+     */
+    fun clearCutOut() {
+        updateGrading {
+            it.copy(cutOut = 0)
+        }
+        activeClipHolder.setCutMarks(_currentGrading.value.cutIn, 0)
     }
 
     // ==================== Clip State Management ====================

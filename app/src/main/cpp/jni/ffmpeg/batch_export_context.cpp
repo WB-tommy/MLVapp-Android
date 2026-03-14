@@ -5,6 +5,7 @@
  */
 
 #include "batch_export_context.h"
+#include "ffmpeg_color_tags.h"
 #include "ffmpeg_utils.h"
 #include <algorithm>
 #include <android/log.h>
@@ -95,7 +96,17 @@ static AVCodecContext *open_cached_encoder(const BatchExportContext &ctx,
   codec_ctx->bit_rate = preset.bit_rate;
 
   if (ctx.cached_encoder.is_hardware) {
-    codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+    // Mirror probe path: remap pixel format for hardware encoders
+    codec_ctx->max_b_frames = 0;
+    if (preset.pixel_format == AV_PIX_FMT_YUV420P)
+      codec_ctx->pix_fmt = AV_PIX_FMT_NV12;
+    else if (preset.pixel_format == AV_PIX_FMT_YUV420P10LE)
+      codec_ctx->pix_fmt = AV_PIX_FMT_P010LE;
+    else if (preset.pixel_format == AV_PIX_FMT_YUV444P12LE)
+      codec_ctx->pix_fmt = AV_PIX_FMT_MEDIACODEC;
+    else
+      codec_ctx->pix_fmt = preset.pixel_format;
+
     if (codec_ctx->bit_rate == 0) {
       int64_t pixels = static_cast<int64_t>(width) * height;
       int64_t base_pixels = 1920LL * 1080;
@@ -112,30 +123,66 @@ static AVCodecContext *open_cached_encoder(const BatchExportContext &ctx,
     }
     codec_ctx->rc_max_rate = codec_ctx->bit_rate;
     codec_ctx->rc_buffer_size = codec_ctx->bit_rate;
+    if (codec_ctx->width % 2 != 0)
+      codec_ctx->width++;
+    if (codec_ctx->height % 2 != 0)
+      codec_ctx->height++;
   } else {
     codec_ctx->pix_fmt = preset.pixel_format;
     codec_ctx->thread_count = std::max(1, thread_count);
   }
 
-  if (preset.profile != AV_PROFILE_UNKNOWN) {
+  // Profile: P010LE overrides to HEVC Main 10 (mirrors probe path)
+  if (codec_ctx->pix_fmt == AV_PIX_FMT_P010LE) {
+    codec_ctx->profile = AV_PROFILE_HEVC_MAIN_10;
+  } else if (preset.profile != AV_PROFILE_UNKNOWN) {
     codec_ctx->profile = preset.profile;
   }
-  codec_ctx->color_primaries = AVCOL_PRI_BT709;
-  codec_ctx->color_trc = AVCOL_TRC_BT709;
-  codec_ctx->colorspace = AVCOL_SPC_BT709;
-  codec_ctx->color_range = AVCOL_RANGE_MPEG;
+  // Resolve color tags for the batch gamut/profile
+  auto color_tags = resolve_color_tags(ctx.gamut, ctx.tonemap, ctx.transfer_function);
+  codec_ctx->color_primaries = color_tags.color_primaries;
+  codec_ctx->color_trc = color_tags.color_trc;
+  codec_ctx->colorspace = color_tags.colorspace;
+  codec_ctx->color_range = color_tags.color_range;
 
   if (fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
     codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
   }
 
+  // Mirror probe path: apply all codec-specific encoder options
   if (!ctx.cached_encoder.is_hardware) {
     if (!preset.crf.empty())
       av_opt_set(codec_ctx->priv_data, "crf", preset.crf.c_str(), 0);
     if (!preset.preset.empty())
       av_opt_set(codec_ctx->priv_data, "preset", preset.preset.c_str(), 0);
+    if (!preset.profile_opt.empty()) {
+      av_opt_set(codec_ctx->priv_data, "profile", preset.profile_opt.c_str(),
+                 0);
+    }
     if (preset.codec_id == AV_CODEC_ID_VP9 && preset.crf == "0") {
       av_opt_set(codec_ctx->priv_data, "lossless", "1", 0);
+    }
+    // HEVC x265-params for correct bit depth (mirrors probe path)
+    if (preset.codec_id == AV_CODEC_ID_HEVC) {
+      if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV444P12LE) {
+        av_opt_set(codec_ctx->priv_data, "x265-params",
+                   "output-depth=12:profile=main444-12", 0);
+      } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV422P12LE) {
+        av_opt_set(codec_ctx->priv_data, "x265-params",
+                   "output-depth=12:profile=main422-12", 0);
+      } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV420P12LE) {
+        av_opt_set(codec_ctx->priv_data, "x265-params",
+                   "output-depth=12:profile=main12", 0);
+      } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV444P10LE) {
+        av_opt_set(codec_ctx->priv_data, "x265-params",
+                   "output-depth=10:profile=main444-10", 0);
+      } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV422P10LE) {
+        av_opt_set(codec_ctx->priv_data, "x265-params",
+                   "output-depth=10:profile=main422-10", 0);
+      } else if (codec_ctx->pix_fmt == AV_PIX_FMT_YUV420P10LE) {
+        av_opt_set(codec_ctx->priv_data, "x265-params",
+                   "output-depth=10:profile=main10", 0);
+      }
     }
   }
 
@@ -161,7 +208,14 @@ AVCodecContext *get_batch_codec_context(BatchExportContext &ctx, int width,
                                         int height, AVRational fps,
                                         int thread_count,
                                         AVFormatContext *fmt_ctx,
-                                        AVStream *stream) {
+                                        AVStream *stream, int gamut,
+                                        int tonemap,
+                                        const std::string& transfer_function) {
+
+  // Store gamut/tonemap so cached encoder uses correct tags
+  ctx.gamut = gamut;
+  ctx.tonemap = tonemap;
+  ctx.transfer_function = transfer_function;
 
   // If we can reuse existing context, return it
   // Note: For video container export, each clip needs its own output file,
@@ -187,11 +241,12 @@ AVCodecContext *get_batch_codec_context(BatchExportContext &ctx, int width,
   // Fall back to full probe (first clip or cache miss)
   LOGI("Probing encoders for %dx%d @ %.2f fps", width, height, av_q2d(fps));
   codec_ctx = try_open_encoder_with_fallback(ctx.preset, width, height, fps,
-                                             thread_count, fmt_ctx, stream);
+                                              thread_count, fmt_ctx, stream,
+                                              gamut, tonemap, transfer_function);
 
   if (codec_ctx) {
-    // Cache the working encoder for future clips
-    const AVCodec *codec = avcodec_find_encoder(codec_ctx->codec_id);
+    // Cache the actual working encoder (not the default for this codec_id)
+    const AVCodec *codec = codec_ctx->codec;
     if (codec) {
       ctx.cached_encoder.encoder_name = codec->name;
       // Determine if hardware by checking against known hardware encoder names

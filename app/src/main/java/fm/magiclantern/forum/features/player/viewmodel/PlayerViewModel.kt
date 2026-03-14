@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -194,6 +195,21 @@ class PlayerViewModel @Inject constructor(
                 }
             }
         }
+        
+        // Observe cut mark changes and hot-swap playback bounds
+        viewModelScope.launch {
+            combine(
+                activeClipHolder.currentCutIn,
+                activeClipHolder.currentCutOut
+            ) { cutIn, cutOut -> cutIn to cutOut }
+            .collectLatest { (cutIn, cutOut) ->
+                val total = totalFrames.value
+                if (total <= 0) return@collectLatest
+                val effectiveStart = if (cutIn > 1) cutIn - 1 else 0
+                val effectiveEnd = if (cutOut > 0 && cutOut <= total) cutOut - 1 else -1
+                playbackEngine.updateCutBounds(effectiveStart, effectiveEnd)
+            }
+        }
     }
 
     private fun onClipActivated(details: ClipDetails) {
@@ -217,6 +233,12 @@ class PlayerViewModel @Inject constructor(
         // This is a fallback in case grading hasn't loaded yet
         applyReceiptDebayerMode()
         
+        // Resolve cut bounds (1-based → 0-based)
+        val cutIn = activeClipHolder.currentCutIn.value
+        val cutOut = activeClipHolder.currentCutOut.value
+        val effectiveStart = if (cutIn > 1) cutIn - 1 else 0
+        val effectiveEnd = if (cutOut > 0 && cutOut <= metadata.frames) cutOut - 1 else -1
+        
         // Update playback engine context
         playbackEngine.updateContext(
             PlaybackContext(
@@ -228,7 +250,9 @@ class PlayerViewModel @Inject constructor(
                 audioSampleRate = metadata.audioSampleRate,
                 audioChannels = metadata.audioChannels,
                 audioBytesPerSample = metadata.audioBytesPerSample,
-                audioBufferSize = metadata.audioBufferSize
+                audioBufferSize = metadata.audioBufferSize,
+                effectiveStartFrame = effectiveStart,
+                effectiveEndFrame = effectiveEnd
             )
         )
     }
@@ -304,14 +328,19 @@ class PlayerViewModel @Inject constructor(
     fun goToFirstFrame() {
         playbackEngine.pause()
         _isPlaying.value = false
-        setCurrentFrame(0)
+        // Jump to Cut In (1-based → 0-based) if set, otherwise frame 0
+        val cutIn = activeClipHolder.currentCutIn.value
+        setCurrentFrame(if (cutIn > 1) cutIn - 1 else 0)
     }
 
     fun goToLastFrame() {
-        val last = (totalFrames.value - 1).coerceAtLeast(0)
         playbackEngine.pause()
         _isPlaying.value = false
-        setCurrentFrame(last)
+        // Jump to Cut Out (1-based → 0-based) if set, otherwise last frame
+        val cutOut = activeClipHolder.currentCutOut.value
+        val total = totalFrames.value
+        val lastFrame = if (cutOut > 0 && cutOut <= total) cutOut - 1 else (total - 1).coerceAtLeast(0)
+        setCurrentFrame(lastFrame)
     }
 
     fun setDropFrameMode(enabled: Boolean) {

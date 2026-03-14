@@ -2,6 +2,7 @@
 #define MLVAPP_EXPORT_OPTIONS_H
 
 #include "raw_correction_options.h"
+#include "color_grading_options.h"
 #include <string>
 
 // Codec types - matches Kotlin ExportCodec enum ordinals
@@ -129,9 +130,40 @@ struct export_options_t {
   // Raw correction settings (full struct from Kotlin)
   raw_correction_options_t raw_correction;
 
+  // Color grading settings (full struct from Kotlin)
+  color_grading_options_t color_grading;
+
+  // Cut In / Cut Out (1-based frame numbers; cut_out=0 means "not set" / last frame)
+  int cut_in = 1;
+  int cut_out = 0;
+
   // Benchmark / Diagnostics flags
   bool force_hardware = false;
   bool force_software = false;
 };
+
+/**
+ * Resolve effective 0-based frame range from cut_in / cut_out options.
+ * cut_in is 1-based (default 1 = first frame).
+ * cut_out is 1-based (0 = "not set", meaning use totalFrames).
+ * Returns [startFrame, endFrame) for use in for-loops.
+ */
+inline void resolve_cut_range(const export_options_t &options,
+                              uint32_t totalFrames,
+                              uint32_t &startFrame,
+                              uint32_t &endFrame) {
+  startFrame = (options.cut_in >= 1)
+               ? static_cast<uint32_t>(options.cut_in - 1)
+               : 0;
+  endFrame = (options.cut_out > 0 && static_cast<uint32_t>(options.cut_out) <= totalFrames)
+             ? static_cast<uint32_t>(options.cut_out)
+             : totalFrames;
+  if (startFrame >= totalFrames) startFrame = 0;
+  if (endFrame > totalFrames) endFrame = totalFrames;
+  if (startFrame >= endFrame) {
+    startFrame = 0;
+    endFrame = totalFrames;
+  }
+}
 
 #endif // MLVAPP_EXPORT_OPTIONS_H

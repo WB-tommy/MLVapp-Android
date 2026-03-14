@@ -1,6 +1,7 @@
 package fm.magiclantern.forum.features.export.model
 
 import android.os.Parcelable
+import fm.magiclantern.forum.domain.model.ColorGradingSettings
 import fm.magiclantern.forum.domain.model.DebayerAlgorithm
 import fm.magiclantern.forum.domain.model.RawCorrectionSettings
 import kotlinx.parcelize.Parcelize
@@ -52,6 +53,11 @@ data class ExportOptions(
     val antiAliasing: Boolean = false,
     // Raw correction settings (full object from grading)
     val rawCorrection: RawCorrectionSettings = RawCorrectionSettings(),
+    // Color grading settings (exposure, WB, profile, etc.)
+    val colorGrading: ColorGradingSettings = ColorGradingSettings(),
+    // Cut In / Cut Out (1-based frame numbers; cutOut=0 means "not set" / last frame)
+    val cutIn: Int = 1,
+    val cutOut: Int = 0,
     // Benchmark/Diagnostics options
     val forceHardware: Boolean = false,
     val forceSoftware: Boolean = false

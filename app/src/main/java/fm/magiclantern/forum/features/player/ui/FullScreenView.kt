@@ -47,6 +47,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavHostController
+import fm.magiclantern.forum.features.grading.viewmodel.GradingViewModel
 import fm.magiclantern.forum.features.player.MlvRenderer
 import fm.magiclantern.forum.features.player.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
@@ -59,6 +60,7 @@ fun FullScreenView(
     navController: NavHostController,
     playerViewModel: PlayerViewModel,
     cpuCores: Int,
+    gradingViewModel: GradingViewModel? = null,
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val view = LocalView.current
@@ -195,7 +197,8 @@ fun FullScreenView(
                                     .fillMaxWidth()
                                     .align(Alignment.BottomCenter)
                                     .onGloballyPositioned { navBarBounds = it.boundsInRoot() },
-                                viewModel = playerViewModel
+                                viewModel = playerViewModel,
+                                gradingViewModel = gradingViewModel
                             )
                         }
                     }

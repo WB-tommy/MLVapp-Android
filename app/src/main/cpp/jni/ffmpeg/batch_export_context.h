@@ -40,6 +40,11 @@ struct BatchExportContext {
 
   // Track if context is active
   bool active = false;
+
+  // Color space info from the processing pipeline
+  int gamut = 0;          // GAMUT_* index from raw_processing.h
+  int tonemap = 0;        // TONEMAP_* enum from raw_processing.h
+  std::string transfer_function = ""; 
 };
 
 // Initialize batch export context with export options
@@ -57,7 +62,10 @@ AVCodecContext *get_batch_codec_context(BatchExportContext &ctx, int width,
                                         int height, AVRational fps,
                                         int thread_count,
                                         AVFormatContext *fmt_ctx,
-                                        AVStream *stream);
+                                        AVStream *stream,
+                                        int gamut = 0,
+                                        int tonemap = 0,
+                                        const std::string& transfer_function = "");
 
 // Cleanup batch export context
 // Call once at the end of batch export

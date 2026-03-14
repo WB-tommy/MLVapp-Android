@@ -41,6 +41,8 @@ data class ClipMetadata(
     // RAW levels (from file, not user-adjusted)
     val originalBlackLevel: Int = 0,
     val originalWhiteLevel: Int = 1,
+    val whiteBalanceKelvin: Int = 6500,
+    val whiteBalanceTint: Int = 0,
     
     // Processing
     val isMcraw: Boolean = false,

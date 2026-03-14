@@ -226,6 +226,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
         if (focusMode != 0) {
             llrpSetFixRawMode(nativeClip, 1);
             llrpSetFocusPixelMode(nativeClip, focusMode);
+            // Trigger FPM reload for preview/thumbnail generation
+            llrpResetFpmStatus(nativeClip);
         }
 
         int mapWidth = nativeClip->RAWI.raw_info.width;
@@ -354,6 +356,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
                 hasAudio ? static_cast<int>(getMlvSampleRate(nativeClip)) : 0;
         const int blackLevel = static_cast<int>(getMlvBlackLevel(nativeClip));
         const int whiteLevel = static_cast<int>(getMlvWhiteLevel(nativeClip));
+        const int whiteBalanceKelvin = getMlvWbKelvin(nativeClip) > 0 ? static_cast<int>(getMlvWbKelvin(nativeClip)) : 6500;
+        const int whiteBalanceTint = nativeClip->processing ? static_cast<int>(nativeClip->processing->wb_tint * 10.0f) : 0;
 
         jstring jCamera = env->NewStringUTF(camera ? camera : "");
         jstring jLens = env->NewStringUTF(lens ? lens : "");
@@ -378,6 +382,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
                 focalLengthMm, shutterUs, apertureHundredths, iso, disoVal,
                 dualIsoValid, losslessBpp, jCompression, year, month, day, hour, min,
                 sec, hasAudio, audioChannels, audioSampleRate, blackLevel, whiteLevel,
+                whiteBalanceKelvin, whiteBalanceTint,
                 isMcrawLoaded(nativeClip));
 
         env->DeleteLocalRef(jCamera);

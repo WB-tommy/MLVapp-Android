@@ -115,6 +115,7 @@ fun NavController(
                 navController = navController,
                 playerViewModel = playerViewModel,
                 cpuCores = cores,
+                gradingViewModel = gradingViewModel,
             )
         }
 

@@ -36,4 +36,27 @@
 
     <string name="onboarding_button_get_started">Enable Notifications \u0026 Get Started</string>
     <string name="onboarding_button_skip_permission">Skip for Now</string>
+
+    <!-- Profiles Section: Processing Gamut options (matches desktop comboBoxProcessingGamut) -->
+    <string-array name="gamut_options">
+        <item>Rec. 709</item>
+        <item>Rec. 2020</item>
+        <item>ACES AP0</item>
+        <item>Adobe RGB</item>
+        <item>Pro Photo RGB</item>
+        <item>XYZ</item>
+        <item>Alexa Wide Gamut RGB</item>
+        <item>Sony S Gamut 3</item>
+        <item>Davinci Wide Gamut</item>
+        <item>ACES AP1</item>
+        <item>Canon Cinema</item>
+        <item>Panasonic V-Gamut</item>
+    </string-array>
+
+    <!-- Profiles Section: Camera Matrix options (matches desktop comboBoxUseCameraMatrix) -->
+    <string-array name="camera_matrix_options">
+        <item>Don\'t Use Camera Matrix</item>
+        <item>Use Camera Matrix</item>
+        <item>Uncolorscience Fix</item>
+    </string-array>
 </resources>

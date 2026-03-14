@@ -40,6 +40,11 @@ data class ClipGradingData(
     // Color Grading Module
     val colorGrading: ColorGradingSettings = ColorGradingSettings(),
     
+    // Cut In / Cut Out markers (1-based frame numbers, matching desktop convention)
+    // cutIn = 1 means first frame (default), cutOut = 0 means "not set" (use last frame)
+    val cutIn: Int = 1,
+    val cutOut: Int = 0,
+    
     // Advanced Modules (stubs for now)
     val curves: CurvesSettings = CurvesSettings(),
     val hsl: HslSettings = HslSettings(),
@@ -77,13 +82,14 @@ data class RawCorrectionSettings(
 /**
  * Color grading settings (from desktop lines 4-50)
  */
+@Parcelize
 @Stable
 data class ColorGradingSettings(
     // Basic adjustments
-    val exposure: Int = 0,                    // Exposure stops (-200 to 200)
+    val exposure: Float = 0f,                 // Exposure stops (-4.0 to 4.0)
     val contrast: Int = 0,                    // Contrast (-100 to 100)
     val pivot: Int = 75,                      // Contrast pivot (0-100)
-    val temperature: Int = 6500,              // White balance kelvin (2500-10000)
+    val temperature: Int = 6500,              // White balance kelvin (2000-10000)
     val tint: Int = 0,                        // Tint (-100 to 100)
     val saturation: Int = 0,                  // Saturation (-100 to 100)
     val vibrance: Int = 0,                    // Vibrance (-100 to 100)
@@ -103,8 +109,11 @@ data class ColorGradingSettings(
     val sharpenMasking: Int = 0,              // Sharpen masking (0-100)
     val chromaBlur: Int = 0,                  // Chroma blur radius
     val highlightReconstruction: Int = 0,     // Highlight reconstruction (0-1)
-    val camMatrixUsed: Int = 0,               // Use camera matrix (0-1)
+    val camMatrixUsed: Int = 1,               // Use camera matrix (0-2)
     val chromaSeparation: Int = 0,            // Chroma separation (0-1)
+    
+    // Profile preset selection (0 = "Select Preset...", 1-13 = actual presets)
+    val profileIndex: Int = 0,
     
     // Tone mapping
     val tonemap: Int = 1,                     // Tonemap function (0-2)
@@ -116,7 +125,7 @@ data class ColorGradingSettings(
     // Advanced options
     val exrMode: Int = 0,                     // EXR mode (0-1)
     val agx: Int = 1                          // AgX mode (0-1)
-)
+) : Parcelable
 
 /**
  * Gradation curves settings (stub - complex data structure)

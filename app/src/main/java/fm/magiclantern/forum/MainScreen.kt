@@ -197,7 +197,8 @@ private fun MobileLayout(
                 Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.primaryContainer),
-                playerViewModel
+                playerViewModel,
+                gradingViewModel
             )
             LoadingIndicatorBar(isLoading = clipUiState.isLoading)
 
@@ -278,7 +279,8 @@ private fun TabletLayout(
                     Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.primaryContainer),
-                    playerViewModel
+                    playerViewModel,
+                    gradingViewModel
                 )
                 LoadingIndicatorBar(isLoading = clipUiState.isLoading)
                 val activeClip by gradingViewModel.activeClip.collectAsState()

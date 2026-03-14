@@ -64,6 +64,29 @@ class ActiveClipHolder @Inject constructor() {
         _currentReceiptDebayerMode.value = mode
     }
     
+    private val _currentCutIn = MutableStateFlow(1)
+    private val _currentCutOut = MutableStateFlow(0)
+    
+    /**
+     * Cut In frame (1-based). Default 1 = first frame.
+     * Updated by GradingViewModel when user sets cut marks.
+     */
+    val currentCutIn: StateFlow<Int> = _currentCutIn.asStateFlow()
+    
+    /**
+     * Cut Out frame (1-based). 0 = not set (use last frame).
+     * Updated by GradingViewModel when user sets cut marks.
+     */
+    val currentCutOut: StateFlow<Int> = _currentCutOut.asStateFlow()
+    
+    /**
+     * Update cut marks. Called by GradingViewModel when cut values change.
+     */
+    fun setCutMarks(cutIn: Int, cutOut: Int) {
+        _currentCutIn.value = cutIn
+        _currentCutOut.value = cutOut
+    }
+    
     /**
      * Call this when grading/processing settings are changed to trigger a redraw.
      */
@@ -84,6 +107,11 @@ class ActiveClipHolder @Inject constructor() {
      * Set the fully loaded clip as active.
      */
     fun activateClip(details: ClipDetails) {
+        // Reset cut marks to defaults before activating, so PlayerViewModel
+        // never reads stale marks from the previous clip in the race window
+        // before GradingViewModel loads the new clip's grading data.
+        _currentCutIn.value = 1
+        _currentCutOut.value = 0
         _activeClip.value = details
         _selectedPreview.value = details.preview
         _isLoading.value = false

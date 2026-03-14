@@ -121,7 +121,7 @@ bool CacheClipClasses(JNIEnv *env, JniCache &cache) {
   cache.clipMetaDataCtor =
       env->GetMethodID(cache.clipMetaDataClass, "<init>",
                        "(JLjava/lang/String;Ljava/lang/String;IFIIIIIZILjava/"
-                       "lang/String;IIIIIIZIIIIZ)V");
+                       "lang/String;IIIIIIZIIIIIIZ)V");
   if (!cache.clipMetaDataCtor) {
     __android_log_print(ANDROID_LOG_ERROR, kLogTag,
                         "Failed to cache ClipMetaData constructor");

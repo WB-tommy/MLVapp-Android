@@ -17,8 +17,17 @@ data class PlaybackContext(
     val audioSampleRate: Int,
     val audioChannels: Int,
     val audioBytesPerSample: Int,
-    val audioBufferSize: Long
-)
+    val audioBufferSize: Long,
+    // Cut bounds (0-based, already resolved from 1-based cut marks)
+    val effectiveStartFrame: Int = 0,
+    val effectiveEndFrame: Int = -1  // -1 means use frameCount
+) {
+    /** The last valid frame index for playback (inclusive) */
+    val lastPlayableFrame: Int get() = 
+        (if (effectiveEndFrame >= 0) effectiveEndFrame else frameCount - 1).coerceAtMost(frameCount - 1)
+    /** The first valid frame index for playback */
+    val firstPlayableFrame: Int get() = effectiveStartFrame.coerceIn(0, lastPlayableFrame)
+}
 
 class PlaybackEngine(
     private val scope: CoroutineScope,
@@ -62,6 +71,18 @@ class PlaybackEngine(
         }
     }
 
+    /**
+     * Update only the cut bounds without stopping playback or re-initialising audio.
+     * Safe to call while playing — the new bounds take effect on the next loop iteration.
+     */
+    fun updateCutBounds(effectiveStart: Int, effectiveEnd: Int) {
+        val old = context ?: return
+        context = old.copy(
+            effectiveStartFrame = effectiveStart,
+            effectiveEndFrame = effectiveEnd
+        )
+    }
+
     fun setDropFrameMode(enabled: Boolean) {
         if (dropFrameMode == enabled) return
         dropFrameMode = enabled
@@ -84,6 +105,15 @@ class PlaybackEngine(
         val ctx = context ?: return
         if (ctx.frameCount <= 0) return
         isPlaying = true
+        
+        // Snap playhead into the cut range if it's currently outside
+        val current = currentFrameProvider()
+        if (current < ctx.firstPlayableFrame) {
+            frameUpdater(ctx.firstPlayableFrame)
+        } else if (current > ctx.lastPlayableFrame) {
+            frameUpdater(ctx.lastPlayableFrame)
+        }
+        
         if (dropFrameMode) {
             startDropFrameLoop()
         } else {
@@ -114,8 +144,10 @@ class PlaybackEngine(
         val ctx = context ?: return
         if (!isPlaying || dropFrameMode) return
         val current = currentFrameProvider()
-        val nextFrame = (current + 1).coerceAtMost(ctx.frameCount - 1)
-        if (nextFrame == current) {
+        // If current frame is below the cut range, jump to the start of it
+        val effective = if (current < ctx.firstPlayableFrame) ctx.firstPlayableFrame - 1 else current
+        val nextFrame = (effective + 1).coerceAtMost(ctx.lastPlayableFrame)
+        if (nextFrame == current && current >= ctx.firstPlayableFrame) {
             handlePlaybackStop()
             return
         }
@@ -124,7 +156,7 @@ class PlaybackEngine(
             val timestampUs = ctx.frameTimestamps.getOrElse(nextFrame) { 0L }
             audioController.seekToUs(timestampUs)
         }
-        if (nextFrame >= ctx.frameCount - 1) {
+        if (nextFrame >= ctx.lastPlayableFrame) {
             handlePlaybackStop()
         }
     }
@@ -142,7 +174,9 @@ class PlaybackEngine(
             if (fps > 0f) (1_000_000f / fps).toLong().coerceAtLeast(1L) else 0L
 
         val job = scope.launch {
-            var lastAppliedFrame = currentFrameProvider().coerceIn(0, frameCount - 1)
+            // Read live bounds from context (may be updated by updateCutBounds)
+            var liveCtx = context ?: return@launch
+            var lastAppliedFrame = currentFrameProvider().coerceIn(liveCtx.firstPlayableFrame, liveCtx.lastPlayableFrame)
             var anchorTimestampUs = timestamps.getOrElse(lastAppliedFrame) { 0L }
             var anchorClockNs = System.nanoTime()
             var spinCount = 0
@@ -156,9 +190,16 @@ class PlaybackEngine(
             }
 
             while (isActive && isPlaying && dropFrameMode && !usingFallback) {
-                val externalFrame = currentFrameProvider().coerceIn(0, frameCount - 1)
+                // Re-read live bounds each iteration so updateCutBounds() takes effect
+                liveCtx = context ?: break
+                val firstPlayable = liveCtx.firstPlayableFrame
+                val lastPlayable = liveCtx.lastPlayableFrame
+
+                val externalFrame = currentFrameProvider().coerceIn(firstPlayable, lastPlayable)
                 if (externalFrame != lastAppliedFrame) {
                     lastAppliedFrame = externalFrame
+                    // Push the snapped frame to UI so it doesn't stay on an out-of-range frame
+                    frameUpdater(externalFrame)
                     anchorTimestampUs = timestamps.getOrElse(lastAppliedFrame) { 0L }
                     anchorClockNs = System.nanoTime()
                     if (ctx.hasAudio) {
@@ -172,6 +213,7 @@ class PlaybackEngine(
                 var candidateFrame = lastAppliedFrame
                 while (
                     candidateFrame + 1 < frameCount &&
+                    candidateFrame < lastPlayable &&
                     timestamps[candidateFrame + 1] <= currentTimeUs
                 ) {
                     candidateFrame++
@@ -180,11 +222,8 @@ class PlaybackEngine(
                 if (candidateFrame != lastAppliedFrame) {
                     lastAppliedFrame = candidateFrame
                     frameUpdater(candidateFrame)
-                    // No syncPosition() here — the native audio buffer is pre-aligned to the
-                    // video timeline. Jumping the read offset mid-stream (without flushing the
-                    // AudioTrack hardware buffer) causes pitch-shift distortion (hawling).
                     spinCount = 0
-                    if (candidateFrame >= frameCount - 1) {
+                    if (candidateFrame >= lastPlayable) {
                         break
                     }
                 } else {
@@ -222,7 +261,7 @@ class PlaybackEngine(
             }
 
             if (usingFallback) {
-                runFpsFallbackLoop(ctx)
+                runFpsFallbackLoop()
             } else {
                 handlePlaybackStop()
             }
@@ -236,21 +275,39 @@ class PlaybackEngine(
         }
     }
 
-    private suspend fun runFpsFallbackLoop(ctx: PlaybackContext) {
+    private suspend fun runFpsFallbackLoop() {
+        val initCtx = context ?: return
         val frameDurationMillis =
-            if (ctx.fps > 0f) (1000 / ctx.fps).toLong().coerceAtLeast(1L) else 42L
+            if (initCtx.fps > 0f) (1000 / initCtx.fps).toLong().coerceAtLeast(1L) else 42L
         while (
             isPlaying &&
             dropFrameMode &&
-            currentFrameProvider() < ctx.frameCount - 1 &&
             coroutineContext.isActive
         ) {
+            // Re-read live bounds each iteration
+            val liveCtx = context ?: break
+            val firstPlayable = liveCtx.firstPlayableFrame
+            val lastPlayable = liveCtx.lastPlayableFrame
+            val current = currentFrameProvider()
+            if (current >= lastPlayable) break
+
+            // If the current frame is below the cut range, snap forward
+            if (current < firstPlayable) {
+                frameUpdater(firstPlayable)
+                // Re-seek audio to match the snapped video position
+                if (initCtx.hasAudio) {
+                    val timestampUs = initCtx.frameTimestamps.getOrElse(firstPlayable) { 0L }
+                    audioController.seekToUs(timestampUs)
+                }
+                continue
+            }
+
             val loopStartNs = System.nanoTime()
             val nextFrame =
-                (currentFrameProvider() + 1).coerceAtMost(ctx.frameCount - 1)
+                (current + 1).coerceIn(firstPlayable, lastPlayable)
             frameUpdater(nextFrame)
             // No syncPosition() here — audio streams continuously from the seekToUs() position.
-            if (nextFrame >= ctx.frameCount - 1) {
+            if (nextFrame >= lastPlayable) {
                 break
             }
             val elapsedMillis = (System.nanoTime() - loopStartNs) / 1_000_000

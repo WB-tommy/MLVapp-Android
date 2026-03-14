@@ -261,7 +261,10 @@ class ExportService : Service() {
             stretchFactorX = clip.stretchFactorX,
             stretchFactorY = clip.stretchFactorY,
             clipDebayerMode = clip.debayerMode.nativeId,
-            rawCorrection = clip.rawCorrection
+            rawCorrection = clip.rawCorrection,
+            colorGrading = clip.colorGrading,
+            cutIn = clip.cutIn,
+            cutOut = clip.cutOut
         )
 
         val provider = ExportFdProvider(contentResolver, clipOutputDir)
@@ -312,7 +315,10 @@ class ExportService : Service() {
         stretchFactorX: Float,
         stretchFactorY: Float,
         clipDebayerMode: Int = fm.magiclantern.forum.domain.model.DebayerAlgorithm.AMAZE.nativeId,
-        rawCorrection: RawCorrectionSettings = RawCorrectionSettings()
+        rawCorrection: RawCorrectionSettings = RawCorrectionSettings(),
+        colorGrading: fm.magiclantern.forum.domain.model.ColorGradingSettings = fm.magiclantern.forum.domain.model.ColorGradingSettings(),
+        cutIn: Int = 1,
+        cutOut: Int = 0
     ): ExportOptions {
         val codecOption = when (codec) {
             ExportCodec.CINEMA_DNG -> cdngVariant.nativeId
@@ -350,7 +356,10 @@ class ExportService : Service() {
             resize = resize,
             hdrBlending = hdrBlending,
             antiAliasing = antiAliasing,
-            rawCorrection = rawCorrection
+            rawCorrection = rawCorrection,
+            colorGrading = colorGrading,
+            cutIn = cutIn,
+            cutOut = cutOut
         )
     }
 

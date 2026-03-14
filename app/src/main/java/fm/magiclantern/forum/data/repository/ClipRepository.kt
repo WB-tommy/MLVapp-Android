@@ -161,6 +161,8 @@ class ClipRepository @Inject constructor(
             audioBufferSize = if (hasAudio) audioBufferSize else 0L,
             originalBlackLevel = nativeMetadata.originalBlackLevel,
             originalWhiteLevel = nativeMetadata.originalWhiteLevel,
+            whiteBalanceKelvin = nativeMetadata.whiteBalanceKelvin,
+            whiteBalanceTint = nativeMetadata.whiteBalanceTint,
             isMcraw = nativeMetadata.isMcraw,
             focusPixelMapName = focusPixelMapName
         )
@@ -171,6 +173,17 @@ class ClipRepository @Inject constructor(
             focusPixelMapName = focusPixelMapName
         )
 
+        // Auto-detect focus pixel mode for eligible clips
+        val detectedFocusMode = NativeLib.checkCameraModel(nativeHandle)
+        val initialRawCorrection = if (detectedFocusMode != 0) {
+            fm.magiclantern.forum.domain.model.RawCorrectionSettings(
+                enabled = true,
+                focusPixels = detectedFocusMode
+            )
+        } else {
+            fm.magiclantern.forum.domain.model.RawCorrectionSettings()
+        }
+
         val clipDetails = fm.magiclantern.forum.domain.model.ClipDetails(
             preview = updatedPreview,
             metadata = metadata,
@@ -178,6 +191,9 @@ class ClipRepository @Inject constructor(
             processing = fm.magiclantern.forum.domain.model.ClipProcessingData(
                 stretchFactorX = preview.stretchFactorX,
                 stretchFactorY = preview.stretchFactorY
+            ),
+            grading = fm.magiclantern.forum.domain.model.ClipGradingData(
+                rawCorrection = initialRawCorrection
             )
         )
 

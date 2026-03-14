@@ -122,6 +122,64 @@ static void parse_raw_correction(JNIEnv *env, jobject rawCorrectionObj,
   env->DeleteLocalRef(cls);
 }
 
+// Parse ColorGradingSettings object from Kotlin
+static void parse_color_grading(JNIEnv *env, jobject colorGradingObj,
+                                color_grading_options_t &out) {
+  if (!colorGradingObj) {
+    return; // Use defaults
+  }
+  jclass cls = env->GetObjectClass(colorGradingObj);
+
+  // Basic adjustments
+  out.exposure = get_float_field(env, colorGradingObj, cls, "exposure");
+  out.contrast = get_int_field(env, colorGradingObj, cls, "contrast");
+  out.pivot = get_int_field(env, colorGradingObj, cls, "pivot");
+  out.temperature = get_int_field(env, colorGradingObj, cls, "temperature");
+  out.tint = get_int_field(env, colorGradingObj, cls, "tint");
+  out.saturation = get_int_field(env, colorGradingObj, cls, "saturation");
+  out.vibrance = get_int_field(env, colorGradingObj, cls, "vibrance");
+  out.clarity = get_int_field(env, colorGradingObj, cls, "clarity");
+
+  // Shadows/Highlights
+  out.shadows = get_int_field(env, colorGradingObj, cls, "shadows");
+  out.highlights = get_int_field(env, colorGradingObj, cls, "highlights");
+  out.ds = get_int_field(env, colorGradingObj, cls, "ds");
+  out.dr = get_int_field(env, colorGradingObj, cls, "dr");
+  out.ls = get_int_field(env, colorGradingObj, cls, "ls");
+  out.lr = get_int_field(env, colorGradingObj, cls, "lr");
+  out.lightening = get_int_field(env, colorGradingObj, cls, "lightening");
+
+  // Processing options
+  out.sharpen = get_int_field(env, colorGradingObj, cls, "sharpen");
+  out.sharpen_masking =
+      get_int_field(env, colorGradingObj, cls, "sharpenMasking");
+  out.chroma_blur = get_int_field(env, colorGradingObj, cls, "chromaBlur");
+  out.highlight_reconstruction =
+      get_int_field(env, colorGradingObj, cls, "highlightReconstruction");
+  out.cam_matrix_used =
+      get_int_field(env, colorGradingObj, cls, "camMatrixUsed");
+  out.chroma_separation =
+      get_int_field(env, colorGradingObj, cls, "chromaSeparation");
+
+  // Profile
+  out.profile_index = get_int_field(env, colorGradingObj, cls, "profileIndex");
+
+  // Tone mapping
+  out.tonemap = get_int_field(env, colorGradingObj, cls, "tonemap");
+  out.transfer_function =
+      get_string_field(env, colorGradingObj, cls, "transferFunction");
+  out.gamut = get_int_field(env, colorGradingObj, cls, "gamut");
+  out.gamma = get_int_field(env, colorGradingObj, cls, "gamma");
+  out.allow_creative_adjustments =
+      get_int_field(env, colorGradingObj, cls, "allowCreativeAdjustments");
+
+  // Advanced
+  out.exr_mode = get_int_field(env, colorGradingObj, cls, "exrMode");
+  out.agx = get_int_field(env, colorGradingObj, cls, "agx");
+
+  env->DeleteLocalRef(cls);
+}
+
 export_options_t parse_export_options(JNIEnv *env, jobject exportOptions) {
   export_options_t options{};
   jclass cls = env->GetObjectClass(exportOptions);
@@ -193,6 +251,10 @@ export_options_t parse_export_options(JNIEnv *env, jobject exportOptions) {
   options.force_software =
       get_bool_field(env, exportOptions, cls, "forceSoftware");
 
+  // Cut In / Cut Out (1-based frame numbers)
+  options.cut_in = get_int_field(env, exportOptions, cls, "cutIn");
+  options.cut_out = get_int_field(env, exportOptions, cls, "cutOut");
+
   // Raw correction settings (full object)
   jfieldID rawCorrectionField = env->GetFieldID(
       cls, "rawCorrection",
@@ -201,6 +263,15 @@ export_options_t parse_export_options(JNIEnv *env, jobject exportOptions) {
       env->GetObjectField(exportOptions, rawCorrectionField);
   parse_raw_correction(env, rawCorrectionObj, options.raw_correction);
   env->DeleteLocalRef(rawCorrectionObj);
+
+  // Color grading settings (full object)
+  jfieldID colorGradingField = env->GetFieldID(
+      cls, "colorGrading",
+      "Lfm/magiclantern/forum/domain/model/ColorGradingSettings;");
+  jobject colorGradingObj =
+      env->GetObjectField(exportOptions, colorGradingField);
+  parse_color_grading(env, colorGradingObj, options.color_grading);
+  env->DeleteLocalRef(colorGradingObj);
 
   // Codec usage
   options.h264_quality = get_enum_field(
@@ -394,6 +465,10 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportHandler(
   disableMlvCaching(video);
   const int focusMode = llrpDetectFocusDotFixMode(video);
   if (focusMode != 0) {
+    // Sync the options struct so it isn't overridden by apply_raw_correction
+    options.raw_correction.focus_pixels = focusMode;
+    options.raw_correction.enabled = true;
+
     llrpSetFixRawMode(video, 1);
     llrpSetFocusPixelMode(video, focusMode);
     llrpResetFpmStatus(video);
@@ -526,6 +601,9 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportBatchHandler(
   jfieldID rawCorrectionFieldId = env->GetFieldID(
       clipDataClass, "rawCorrection",
       "Lfm/magiclantern/forum/domain/model/RawCorrectionSettings;");
+  jfieldID colorGradingFieldId = env->GetFieldID(
+      clipDataClass, "colorGrading",
+      "Lfm/magiclantern/forum/domain/model/ColorGradingSettings;");
 
   for (int i = 0; i < clipCount; ++i) {
     if (is_export_cancelled()) {
@@ -555,6 +633,11 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportBatchHandler(
     clipOptions.stretch_factor_y = stretchY;
     parse_raw_correction(env, rawCorrectionObj, clipOptions.raw_correction);
 
+    jobject colorGradingObj =
+        env->GetObjectField(clipData, colorGradingFieldId);
+    parse_color_grading(env, colorGradingObj, clipOptions.color_grading);
+    env->DeleteLocalRef(colorGradingObj);
+
     // Setup file provider for this clip
     if (fileProvider) {
       g_file_provider = env->NewGlobalRef(fileProvider);
@@ -577,6 +660,10 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportBatchHandler(
       disableMlvCaching(video);
       const int focusMode = llrpDetectFocusDotFixMode(video);
       if (focusMode != 0) {
+        // Sync the per-clip options struct so it isn't overridden by apply_raw_correction
+        clipOptions.raw_correction.focus_pixels = focusMode;
+        clipOptions.raw_correction.enabled = true;
+
         llrpSetFixRawMode(video, 1);
         llrpSetFocusPixelMode(video, focusMode);
         llrpResetFpmStatus(video);

@@ -18,6 +18,7 @@
 
 extern "C" {
 #include "../../src/mlv/llrawproc/llrawproc.h"
+#include "../../src/processing/raw_processing.h"
 }
 
 static const int kCdngNamingDefault = 0;
@@ -96,8 +97,6 @@ void apply_debayer_mode(mlvObject_t *video, const export_options_t &options) {
 }
 
 void reset_processing_state(mlvObject_t *video) {
-  llrpResetFpmStatus(video);
-  llrpResetBpmStatus(video);
   llrpComputeStripesOn(video);
   video->current_cached_frame_active = 0;
 }
@@ -158,6 +157,113 @@ void apply_raw_correction(mlvObject_t *video,
   // Note: Dark frame file path would need to be applied via
   // llrpSetDarkFrameFile if the file is accessible during export
 }
+
+// Apply all color grading settings to the processing engine.
+// Order matches live preview: WB → exposure → profile → overrides → matrix →
+// EXR/AgX → adjustments
+void apply_color_grading(mlvObject_t *video,
+                         const color_grading_options_t &opts) {
+  processingObject_t *processing = video->processing;
+  if (!processing) return;
+
+  // 1. White balance (must precede matrix-dependent operations)
+  // Tint is pre-scaled by /10.0 to match preview path (raw_correction.cpp:380)
+  processingSetWhiteBalance(processing, (double)opts.temperature, (double)opts.tint / 10.0);
+
+  // 2. Exposure
+  processingSetExposureStops(processing, (double)opts.exposure);
+
+  // 3. Image profile (sets gamut, transfer function, tonemap, creative adj)
+  //    profile_index 0 = "Select Preset..." (no profile), 1-12 = actual profiles
+  if (opts.profile_index > 0) {
+    processingSetImageProfile(processing, opts.profile_index - 1);
+    // Re-apply white balance to sync matrices with new gamut
+    processingSetWhiteBalance(processing, (double)opts.temperature, (double)opts.tint / 10.0);
+  }
+
+  // 4. Overrides (applied after profile, in case user changed them independently)
+  processingSetTonemappingFunction(processing, opts.tonemap);
+  processingSetTransferFunction(processing, const_cast<char*>(opts.transfer_function.c_str()));
+  processingSetGamut(processing, opts.gamut);
+  if (opts.allow_creative_adjustments) {
+    processingAllowCreativeAdjustments(processing);
+  } else {
+    processingDontAllowCreativeAdjustments(processing);
+  }
+
+  // 5. Camera matrix
+  switch (opts.cam_matrix_used) {
+  case 0:
+    processingDontUseCamMatrix(processing);
+    break;
+  case 1:
+    processingUseCamMatrix(processing);
+    break;
+  case 2:
+    processingUseCamMatrixDanne(processing);
+    break;
+  default:
+    break;
+  }
+
+  // 6. EXR mode (Cyan Highlight Fix)
+  if (opts.exr_mode) {
+    processingEnableExr(processing);
+  } else {
+    processingDisableExr(processing);
+  }
+
+  // 7. AgX rendering transform
+  if (opts.agx) {
+    processingEnableAgX(processing);
+  } else {
+    processingDisableAgX(processing);
+  }
+
+  // 8. Contrast & pivot
+  processingSetSimpleContrast(processing, (double)opts.contrast / 100.0);
+  processingSetPivot(processing, (double)opts.pivot / 100.0);
+
+  // 9. Saturation & vibrance
+  processingSetSaturation(processing, (double)opts.saturation / 100.0 + 1.0);
+  processingSetVibrance(processing, (double)opts.vibrance / 100.0 + 1.0);
+
+  // 10. Clarity
+  processingSetClarity(processing, (double)opts.clarity / 100.0);
+
+  // 11. Shadows & highlights
+  processingSetShadows(processing, (double)opts.shadows / 100.0);
+  processingSetHighlights(processing, (double)opts.highlights / 100.0);
+
+  // 12. Contrast curve parameters (dark/light strength and range)
+  processingSetDCFactor(processing, (double)opts.ds / 10.0);
+  processingSetDCRange(processing, (double)opts.dr / 100.0);
+  processingSetLCFactor(processing, (double)opts.ls / 10.0);
+  processingSetLCRange(processing, (double)opts.lr / 100.0);
+  processingSetLightening(processing, (double)opts.lightening / 100.0);
+
+  // 13. Sharpening
+  processingSetSharpening(processing, (double)opts.sharpen / 100.0);
+  processingSetSharpenMasking(processing, opts.sharpen_masking);
+
+  // 14. Chroma blur
+  if (opts.chroma_blur > 0) {
+    processingEnableChromaSeparation(processing);
+    processingSetChromaBlurRadius(processing, opts.chroma_blur);
+  }
+
+  // 15. Highlight reconstruction
+  if (opts.highlight_reconstruction) {
+    processingEnableHighlightReconstruction(processing);
+  } else {
+    processingDisableHighlightReconstruction(processing);
+  }
+
+  // 16. Chroma separation
+  if (opts.chroma_separation) {
+    processingEnableChromaSeparation(processing);
+  }
+}
 } // namespace
 
 int startExportCdng(mlvObject_t *video, const export_options_t &options,
@@ -184,12 +290,15 @@ int startExportCdng(mlvObject_t *video, const export_options_t &options,
   }
 
   setMlvAlwaysUseAmaze(video);
-  llrpResetFpmStatus(video);
-  llrpResetBpmStatus(video);
   llrpComputeStripesOn(video);
   video->current_cached_frame_active = 0;
   // Apply raw correction settings (replaces enable_raw_fixes check)
   apply_raw_correction(video, options.raw_correction);
+  // Apply color grading settings (exposure, WB, profile, etc.)
+  apply_color_grading(video, options.color_grading);
+  // Reset FPM/BPM status AFTER settings are applied to trigger map loading
+  llrpResetFpmStatus(video);
+  llrpResetBpmStatus(video);
 
   // Set aspect ratio of the picture
   int32_t picAR[4] = {0};
@@ -248,9 +357,14 @@ int startExportCdng(mlvObject_t *video, const export_options_t &options,
 
   uint32_t totalFrames = getMlvFrames(video);
 
+  // Resolve cut range (0-based: [startFrame, endFrame))
+  uint32_t startFrame = 0, endFrame = totalFrames;
+  resolve_cut_range(options, totalFrames, startFrame, endFrame);
+  const uint32_t framesToExport = endFrame - startFrame;
+
   char relativeName[512] = {0};
 
-  for (uint32_t frame = 0; frame < totalFrames; frame++) {
+  for (uint32_t frame = startFrame; frame < endFrame; frame++) {
     if (is_export_cancelled()) {
       freeDngObject(cinemaDng);
       return EXPORT_CANCELLED;
@@ -278,7 +392,7 @@ int startExportCdng(mlvObject_t *video, const export_options_t &options,
     }
 
     if (progress_callback) {
-      progress_callback((int)(100.0f * (frame + 1) / totalFrames));
+      progress_callback((int)(100.0f * (frame - startFrame + 1) / framesToExport));
     }
 
     if (is_export_cancelled()) {
@@ -314,7 +428,17 @@ static std::string write_export_audio(mlvObject_t *video,
     wavPath.append(".wav");
   }
 
-  writeMlvAudioToWave(video, const_cast<char *>(wavPath.c_str()));
+  // Normalize cut markers using the same logic as video export
+  uint32_t startFrame, endFrame;
+  resolve_cut_range(options, getMlvFrames(video), startFrame, endFrame);
+  const bool hasCutMarks = (startFrame > 0) || (endFrame < getMlvFrames(video));
+  if (hasCutMarks) {
+    // Convert back to 1-based for writeMlvAudioToWaveCut
+    writeMlvAudioToWaveCut(video, const_cast<char *>(wavPath.c_str()),
+                           startFrame + 1, endFrame);
+  } else {
+    writeMlvAudioToWave(video, const_cast<char *>(wavPath.c_str()));
+  }
   return wavPath;
 }
 
@@ -331,6 +455,11 @@ int startExportPipe(mlvObject_t *video, const export_options_t &options,
   reset_processing_state(video);
   // Apply raw correction settings (replaces enable_raw_fixes check)
   apply_raw_correction(video, options.raw_correction);
+  // Apply color grading settings (exposure, WB, profile, etc.)
+  apply_color_grading(video, options.color_grading);
+  // Reset FPM/BPM status AFTER settings are applied to trigger map loading
+  llrpResetFpmStatus(video);
+  llrpResetBpmStatus(video);
 
   if (progress_callback) {
     progress_callback(0);
@@ -436,6 +565,11 @@ static int startBatchExportPipe(BatchExportContext &batch_ctx,
   apply_debayer_mode(video, options);
   reset_processing_state(video);
   apply_raw_correction(video, options.raw_correction);
+  // Apply color grading settings (exposure, WB, profile, etc.)
+  apply_color_grading(video, options.color_grading);
+  // Reset FPM/BPM status AFTER settings are applied to trigger map loading
+  llrpResetFpmStatus(video);
+  llrpResetBpmStatus(video);
 
   if (progress_callback) {
     progress_callback(0);
