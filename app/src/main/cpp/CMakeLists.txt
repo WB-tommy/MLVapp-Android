@@ -6,6 +6,12 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -ffast-math")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
+
+# Find OpenMP early so compile flags are available for all targets
+find_package(OpenMP REQUIRED)
+
 set(MLV_SRC_DIR ${CMAKE_SOURCE_DIR}/src)
 set(JNI_DIR ${CMAKE_SOURCE_DIR}/jni)
 
@@ -70,6 +76,20 @@ add_library(mcraw STATIC
         ${MLV_SRC_DIR}/mlv/mcraw/cJSON.c
 )
 
+# Apply OpenMP compile flags to all static libraries that contain
+# #pragma omp directives. Without these flags at COMPILE time, the
+# pragmas are silently ignored and the code runs single-threaded.
+# Note: linking OpenMP only at the final shared lib is NOT sufficient.
+set(OMP_TARGETS processing ca debayer mlv mcraw)
+foreach(OMP_TGT ${OMP_TARGETS})
+    if(OpenMP_C_FOUND)
+        target_compile_options(${OMP_TGT} PRIVATE ${OpenMP_C_FLAGS})
+    endif()
+    if(OpenMP_CXX_FOUND)
+        target_compile_options(${OMP_TGT} PRIVATE ${OpenMP_CXX_FLAGS})
+    endif()
+endforeach()
+
 include_directories(
         ${CMAKE_SOURCE_DIR}/include
         ${JNI_DIR}/
@@ -125,7 +145,9 @@ find_library(
         jnigraphics
 )
 
-# Link all static libraries into the shared library
+# Link all static libraries into the shared library.
+# OpenMP_C and OpenMP_CXX provide both link flags (-fopenmp) and
+# the runtime library (-lomp) needed at the final link step.
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
         android
         log
@@ -141,6 +163,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
         ${jnigraphics-lib}
         ${FFMPEG_LIBS}
         ${mediandk-lib}
+        OpenMP::OpenMP_C
+        OpenMP::OpenMP_CXX
 )
 
 # Set the output name to be consistent
