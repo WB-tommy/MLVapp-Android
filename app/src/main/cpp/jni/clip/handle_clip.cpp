@@ -326,7 +326,6 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
         }
 
         setMlvProcessing(nativeClip, nativeClip->processing);
-        disableMlvCaching(nativeClip);
 
         const float fps = getMlvFramerate(nativeClip);
         const int frames = static_cast<int>(getMlvFrames(nativeClip));
@@ -538,7 +537,6 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_setDebayerMode(
 
     auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
     auto *nativeClip = wrapper->mlv_object;
-    bool enableCache = false;
 
     switch (mode) {
         case 0:
@@ -568,19 +566,9 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_setDebayerMode(
         case 8:
         setMlvUseDcbDebayer(nativeClip);
             break;
-        case 9:
-        setMlvAlwaysUseAmaze(nativeClip);
-            enableCache = true;
-            break;
         default:
         setMlvAlwaysUseAmaze(nativeClip);
             break;
-    }
-
-    if (enableCache) {
-        enableMlvCaching(nativeClip);
-    } else {
-        disableMlvCaching(nativeClip);
     }
 }
 }

@@ -29,6 +29,11 @@
 /* Matrix functions which are useful */
 #include "../matrix/matrix.h"
 
+/* Thread-safe param access: NULL-safe for standalone processing objects
+ * not yet attached to an mlvObject (e.g. during initProcessingObject). */
+#define PROC_LOCK(p)   do { if ((p)->param_mutex) pthread_mutex_lock((p)->param_mutex); } while(0)
+#define PROC_UNLOCK(p) do { if ((p)->param_mutex) pthread_mutex_unlock((p)->param_mutex); } while(0)
+
 #define STANDARD_GAMMA 3.15
 
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
@@ -216,6 +221,7 @@ processingObject_t * initProcessingObject()
 
 void processingSetGamut(processingObject_t * processing, int gamut)
 {
+    PROC_LOCK(processing);
     processing->colour_gamut = gamut;
     /* This will update everything necessary to enable tonemapping */
     processingSetWhiteBalance(processing, processingGetWhiteBalanceKelvin(processing), processingGetWhiteBalanceTint(processing));
@@ -223,6 +229,7 @@ void processingSetGamut(processingObject_t * processing, int gamut)
     processingSetGammaGradient(processing, processing->gamma_power);
     processing_update_matrices(processing);
     processing_update_matrices_gradient(processing);
+    PROC_UNLOCK(processing);
 }
 
 int processingGetGamut(processingObject_t * processing)
@@ -232,12 +239,14 @@ int processingGetGamut(processingObject_t * processing)
 
 void processingSetTonemappingFunction(processingObject_t * processing, int function)
 {
+    PROC_LOCK(processing);
     processing->tonemap_function = function;
     /* This will update everything necessary to enable tonemapping */
     processingSetGamma(processing, processing->gamma_power);
     processingSetGammaGradient(processing, processing->gamma_power);
     processing_update_matrices(processing);
     processing_update_matrices_gradient(processing);
+    PROC_UNLOCK(processing);
 }
 
 int processingGetTonemappingFunction(processingObject_t * processing)
@@ -247,6 +256,7 @@ int processingGetTonemappingFunction(processingObject_t * processing)
 
 void processingSetImageProfile(processingObject_t * processing, int imageProfile)
 {
+    PROC_LOCK(processing);
     /* Yes, we still have compatibility with old profile system */
     processingGetAllowedCreativeAdjustments(processing) = default_image_profiles[imageProfile].allow_creative_adjustments;
     processingSetGamut(processing, default_image_profiles[imageProfile].colour_gamut);
@@ -257,11 +267,13 @@ void processingSetImageProfile(processingObject_t * processing, int imageProfile
 
     processing_update_matrices(processing);
     processing_update_matrices_gradient(processing);
+    PROC_UNLOCK(processing);
 }
 
 /* Takes those matrices I learned about on the forum */
 void processingSetCamMatrix(processingObject_t * processing, double * camMatrix, double * camMatrixA)
 {
+    PROC_LOCK(processing);
     memcpy(processing->cam_matrix, camMatrix, sizeof(double) * 9);
     memcpy(processing->cam_matrix_A, camMatrixA, sizeof(double) * 9);
     /* TO update matrices really argh so much confusion :( */
@@ -269,17 +281,22 @@ void processingSetCamMatrix(processingObject_t * processing, double * camMatrix,
     /* Calculates final main matrix */
     processing_update_matrices(processing);
     if( processing->gradient_enable != 0 ) processing_update_matrices_gradient(processing);
+    PROC_UNLOCK(processing);
 }
 
 void processingSetHighlights(processingObject_t * processing, double value)
 {
+    PROC_LOCK(processing);
     processing->shadows_highlights.highlights = value;
     processing_update_shadow_highlight_curve(processing);
+    PROC_UNLOCK(processing);
 }
 void processingSetShadows(processingObject_t * processing, double value)
 {
+    PROC_LOCK(processing);
     processing->shadows_highlights.shadows = value;
     processing_update_shadow_highlight_curve(processing);
+    PROC_UNLOCK(processing);
 }
 
 void processing_update_shadow_highlight_curve(processingObject_t * processing)
@@ -308,14 +325,18 @@ void processing_update_shadow_highlight_curve(processingObject_t * processing)
 
 void processingSetSimpleContrast(processingObject_t * processing, double value)
 {
+    PROC_LOCK(processing);
     processing->contrast = value * 0.65;
     processing_update_contrast_curve(processing);
+    PROC_UNLOCK(processing);
 }
 
 void processingSetPivot(processingObject_t * processing, double value)
 {
+    PROC_LOCK(processing);
     processing->pivot = value;
     processing_update_contrast_curve(processing);
+    PROC_UNLOCK(processing);
 }
 
 void processing_update_contrast_curve(processingObject_t * processing)
@@ -344,8 +365,10 @@ void processing_update_contrast_curve(processingObject_t * processing)
 
 void processingSetSimpleContrastGradient(processingObject_t * processing, double value)
 {
+    PROC_LOCK(processing);
     processing->gradient_contrast = value * 0.65;
     processing_update_contrast_curve_gradient(processing);
+    PROC_UNLOCK(processing);
 }
 
 void processing_update_contrast_curve_gradient(processingObject_t * processing)
@@ -374,9 +397,11 @@ void processing_update_contrast_curve_gradient(processingObject_t * processing)
 
 void processingSetClarity(processingObject_t * processing, double value)
 {
+    PROC_LOCK(processing);
     if( value < 0 ) value /= 2.0;
     processing->clarity = value;
     processing_update_clarity_curve(processing);
+    PROC_UNLOCK(processing);
 }
 
 void processing_update_clarity_curve(processingObject_t * processing)
@@ -1287,13 +1312,14 @@ void get_frame_transformed(processingObject_t *processing, uint16_t * frame_buf,
 }
 
 /* Set contrast (S-curve really) */
-void processingSetContrast( processingObject_t * processing, 
+void processingSetContrast( processingObject_t * processing,
                             double DCRange,  /* Dark contrast range: 0.0 to 1.0 */
                             double DCFactor, /* Dark contrast strength: 0.0 to 8.0(any range really) */
                             double LCRange,  /* Light contrast range */
                             double LCFactor, /* Light contrast strength */
                             double lighten   /* 0-1 (for good highlight rolloff) */ )
 {
+    PROC_LOCK(processing);
     /* Basic things */
     processing->light_contrast_factor = LCFactor;
     processing->light_contrast_range = LCRange;
@@ -1302,59 +1328,75 @@ void processingSetContrast( processingObject_t * processing,
     processing->lighten = lighten;
 
     processing_update_curves(processing);
+    PROC_UNLOCK(processing);
 }
 
 void processingSetDCRange(processingObject_t * processing, double DCRange)
 {
+    PROC_LOCK(processing);
     processing->dark_contrast_range = DCRange;
     processing_update_curves(processing);
+    PROC_UNLOCK(processing);
 }
 void processingSetDCFactor(processingObject_t * processing, double DCFactor)
 {
+    PROC_LOCK(processing);
     processing->dark_contrast_factor = DCFactor;
     processing_update_curves(processing);
+    PROC_UNLOCK(processing);
 }
-void processingSetLCRange(processingObject_t * processing, double LCRange) 
+void processingSetLCRange(processingObject_t * processing, double LCRange)
 {
+    PROC_LOCK(processing);
     processing->light_contrast_range = LCRange;
     processing_update_curves(processing);
+    PROC_UNLOCK(processing);
 }
 void processingSetLCFactor(processingObject_t * processing, double LCFactor)
 {
+    PROC_LOCK(processing);
     processing->light_contrast_factor = LCFactor;
     processing_update_curves(processing);
+    PROC_UNLOCK(processing);
 }
 void processingSetLightening(processingObject_t * processing, double lighten)
 {
+    PROC_LOCK(processing);
     processing->lighten = lighten;
     processing_update_curves(processing);
+    PROC_UNLOCK(processing);
 }
 
 /* Have a guess what this does */
 void processingSetExposureStops(processingObject_t * processing, double exposureStops)
 {
+    PROC_LOCK(processing);
     processing->exposure_stops = exposureStops;
 
     processingSetGamma(processing, processing->gamma_power);
     if( processing->gradient_enable != 0 ) processingSetGammaGradient(processing, processing->gamma_power);
     processing_update_matrices(processing);
     if( processing->gradient_enable != 0 ) processing_update_matrices_gradient(processing);
+    PROC_UNLOCK(processing);
 }
 
 /* Have a guess what this does */
 void processingSetGradientExposure(processingObject_t * processing, double value)
 {
+    PROC_LOCK(processing);
     processing->gradient_exposure_stops = value;
 
     processingSetGamma(processing, processing->gamma_power);
     processingSetGammaGradient(processing, processing->gamma_power);
     processing_update_matrices(processing);
     processing_update_matrices_gradient(processing);
+    PROC_UNLOCK(processing);
 }
 
 /* Sets and precalculaes saturation */
 void processingSetSaturation(processingObject_t * processing, double saturationFactor)
 {
+    PROC_LOCK(processing);
     processing->saturation = saturationFactor;
 
     /* Precaluclate for the algorithm */
@@ -1363,12 +1405,14 @@ void processingSetSaturation(processingObject_t * processing, double saturationF
         double value = (i - 65536) * saturationFactor;
         processing->pre_calc_sat[i] = value;
     }
+    PROC_UNLOCK(processing);
 }
 
 
 /* Sets and precalculaes vibrance */
 void processingSetVibrance(processingObject_t *processing, double vibranceFactor)
 {
+    PROC_LOCK(processing);
     processing->vibrance = vibranceFactor;
 
     /* Precaluclate for the algorithm */
@@ -1377,20 +1421,24 @@ void processingSetVibrance(processingObject_t *processing, double vibranceFactor
         double value = (i - 65536) * vibranceFactor;
         processing->pre_calc_vibrance[i] = value;
     }
+    PROC_UNLOCK(processing);
 }
 
 
 /* Set direction bias */
 void processingSetSharpeningBias(processingObject_t * processing, double bias)
 {
+    PROC_LOCK(processing);
     processing->sharpen_bias = bias;
     /* Recalculates everythin */
     processingSetSharpening(processing, processingGetSharpening(processing));
+    PROC_UNLOCK(processing);
 }
 
 
 void processingSetSharpening(processingObject_t * processing, double sharpen)
 {
+    PROC_LOCK(processing);
     processing->sharpen = sharpen;
 
     /* Anything more than ~0.5 just looks awful */
@@ -1406,11 +1454,13 @@ void processingSetSharpening(processingObject_t * processing, double sharpen)
         processing->pre_calc_sharp_x[i] = (uint16_t)LIMIT16((double)i * sharpen_x);
         processing->pre_calc_sharp_y[i] = (uint16_t)LIMIT16((double)i * sharpen_y);
     }
+    PROC_UNLOCK(processing);
 }
 
 /* Set white balance by kelvin + tint value */
 void processingSetWhiteBalance(processingObject_t * processing, double WBKelvin, double WBTint)
 {
+    PROC_LOCK(processing);
     double * p_xyz_to_rgb;
     double * p_ciecam02;
 
@@ -1563,25 +1613,31 @@ void processingSetWhiteBalance(processingObject_t * processing, double WBKelvin,
 
     /* Back to sRGB (maybe something wider in future) */
     multiplyMatrices(p_xyz_to_rgb, back_in_XYZ_matrix, processing->proper_wb_matrix);
+    PROC_UNLOCK(processing);
 }
 
 /* WB just by kelvin */
 void processingSetWhiteBalanceKelvin(processingObject_t * processing, double WBKelvin)
 {
+    PROC_LOCK(processing);
     processingSetWhiteBalance( processing, WBKelvin,
                                processingGetWhiteBalanceTint(processing) );
+    PROC_UNLOCK(processing);
 }
 
 /* WB tint */
 void processingSetWhiteBalanceTint(processingObject_t * processing, double WBTint)
 {
+    PROC_LOCK(processing);
     processingSetWhiteBalance( processing, processingGetWhiteBalanceKelvin(processing),
                                WBTint );
+    PROC_UNLOCK(processing);
 }
 
 /* Set gamma (Log-ing / tonemapping done here) */
 void processingSetGamma(processingObject_t * processing, double gammaValue)
 {
+    PROC_LOCK(processing);
     processing->gamma_power = gammaValue;
 
     /* Needs to be inverse */
@@ -1605,11 +1661,13 @@ void processingSetGamma(processingObject_t * processing, double gammaValue)
     /* So highlight reconstruction works */
     processing_update_highest_green(processing);
     processingSetGammaGradient(processing, gammaValue); /* Cool */
+    PROC_UNLOCK(processing);
 }
 
 /* Set gamma for gradient image part (Log-ing / tonemapping done here) */
 void processingSetGammaGradient(processingObject_t * processing, double gammaValue)
 {
+    PROC_LOCK(processing);
     processing->gamma_power = gammaValue;
 
     /* Needs to be inverse */
@@ -1630,6 +1688,7 @@ void processingSetGammaGradient(processingObject_t * processing, double gammaVal
 
     /* So highlight reconstruction works */
     processing_update_highest_green_gradient(processing);
+    PROC_UNLOCK(processing);
 }
 
 /* Range of saturation and hue is 0.0-1.0 */
@@ -1638,6 +1697,7 @@ void processingSet3WayCorrection( processingObject_t * processing,
                                   double midtoneHue, double midtoneSaturation,
                                   double shadowHue, double shadowSaturation )
 {
+    PROC_LOCK(processing);
     processing->highlight_hue = highlightHue;
     processing->highlight_sat = highlightSaturation;
     processing->midtone_hue = midtoneHue;
@@ -1646,12 +1706,14 @@ void processingSet3WayCorrection( processingObject_t * processing,
     processing->shadow_sat = shadowSaturation;
 
     processing_update_curves(processing);
+    PROC_UNLOCK(processing);
 }
 
 /* Set black and white level */
 void processingSetBlackAndWhiteLevel(processingObject_t * processing,
                                       float mlvBlackLevel, int mlvWhiteLevel, int mlvBitDepth )
 {
+    PROC_LOCK(processing);
     /* Convert levels to 16bit */
     int bits_shift = 16 - mlvBitDepth;
     if( mlvBlackLevel >= 0 )
@@ -1687,28 +1749,35 @@ void processingSetBlackAndWhiteLevel(processingObject_t * processing,
             processing->pre_calc_levels[i] = 65535;
         }
     }
+    PROC_UNLOCK(processing);
 }
 
 /* Cheat functions */
 void processingSetBlackLevel(processingObject_t * processing, float mlvBlackLevel, int mlvBitDepth)
 {
+    PROC_LOCK(processing);
     processingSetBlackAndWhiteLevel( processing,
                                      mlvBlackLevel,
                                      -1, // if -1 leave value untouched
                                      mlvBitDepth );
+    PROC_UNLOCK(processing);
 }
 void processingSetWhiteLevel(processingObject_t * processing, int mlvWhiteLevel, int mlvBitDepth)
 {
+    PROC_LOCK(processing);
     processingSetBlackAndWhiteLevel( processing,
                                      -1, // if -1 leave value untouched
                                      mlvWhiteLevel,
                                      mlvBitDepth );
+    PROC_UNLOCK(processing);
 }
 
 /* Set transformation */
 void processingSetTransformation(processingObject_t * processing, int transformation)
 {
+    PROC_LOCK(processing);
     processing->transformation = transformation;
+    PROC_UNLOCK(processing);
 }
 
 /* Decomissions a processing object completely(I hope) */
@@ -1854,6 +1923,7 @@ void processingFindWhiteBalance(processingObject_t *processing, int imageX, int 
 /* Vignette Mask Creation */
 void processingSetVignetteMask(processingObject_t *processing, uint16_t width, uint16_t height, float radius, float shape, float xStretch, float yStretch)
 {
+    PROC_LOCK(processing);
     double wHalf = width / 2.0;
     double hHalf = height / 2.0;
     double wHalfS = wHalf * xStretch;
@@ -1888,16 +1958,20 @@ void processingSetVignetteMask(processingObject_t *processing, uint16_t width, u
             processing->vignette_mask[(height-1-y)*width+(width-1-x)] = val;
         }
     }
+    PROC_UNLOCK(processing);
 }
 
 void processingSetVignetteStrength(processingObject_t *processing, int8_t value)
 {
+    PROC_LOCK(processing);
     processing->vignette_strength = value;
+    PROC_UNLOCK(processing);
 }
 
 /* Set and calculate the gradient alpha mask */
 void processingSetGradientMask(processingObject_t *processing, uint16_t width, uint16_t height, float x1, float y1, float x2, float y2)
 {
+    PROC_LOCK(processing);
     float A = (x2 - x1);
     float B = (y2 - y1);
     float C1 = A * x1 + B * y1;
@@ -1917,6 +1991,7 @@ void processingSetGradientMask(processingObject_t *processing, uint16_t width, u
             }
         }
     }
+    PROC_UNLOCK(processing);
 }
 
 /* Analyse dual iso frame to find highest green for highlight reconstruction */
@@ -2036,12 +2111,15 @@ void analyse_frame_highest_green(processingObject_t *processing, int imageX, int
 //Set LUT strength factor
 void processingSetLutStrength(processingObject_t *processing, uint8_t strength)
 {
+    PROC_LOCK(processing);
     processing->lut->intensity = strength;
+    PROC_UNLOCK(processing);
 }
 
 //Set the gradation curve
 void processingSetGCurve(processingObject_t *processing, int num, float *pXin, float *pYin, uint8_t channel)
 {
+    PROC_LOCK(processing);
     uint16_t *curve;
     if( channel == 1 ) curve = processing->gcurve_r;
     else if( channel == 2 ) curve = processing->gcurve_g;
@@ -2055,6 +2133,7 @@ void processingSetGCurve(processingObject_t *processing, int num, float *pXin, f
         {
             curve[i] = i;
         }
+        PROC_UNLOCK(processing);
         return;
     }
 
@@ -2086,11 +2165,13 @@ void processingSetGCurve(processingObject_t *processing, int num, float *pXin, f
 
     free( pXout );
     free( pYout );
+    PROC_UNLOCK(processing);
 }
 
 //Set the hue vs curves
 void processingSetHueVsCurves(processingObject_t *processing, int num, float *pXin, float *pYin, uint8_t channel)
 {
+    PROC_LOCK(processing);
     float *curve;
     uint8_t *used;
     if( channel == 0 )
@@ -2121,6 +2202,7 @@ void processingSetHueVsCurves(processingObject_t *processing, int num, float *pX
             curve[i] = 0.0;
             *used = 0;
         }
+        PROC_UNLOCK(processing);
         return;
     }
 
@@ -2154,15 +2236,18 @@ void processingSetHueVsCurves(processingObject_t *processing, int num, float *pX
 
     free( pXout );
     free( pYout );
+    PROC_UNLOCK(processing);
 }
 
 /* Toning */
 void processingSetToning(processingObject_t *processing, uint8_t r, uint8_t g, uint8_t b, uint8_t strength)
 {
+    PROC_LOCK(processing);
     processing->toning_dry = (100.0 - strength / 3.0) / 100.0;
     processing->toning_wet[0] = (strength / 3.0 / 100.0) * (float)r / 255.0;
     processing->toning_wet[1] = (strength / 3.0 / 100.0) * (float)g / 255.0;
     processing->toning_wet[2] = (strength / 3.0 / 100.0) * (float)b / 255.0;
+    PROC_UNLOCK(processing);
 }
 
 static char * compile_ternary(char * function)
@@ -2248,6 +2333,7 @@ static char * compile_ternary(char * function)
 
 void processingSetGammaAndTonemapping(processingObject_t * processing, double gamma, int tonemapping)
 {
+    PROC_LOCK(processing);
     if (gamma < 1.00001 && gamma > 0.99999)
     {
         processingSetTransferFunction(processing, get_tonemap_func_string(tonemapping));
@@ -2261,6 +2347,7 @@ void processingSetGammaAndTonemapping(processingObject_t * processing, double ga
         free(string);
         free(compiled);
     }
+    PROC_UNLOCK(processing);
 }
 
 /* Transfer funciton, the correct version of "Gamma" or "Log" */
@@ -2272,9 +2359,11 @@ int processingSetTransferFunction(processingObject_t * processing, char * functi
     char * function_string = compile_ternary(function);
     if (function_string == NULL) return 1;
 
+    PROC_LOCK(processing);
+
     te_variable * var = &processing->x_variable;
     te_expr * expression = te_compile(function_string, var, 1, NULL);
-    if (expression == NULL) {free(function_string); return 1;}
+    if (expression == NULL) {free(function_string); PROC_UNLOCK(processing); return 1;}
 
     if (processing->transfer_function_string != NULL) free(processing->transfer_function_string);
     if (processing->transfer_function_string_formatted != NULL) free(processing->transfer_function_string_formatted);
@@ -2288,6 +2377,7 @@ int processingSetTransferFunction(processingObject_t * processing, char * functi
     /* This just updates the lookup tables now */
     processingSetGamma(processing, 1);
 
+    PROC_UNLOCK(processing);
     return 0;
 }
 

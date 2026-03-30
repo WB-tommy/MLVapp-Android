@@ -512,7 +512,9 @@ int llrpGetFixRawMode(mlvObject_t * video)
 
 void llrpSetFixRawMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->fix_raw = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetVerticalStripeMode(mlvObject_t * video)
@@ -522,12 +524,16 @@ int llrpGetVerticalStripeMode(mlvObject_t * video)
 
 void llrpSetVerticalStripeMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->vertical_stripes = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 void llrpComputeStripesOn(mlvObject_t * video)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->compute_stripes = 1;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetFocusPixelMode(mlvObject_t * video)
@@ -537,7 +543,9 @@ int llrpGetFocusPixelMode(mlvObject_t * video)
 
 void llrpSetFocusPixelMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->focus_pixels = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetFocusPixelInterpolationMethod(mlvObject_t * video)
@@ -547,7 +555,9 @@ int llrpGetFocusPixelInterpolationMethod(mlvObject_t * video)
 
 void llrpSetFocusPixelInterpolationMethod(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->fpi_method = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetBadPixelMode(mlvObject_t * video)
@@ -557,7 +567,9 @@ int llrpGetBadPixelMode(mlvObject_t * video)
 
 void llrpSetBadPixelMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->bad_pixels = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetBadPixelSearchMethod(mlvObject_t *video)
@@ -567,7 +579,9 @@ int llrpGetBadPixelSearchMethod(mlvObject_t *video)
 
 void llrpSetBadPixelSearchMethod(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->bps_method = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetBadPixelInterpolationMethod(mlvObject_t * video)
@@ -577,7 +591,9 @@ int llrpGetBadPixelInterpolationMethod(mlvObject_t * video)
 
 void llrpSetBadPixelInterpolationMethod(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->bpi_method = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetChromaSmoothMode(mlvObject_t * video)
@@ -587,7 +603,9 @@ int llrpGetChromaSmoothMode(mlvObject_t * video)
 
 void llrpSetChromaSmoothMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->chroma_smooth = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetPatternNoiseMode(mlvObject_t * video)
@@ -597,7 +615,9 @@ int llrpGetPatternNoiseMode(mlvObject_t * video)
 
 void llrpSetPatternNoiseMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->pattern_noise = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetDeflickerTarget(mlvObject_t * video)
@@ -607,7 +627,9 @@ int llrpGetDeflickerTarget(mlvObject_t * video)
 
 void llrpSetDeflickerTarget(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->deflicker_target = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetDualIsoMode(mlvObject_t * video)
@@ -617,7 +639,9 @@ int llrpGetDualIsoMode(mlvObject_t * video)
 
 void llrpSetDualIsoMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->dual_iso = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetDualIsoInterpolationMethod(mlvObject_t * video)
@@ -627,7 +651,9 @@ int llrpGetDualIsoInterpolationMethod(mlvObject_t * video)
 
 void llrpSetDualIsoInterpolationMethod(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->diso_averaging = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetDualIsoAliasMapMode(mlvObject_t * video)
@@ -637,7 +663,9 @@ int llrpGetDualIsoAliasMapMode(mlvObject_t * video)
 
 void llrpSetDualIsoAliasMapMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->diso_alias_map = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetDualIsoFullResBlendingMode(mlvObject_t * video)
@@ -647,7 +675,9 @@ int llrpGetDualIsoFullResBlendingMode(mlvObject_t * video)
 
 void llrpSetDualIsoFullResBlendingMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->diso_frblending = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetDualIsoValidity(mlvObject_t * video)
@@ -657,6 +687,7 @@ int llrpGetDualIsoValidity(mlvObject_t * video)
 
 void llrpSetDualIsoValidity(mlvObject_t * video, int diso_force)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     int iso1 = (int)video->EXPO.isoValue;
 
     if (iso1 < 100)
@@ -702,6 +733,7 @@ void llrpSetDualIsoValidity(mlvObject_t * video, int diso_force)
     {
         video->llrawproc->diso_validity = DISO_INVALID;
     }
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpHQDualIso(mlvObject_t * video)
@@ -711,31 +743,41 @@ int llrpHQDualIso(mlvObject_t * video)
 
 void llrpResetDngBWLevels(mlvObject_t * video)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->dng_bit_depth = video->RAWI.raw_info.bits_per_pixel;
     video->llrawproc->dng_black_level = video->RAWI.raw_info.black_level;
     video->llrawproc->dng_white_level = video->RAWI.raw_info.white_level;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 void llrpResetFpmStatus(mlvObject_t * video)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     reset_fpm_status(&(video->llrawproc->focus_pixel_map), &(video->llrawproc->fpm_status));
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 void llrpResetBpmStatus(mlvObject_t * video)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     reset_bpm_status(&(video->llrawproc->bad_pixel_map), &(video->llrawproc->bpm_status));
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 /* dark frame stuff */
 void llrpInitDarkFrameExtFileName(mlvObject_t * video, char * df_filename)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     df_free_filename(video);
     df_init_filename(video, df_filename);
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 void llrpFreeDarkFrameExtFileName(mlvObject_t * video)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     df_free_filename(video);
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetDarkFrameMode(mlvObject_t * video)
@@ -745,7 +787,9 @@ int llrpGetDarkFrameMode(mlvObject_t * video)
 
 void llrpSetDarkFrameMode(mlvObject_t * video, int value)
 {
+    pthread_mutex_lock(&video->processing_mutex);
     video->llrawproc->dark_frame = value;
+    pthread_mutex_unlock(&video->processing_mutex);
 }
 
 int llrpGetDarkFrameExtStatus(mlvObject_t * video)

@@ -116,6 +116,15 @@ typedef struct {
     processingObject_t * processing;
     llrawprocObject_t * llrawproc;
 
+    /* Thread safety: protects processing + llrawproc parameter access.
+     * Recursive mutex — safe for cascading setter calls and cross-module
+     * calls (e.g. applyLLRawProcObject → processingSetBlackAndWhiteLevel). */
+    pthread_mutex_t processing_mutex;
+    /* Signaled when processing/llrawproc params change */
+    pthread_cond_t processing_cond;
+    /* Signaled when a frame finishes caching (replaces usleep spin-wait) */
+    pthread_cond_t cache_cond;
+
     /* Restricted lossless raw data bit depth */
     int lossless_bpp;
 

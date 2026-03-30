@@ -100,7 +100,6 @@ fun NavController(
         composable(ROUTE_HOME) {
             MainScreen(
                 windowSizeClass = windowSizeClass,
-                totalMemory = cacheSize,
                 cpuCores = cores,
                 navController = navController,
                 clipListViewModel = clipListViewModel,

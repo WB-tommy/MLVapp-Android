@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
         }
 
         NativeLib.setBaseDir(this.filesDir.absolutePath)
-        
+
         setContent {
             MLVappTheme {
                 Surface(
@@ -42,9 +42,16 @@ class MainActivity : ComponentActivity() {
                     activityManager.getMemoryInfo(memoryInfo)
                     // totalMem is in bytes; JNI expects MiB
                     val totalMemMiB = memoryInfo.totalMem / (1024L * 1024L)
+                    val maxCacheSize = 1536L
+                    val minCacheSize = 256L
 
-                    val cacheSize =
-                        if (totalMemMiB < 7500) totalMemMiB / 3 else (2 * (totalMemMiB - 4000)) / 3
+                    val calculatedCache = when {
+                        totalMemMiB < 4000 -> totalMemMiB / 4
+                        totalMemMiB < 8000 -> totalMemMiB / 3
+                        else -> (totalMemMiB - 4000) / 2
+                    }
+
+                    val cacheSize = calculatedCache.coerceIn(minCacheSize, maxCacheSize)
 
                     val cpuCores = Runtime.getRuntime().availableProcessors()
                     val cores = if (cpuCores > 0) cpuCores else 4

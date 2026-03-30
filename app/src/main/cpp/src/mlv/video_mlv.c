@@ -353,8 +353,10 @@ void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outpu
         return;
     }
 
-    /* apply low level raw processing to the unpacked_frame */
+    /* apply low level raw processing to the unpacked_frame (lock protects llrawproc params) */
+    pthread_mutex_lock(&video->processing_mutex);
     applyLLRawProcObject(video, unpacked_frame, unpacked_frame_size);
+    pthread_mutex_unlock(&video->processing_mutex);
 
     /* high quality dualiso buffer consists of real 16 bit values, no converting needed */
     int shift_val = (llrpHQDualIso(video)) ? 0 : (16 - video->RAWI.raw_info.bits_per_pixel);
@@ -375,6 +377,9 @@ void setMlvProcessing(mlvObject_t * video, processingObject_t * processing)
 
     /* Easy bit */
     video->processing = processing;
+
+    /* Wire up thread safety mutex pointer */
+    video->processing->param_mutex = &video->processing_mutex;
 
     /* Link dual_iso value, because it is needed */
     video->processing->dual_iso = &video->llrawproc->dual_iso;
@@ -449,19 +454,23 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
     int height = getMlvHeight(video);
     int frame_size = width * height * sizeof(uint16_t) * 3;
 
+    /* Lock g_mutexFind to safely read cache state and pointers */
+    pthread_mutex_lock(&video->g_mutexFind);
+
     /* If frame was requested last time and is sitting in the "current" frame cache */
     if ( video->cached_frames[frameIndex] == MLV_FRAME_NOT_CACHED
-         && video->current_cached_frame_active 
+         && video->current_cached_frame_active
          && video->current_cached_frame == frameIndex )
     {
         memcpy(outputFrame, video->rgb_raw_current_frame, frame_size);
+        pthread_mutex_unlock(&video->g_mutexFind);
     }
-    /* Is this next bit even readable? */
     else switch (video->cached_frames[frameIndex])
     {
         case MLV_FRAME_IS_CACHED:
         {
             memcpy(outputFrame, video->rgb_raw_frames[frameIndex], frame_size);
+            pthread_mutex_unlock(&video->g_mutexFind);
             break;
         }
 
@@ -474,22 +483,34 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
                 video->cache_next = frameIndex;
             }
         }
+        /* fall through */
 
         case MLV_FRAME_BEING_CACHED:
         {
             if (doesMlvAlwaysUseAmaze(video) && isMlvObjectCaching(video))
             {
-                while (video->cached_frames[frameIndex] != MLV_FRAME_IS_CACHED) usleep(100);
+                /* Wait for cache thread to finish — condvar replaces usleep(100) spin */
+                while (video->cached_frames[frameIndex] != MLV_FRAME_IS_CACHED)
+                {
+                    pthread_cond_wait(&video->cache_cond, &video->g_mutexFind);
+                }
                 memcpy(outputFrame, video->rgb_raw_frames[frameIndex], frame_size);
+                pthread_mutex_unlock(&video->g_mutexFind);
             }
             else
             {
+                /* Unlock before heavy decode work */
+                pthread_mutex_unlock(&video->g_mutexFind);
+
                 float * raw_frame = malloc(width * height * sizeof(float));
                 get_mlv_raw_frame_debayered(video, frameIndex, raw_frame, video->rgb_raw_current_frame, doesMlvAlwaysUseAmaze(video));
                 free(raw_frame);
                 memcpy(outputFrame, video->rgb_raw_current_frame, frame_size);
+
+                pthread_mutex_lock(&video->g_mutexFind);
                 video->current_cached_frame_active = 1;
                 video->current_cached_frame = frameIndex;
+                pthread_mutex_unlock(&video->g_mutexFind);
             }
             break;
         }
@@ -513,12 +534,14 @@ void getMlvProcessedFrame16(mlvObject_t * video, uint64_t frameIndex, uint16_t *
     /* Get the raw data in B&W */
     getMlvRawFrameDebayered(video, frameIndex, unprocessed_frame);
 
-    /* Do processing.......... */
+    /* Do processing (lock protects processing params against concurrent setters) */
+    pthread_mutex_lock(&video->processing_mutex);
     applyProcessingObject( video->processing,
                            width, height,
                            unprocessed_frame,
                            outputFrame,
                            threads, 1, frameIndex );
+    pthread_mutex_unlock(&video->processing_mutex);
 
     free(unprocessed_frame);
 }
@@ -597,6 +620,17 @@ mlvObject_t * initMlvObject()
     pthread_mutex_init(&video->g_mutexCount, NULL);
     pthread_mutex_init(&video->cache_mutex, NULL);
 
+    /* Recursive mutex for thread-safe access to processing + llrawproc params */
+    {
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&video->processing_mutex, &attr);
+        pthread_mutexattr_destroy(&attr);
+    }
+    pthread_cond_init(&video->processing_cond, NULL);
+    pthread_cond_init(&video->cache_cond, NULL);
+
     /* Set cache limit to allow ~1 second of 1080p and be safe for low ram PCs */
     setMlvRawCacheLimitMegaBytes(video, 290);
     setMlvCacheStartFrame(video, 0); /* Just in case */
@@ -606,6 +640,7 @@ mlvObject_t * initMlvObject()
 
     /* Init low level raw processing object */
     video->llrawproc = initLLRawProcObject();
+    video->llrawproc->param_mutex = &video->processing_mutex;
 
     /* Init CA correction */
     //video->ca_auto = 0;
@@ -662,6 +697,9 @@ void freeMlvObject(mlvObject_t * video)
     pthread_mutex_destroy(&video->g_mutexFind);
     pthread_mutex_destroy(&video->g_mutexCount);
     pthread_mutex_destroy(&video->cache_mutex);
+    pthread_mutex_destroy(&video->processing_mutex);
+    pthread_cond_destroy(&video->processing_cond);
+    pthread_cond_destroy(&video->cache_cond);
 
     /* Main 1 */
     free(video);

@@ -52,7 +52,6 @@ import fm.magiclantern.forum.features.player.viewmodel.PlayerViewModel
 @Composable
 fun MainScreen(
     windowSizeClass: WindowSizeClass,
-    totalMemory: Long,
     cpuCores: Int,
     navController: NavHostController,
     clipListViewModel: ClipListViewModel,

@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdint.h>
+#include <omp.h>
 
 #include "llrawproc/llrawproc.h"
 #include "../debayer/debayer.h"
@@ -39,7 +40,7 @@ void get_sub_sampling_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
     uint16_t *raw_frame = (uint16_t *) malloc(raw_w * raw_h * sizeof(uint16_t));
     if (getMlvRawFrameUint16(video, 0, raw_frame)) {
         free(raw_frame);
-        return ;
+        return;
     }
 
     int pixel_count = width * height;
@@ -47,9 +48,10 @@ void get_sub_sampling_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
     uint16_t *downscaled_frame = (uint16_t *) malloc(pixel_count * sizeof(uint16_t));
     if (!downscaled_frame) {
         free(raw_frame);
-        return ;
+        return;
     }
 
+#pragma omp parallel for
     for (i = 0; i < height; i++)
         for (j = 0; j < width; j++)
             downscaled_frame[i * width + j] =
@@ -61,7 +63,7 @@ void get_sub_sampling_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
     if (!float_thumb) {
         free(raw_frame);
         free(downscaled_frame);
-        return ;
+        return;
     }
 
     for (i = 0; i < pixel_count; i++)
@@ -72,7 +74,7 @@ void get_sub_sampling_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
         free(raw_frame);
         free(downscaled_frame);
         free(float_thumb);
-        return ;
+        return;
     }
 
     debayerBasic(debayered_frame, float_thumb, width, height, 1);
@@ -83,7 +85,7 @@ void get_sub_sampling_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
         free(downscaled_frame);
         free(debayered_frame);
         free(float_thumb);
-        return ;
+        return;
     }
 
     applyProcessingObject(video->processing, width, height,
@@ -136,6 +138,7 @@ void get_area_average_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
     }
 
     /* Area-average downscale */
+#pragma omp parallel for
     for (int out_y = 0; out_y < thumb_h; ++out_y) {
         for (int out_x = 0; out_x < thumb_w; ++out_x) {
             uint64_t sum_r = 0, sum_g = 0, sum_b = 0;

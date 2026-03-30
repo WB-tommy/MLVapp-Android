@@ -1,6 +1,7 @@
 #ifndef _processing_struct_
 #define _processing_struct_
 
+#include <pthread.h>
 #include "image_profile.h"
 #include "filter/filter.h"
 #include "cube_lut.h"
@@ -16,6 +17,9 @@ typedef struct {
 
 /* Processing settings structure (a mess) */
 typedef struct {
+
+    /* Back-pointer to parent mlvObject_t's processing_mutex (set when attached) */
+    pthread_mutex_t * param_mutex;
 
     int exr_mode;
     int AgX;

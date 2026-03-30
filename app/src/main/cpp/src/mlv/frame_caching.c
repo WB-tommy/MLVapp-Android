@@ -24,7 +24,9 @@
 
 void resetMlvCache(mlvObject_t * video)
 {
+    pthread_mutex_lock(&video->g_mutexFind);
     resetMlvCachedFrame(video);
+    pthread_mutex_unlock(&video->g_mutexFind);
     mark_mlv_uncached(video);
 }
 
@@ -152,6 +154,8 @@ void mark_mlv_uncached(mlvObject_t * video)
     {
         video->cached_frames[i] = MLV_FRAME_NOT_CACHED;
     }
+    /* Wake any playback thread waiting on cache_cond for a BEING_CACHED frame */
+    pthread_cond_broadcast( &video->cache_cond );
     pthread_mutex_unlock( &video->g_mutexFind );
 }
 
@@ -272,6 +276,7 @@ void an_mlv_cache_thread(mlvObject_t * video)
 
         pthread_mutex_lock( &video->g_mutexFind );
         video->cached_frames[cache_frame] = MLV_FRAME_IS_CACHED;
+        pthread_cond_broadcast( &video->cache_cond );
         pthread_mutex_unlock( &video->g_mutexFind );
 
         DEBUG( printf("Debayered frame %llu/%llu has been cached.\n", cache_frame+1, video->cache_limit_frames); )

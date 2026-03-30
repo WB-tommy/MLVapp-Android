@@ -23,6 +23,7 @@
 #define _llrawproc_object_h
 
 #include <sys/types.h>
+#include <pthread.h>
 #include "pixelproc.h"
 #include "stripes.h"
 #include "../mlv.h"
@@ -30,7 +31,10 @@
 /* Low level raw processing object */
 typedef struct
 {
-    /* flags */ 
+    /* Back-pointer to parent mlvObject_t's processing_mutex (set during init) */
+    pthread_mutex_t * param_mutex;
+
+    /* flags */
     int fix_raw;          // apply raw fixes or not, 0 = do not apply, 1 = apply
     int vertical_stripes; // fix vertical stripes, 0 = do not fix", 1 = fix, 2 = compute stripes for every frame
     int compute_stripes;  // 0 = do not compute stripes, 1 = compute stripes
