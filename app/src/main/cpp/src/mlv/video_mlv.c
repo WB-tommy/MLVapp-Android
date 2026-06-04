@@ -453,6 +453,8 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
     int width = getMlvWidth(video);
     int height = getMlvHeight(video);
     int frame_size = width * height * sizeof(uint16_t) * 3;
+    int can_use_frame_cache =
+        isMlvObjectCaching(video) && frameIndex < getMlvRawCacheLimitFrames(video);
 
     /* Lock g_mutexFind to safely read cache state and pointers */
     pthread_mutex_lock(&video->g_mutexFind);
@@ -478,7 +480,7 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
         case MLV_FRAME_NOT_CACHED:
         {
             /* If it is within the cache range, request for it to be cached */
-            if (isMlvObjectCaching(video) && frameIndex < getMlvRawCacheLimitFrames(video))
+            if (can_use_frame_cache)
             {
                 video->cache_next = frameIndex;
             }
@@ -487,7 +489,7 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
 
         case MLV_FRAME_BEING_CACHED:
         {
-            if (doesMlvAlwaysUseAmaze(video) && isMlvObjectCaching(video))
+            if (doesMlvAlwaysUseAmaze(video) && can_use_frame_cache)
             {
                 /* Wait for cache thread to finish — condvar replaces usleep(100) spin */
                 while (video->cached_frames[frameIndex] != MLV_FRAME_IS_CACHED)
@@ -1784,15 +1786,17 @@ short_cut:
     /* Calculate framerate */
     video->frame_rate = getMlvFramerateOrig(video);
 
-    /* Make sure frame cache number is up to date by rerunniinitLLRawProcObjectng thiz */
-    setMlvRawCacheLimitMegaBytes(video, getMlvRawCacheLimitMegaBytes(video));
-
     /* For frame cache */
-    video->rgb_raw_frames = (uint16_t **)malloc( sizeof(uint16_t *) * video->frames );
     video->rgb_raw_current_frame = (uint16_t *)malloc( getMlvWidth(video) * getMlvHeight(video) * 3 * sizeof(uint16_t) );
     video->cached_frames = (uint8_t *)calloc( sizeof(uint8_t), video->frames );
 
     isMlvActive(video) = 5;
+
+    /* Make sure frame cache pointers are valid before cache threads start. */
+    int cache_was_enabled = !video->stop_caching;
+    video->stop_caching = 1;
+    setMlvRawCacheLimitMegaBytes(video, getMlvRawCacheLimitMegaBytes(video));
+    video->stop_caching = cache_was_enabled ? 0 : 1;
 
     /* Start caching unless it was disabled already */
     if (!video->stop_caching && (open_mode != MLV_OPEN_PREVIEW))
@@ -2208,15 +2212,17 @@ preview_out:
     /* Calculate framerate */
     video->frame_rate = getMlvFramerateOrig(video);
 
-    /* Make sure frame cache number is up to date by rerunniinitLLRawProcObjectng thiz */
-    setMlvRawCacheLimitMegaBytes(video, getMlvRawCacheLimitMegaBytes(video));
-
     /* For frame cache */
-    video->rgb_raw_frames = (uint16_t **)malloc( sizeof(uint16_t *) * video->frames );
     video->rgb_raw_current_frame = (uint16_t *)malloc( getMlvWidth(video) * getMlvHeight(video) * 3 * sizeof(uint16_t) );
     video->cached_frames = (uint8_t *)calloc( sizeof(uint8_t), video->frames );
 
     isMlvActive(video) = 1;
+
+    /* Make sure frame cache pointers are valid before cache threads start. */
+    int cache_was_enabled = !video->stop_caching;
+    video->stop_caching = 1;
+    setMlvRawCacheLimitMegaBytes(video, getMlvRawCacheLimitMegaBytes(video));
+    video->stop_caching = cache_was_enabled ? 0 : 1;
 
     /* Start caching unless it was disabled already */
     if (!video->stop_caching && (open_mode != MLV_OPEN_PREVIEW))

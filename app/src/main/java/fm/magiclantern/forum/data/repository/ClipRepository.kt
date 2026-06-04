@@ -118,11 +118,6 @@ class ClipRepository @Inject constructor(
         }
 
         val primaryFileName = sortedUrisAndNames.firstOrNull()?.second ?: preview.displayName
-        Log.d(
-            "ClipRepository",
-            "Opening full clip ${preview.displayName} with ${fileDescriptors.size} fd(s): " +
-                    sortedUrisAndNames.joinToString { (_, fileName) -> fileName }
-        )
 
         val nativeMetadata = NativeLib.openClip(
             fileDescriptors,
