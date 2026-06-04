@@ -10,7 +10,10 @@
     <string name="focus_pixel_download_none_for_camera">No focus pixel maps were found for this camera.</string>
     <string name="focus_pixel_download_index_unavailable">Focus pixel map index is currently unavailable.</string>
     <string name="clip_load_failed">Unable to load clip.</string>
-    <string name="clip_preparation_failed">%1$d of %2$d files could not be opened. They may be unsupported.</string>
+    <string name="clip_preparation_failed">%1$d of %2$d files could not be opened or MLV metadata could not be read.</string>
+    <string name="mlv_chunks_attached">%1$d chunk file(s) attached to an MLV clip.</string>
+    <string name="mlv_chunks_pending">%1$d chunk file(s) waiting for a matching .MLV base file.</string>
+    <string name="mlv_chunks_import_feedback">%1$d chunk file(s) attached. %2$d waiting for a matching .MLV base file.</string>
 
     <!-- Onboarding -->
     <string name="onboarding_toolbar_title">Quick Start Guide</string>

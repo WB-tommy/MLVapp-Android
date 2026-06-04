@@ -38,6 +38,12 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
         jstring fileName, jlong cacheSize,
         jint cores);
 
+JNIEXPORT jlong JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_probeMlvGuid(
+        JNIEnv *env, jobject /* this */,
+        jint fd,
+        jstring fileName);
+
 JNIEXPORT jobject JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
         JNIEnv *env, jobject /* this */,

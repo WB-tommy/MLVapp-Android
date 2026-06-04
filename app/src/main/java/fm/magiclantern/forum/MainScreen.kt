@@ -112,6 +112,25 @@ fun MainScreen(
                     )
                     Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                 }
+
+                is ClipListEvent.ChunkImportFeedback -> {
+                    val message = when {
+                        event.attachedCount > 0 && event.pendingCount > 0 -> context.getString(
+                            R.string.mlv_chunks_import_feedback,
+                            event.attachedCount,
+                            event.pendingCount
+                        )
+                        event.attachedCount > 0 -> context.getString(
+                            R.string.mlv_chunks_attached,
+                            event.attachedCount
+                        )
+                        else -> context.getString(
+                            R.string.mlv_chunks_pending,
+                            event.pendingCount
+                        )
+                    }
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }

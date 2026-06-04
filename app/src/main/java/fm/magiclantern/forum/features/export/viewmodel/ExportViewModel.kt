@@ -36,6 +36,7 @@ import fm.magiclantern.forum.features.export.model.ProResEncoder
 import fm.magiclantern.forum.features.export.model.ProResProfile
 import fm.magiclantern.forum.features.export.model.SmoothingOption
 import fm.magiclantern.forum.features.export.model.Vp9Quality
+import fm.magiclantern.forum.utils.sortedByMlvFileRole
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -263,18 +264,7 @@ class ExportViewModel(
                 clip.uris.map { uri -> uri to (uri.lastPathSegment ?: "") }
             }
 
-            val sortedPairs = if (pairs.isNotEmpty()) {
-                pairs.sortedWith(compareBy { (_, fileName) ->
-                    val extension = fileName.substringAfterLast('.', "")
-                    if (extension.equals("MLV", ignoreCase = true)) {
-                        "0"
-                    } else {
-                        extension
-                    }
-                })
-            } else {
-                emptyList()
-            }
+            val sortedPairs = pairs.sortedByMlvFileRole { (_, fileName) -> fileName }
 
             val uris = sortedPairs.map { it.first }
             if (uris.isEmpty()) continue

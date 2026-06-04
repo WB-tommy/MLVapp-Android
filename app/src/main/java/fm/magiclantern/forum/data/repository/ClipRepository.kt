@@ -5,14 +5,20 @@ import android.content.Context
 import android.database.Cursor
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import dagger.hilt.android.qualifiers.ApplicationContext
 import fm.magiclantern.forum.FocusPixelManager
 import fm.magiclantern.forum.domain.model.ClipPreview
 import fm.magiclantern.forum.nativeInterface.NativeLib
+import fm.magiclantern.forum.utils.MlvFileRole
 import fm.magiclantern.forum.utils.formatDuration
 import fm.magiclantern.forum.utils.formatShutter
+import fm.magiclantern.forum.utils.isImportableClipFile
+import fm.magiclantern.forum.utils.mlvClipStem
+import fm.magiclantern.forum.utils.mlvFileRole
+import fm.magiclantern.forum.utils.sortedByMlvFileRole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -31,17 +37,32 @@ class ClipRepository @Inject constructor(
     private val contentResolver: ContentResolver = appContext.contentResolver
     private val focusPixelManager: FocusPixelManager = FocusPixelManager
 
-    suspend fun prepareClipChunk(
+    suspend fun prepareClipFile(
         uri: Uri,
         cacheSizeMiB: Long,
         cpuCores: Int
-    ): ClipChunk? = withContext(Dispatchers.IO) {
+    ): PreparedClipFile? = withContext(Dispatchers.IO) {
         val fileName = resolveFileName(uri) ?: return@withContext null
-        val extension = fileName.substringAfterLast('.', "")
-        val isMlvChunk = extension.equals("MLV", ignoreCase = true) ||
-                extension.matches(Regex("M[0-9]{2}", RegexOption.IGNORE_CASE))
-        val isMcraw = extension.equals("mcraw", ignoreCase = true)
-        if (!isMlvChunk && !isMcraw) return@withContext null
+        val role = mlvFileRole(fileName)
+        if (!role.isImportableClipFile()) return@withContext null
+
+        if (role is MlvFileRole.Chunk) {
+            val guid = runCatching {
+                contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    NativeLib.probeMlvGuid(pfd.detachFd(), fileName)
+                } ?: 0L
+            }.getOrDefault(0L)
+            Log.d(
+                "ClipRepository",
+                "Prepared chunk $fileName stem=${mlvClipStem(fileName)} guid=$guid"
+            )
+            return@withContext PreparedClipFile(
+                uri = uri,
+                fileName = fileName,
+                guid = guid,
+                role = role
+            )
+        }
 
         val preview = runCatching {
             contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -53,20 +74,24 @@ class ClipRepository @Inject constructor(
                     cpuCores
                 )
             }
-        }.getOrNull() ?: return@withContext null
+            }.getOrNull() ?: return@withContext null
 
-        ClipChunk(
+        Log.d(
+            "ClipRepository",
+            "Prepared base ${fileName} stem=${mlvClipStem(fileName)} guid=${preview.guid}"
+        )
+        PreparedClipFile(
             uri = uri,
             fileName = fileName,
             guid = preview.guid,
+            role = role,
             width = preview.width,
             height = preview.height,
             thumbnail = preview.thumbnail.asImageBitmap(),
             stretchFactorX = preview.stretchFactorX,
             stretchFactorY = preview.stretchFactorY,
             cameraModelId = preview.cameraModelId,
-            focusPixelMapName = preview.focusPixelMapName,
-            isMcraw = isMcraw
+            focusPixelMapName = preview.focusPixelMapName
         )
     }
 
@@ -80,10 +105,7 @@ class ClipRepository @Inject constructor(
         cpuCores: Int
     ): ClipDetailsLoadResult = withContext(Dispatchers.IO) {
         val sortedUrisAndNames =
-            preview.uris.zip(preview.fileNames).sortedWith(compareBy { (_, fileName) ->
-                val extension = fileName.substringAfterLast('.', "")
-                if (extension.equals("MLV", ignoreCase = true)) "0" else extension
-            })
+            preview.uris.zip(preview.fileNames).sortedByMlvFileRole { (_, fileName) -> fileName }
 
         val fileDescriptors = sortedUrisAndNames.mapNotNull { (uri, _) ->
             runCatching {
@@ -96,6 +118,11 @@ class ClipRepository @Inject constructor(
         }
 
         val primaryFileName = sortedUrisAndNames.firstOrNull()?.second ?: preview.displayName
+        Log.d(
+            "ClipRepository",
+            "Opening full clip ${preview.displayName} with ${fileDescriptors.size} fd(s): " +
+                    sortedUrisAndNames.joinToString { (_, fileName) -> fileName }
+        )
 
         val nativeMetadata = NativeLib.openClip(
             fileDescriptors,
@@ -286,19 +313,23 @@ class ClipRepository @Inject constructor(
     }
 }
 
-data class ClipChunk(
+data class PreparedClipFile(
     val uri: Uri,
     val fileName: String,
     val guid: Long,
-    val width: Int,
-    val height: Int,
-    val thumbnail: ImageBitmap,
+    val role: MlvFileRole,
+    val clipStem: String = mlvClipStem(fileName),
+    val width: Int = 0,
+    val height: Int = 0,
+    val thumbnail: ImageBitmap? = null,
     val stretchFactorX: Float = 1.0f,
     val stretchFactorY: Float = 1.0f,
     val cameraModelId: Int = 0,
-    val focusPixelMapName: String = "",
-    val isMcraw: Boolean = false
-)
+    val focusPixelMapName: String = ""
+) {
+    val isMcraw: Boolean
+        get() = role == MlvFileRole.Mcraw
+}
 
 data class FocusPixelRequirement(
     val clipGuid: Long,

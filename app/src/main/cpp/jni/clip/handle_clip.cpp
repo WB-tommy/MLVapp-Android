@@ -11,9 +11,23 @@
 #include <algorithm>
 #include <limits>
 #include <cstring>
+#include <strings.h>
+#include <unistd.h>
 
 namespace {
     constexpr const char *kJniTag = "MLVApp-JNI";
+
+    bool endsWithIgnoreCase(const char *value, const char *suffix) {
+        if (!value || !suffix) {
+            return false;
+        }
+        const size_t valueLen = strlen(value);
+        const size_t suffixLen = strlen(suffix);
+        if (valueLen < suffixLen) {
+            return false;
+        }
+        return strcasecmp(value + valueLen - suffixLen, suffix) == 0;
+    }
 
     inline void resolveStretchFactors(mlvObject_t *clip, float &stretchX,
                                       float &stretchY) {
@@ -52,12 +66,14 @@ mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
     int openMode = isFull ? MLV_OPEN_FULL : MLV_OPEN_PREVIEW;
 
     if (filePath != nullptr) { // Always check for null after GetStringUTFChars
-        size_t len = strlen(filePath);
-
-        bool isMcraw = (len >= 5) && (strncmp(filePath + len - 5, ".mcraw", 4) != 0);
+        bool isMcraw = endsWithIgnoreCase(filePath, ".mcraw");
 
         jint *fdArray = env->GetIntArrayElements(fds, nullptr);
         jsize numFds = env->GetArrayLength(fds);
+        if (!fdArray || numFds <= 0) {
+            env->ReleaseStringUTFChars(fileName, filePath);
+            return nullptr;
+        }
 
         if (isMcraw) {
             nativeClip = initMlvObjectWithMcrawClip(fdArray[0], (char *) filePath,
@@ -65,8 +81,8 @@ mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
         } else {
             nativeClip = initMlvObjectWithClip(fdArray, (int) numFds, (char *) filePath,
                                                openMode, &mlvErr, mlvErrMsg);
-            env->ReleaseIntArrayElements(fds, fdArray, JNI_ABORT);
         }
+        env->ReleaseIntArrayElements(fds, fdArray, JNI_ABORT);
     }
 
     if (!nativeClip || mlvErr != MLV_ERR_NONE) { /* handle error */
@@ -88,6 +104,26 @@ mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
 
 #ifdef __cplusplus
 extern "C" {
+JNIEXPORT jlong JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_probeMlvGuid(
+        JNIEnv * /* env */, jobject /* this */, jint fd, jstring /* fileName */) {
+    FILE *file = fdopen(fd, "rb");
+    if (!file) {
+        close(fd);
+        return 0;
+    }
+
+    mlv_file_hdr_t header{};
+    const size_t readCount = fread(&header, sizeof(mlv_file_hdr_t), 1, file);
+    fclose(file);
+
+    if (readCount != 1 || memcmp(header.fileMagic, "MLVI", 4) != 0) {
+        return 0;
+    }
+
+    return static_cast<jlong>(header.fileGuid);
+}
+
 JNIEXPORT jobject JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
         JNIEnv *env, jobject /* this */, jint fd, jstring fileName, jlong cacheSize,
@@ -461,23 +497,27 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
         // cadence.
         needsFallback = true;
     } else {
-        bool hasNonZero = false;
+        const uint64_t baseTimestamp = nativeClip->video_index[0].frame_time;
+        bool hasProgress = frameCount <= 1;
         for (uint32_t i = 0; i < frameCount; ++i) {
-            const uint32_t frameNumber = nativeClip->video_index[i].frame_number;
-            if (frameNumber >= frameCount) {
-                continue;
+            const uint64_t rawTimestamp = nativeClip->video_index[i].frame_time;
+            if (rawTimestamp < baseTimestamp ||
+                rawTimestamp - baseTimestamp >
+                    static_cast<uint64_t>(std::numeric_limits<jlong>::max())) {
+                needsFallback = true;
+                break;
             }
-            jlong timestamp =
-                    static_cast<jlong>(nativeClip->video_index[i].frame_time);
-            timestamps[frameNumber] = timestamp;
-            if (timestamp != 0) {
-                hasNonZero = true;
+            timestamps[i] = static_cast<jlong>(rawTimestamp - baseTimestamp);
+            if (i > 0 && timestamps[i] > timestamps[i - 1]) {
+                hasProgress = true;
             }
         }
 
-        if (!hasNonZero) {
+        if (!needsFallback && !hasProgress) {
             needsFallback = true;
-        } else {
+        }
+
+        if (!needsFallback) {
             const jlong minExpectedDelta =
                     frameDurationUs > 0 ? std::max<jlong>(1L, frameDurationUs / 5) : 1L;
             const jlong maxExpectedDelta =
@@ -485,22 +525,11 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
                     ? std::max<jlong>(minExpectedDelta, frameDurationUs * 5)
                     : std::numeric_limits<jlong>::max();
 
-            jlong prev = timestamps[0];
-            if (prev < 0) {
-                needsFallback = true;
-            } else {
-                for (uint32_t i = 1; i < frameCount; ++i) {
-                    const jlong ts = timestamps[i];
-                    if (ts <= prev) {
-                        needsFallback = true;
-                        break;
-                    }
-                    const jlong delta = ts - prev;
-                    if (delta < minExpectedDelta || delta > maxExpectedDelta) {
-                        needsFallback = true;
-                        break;
-                    }
-                    prev = ts;
+            for (uint32_t i = 1; i < frameCount; ++i) {
+                const jlong delta = timestamps[i] - timestamps[i - 1];
+                if (delta <= 0 || delta < minExpectedDelta || delta > maxExpectedDelta) {
+                    needsFallback = true;
+                    break;
                 }
             }
         }

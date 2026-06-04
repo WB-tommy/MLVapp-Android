@@ -33,6 +33,11 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
     return JNI_FALSE;
   }
 
+  const uint32_t frameCount = getMlvFrames(nativeClip);
+  if (frameIndex < 0 || static_cast<uint32_t>(frameIndex) >= frameCount) {
+    return JNI_FALSE;
+  }
+
   auto *dstBuf =
       reinterpret_cast<uint8_t *>(env->GetDirectBufferAddress(dstByteBuffer));
   const jlong cap = env->GetDirectBufferCapacity(dstByteBuffer);

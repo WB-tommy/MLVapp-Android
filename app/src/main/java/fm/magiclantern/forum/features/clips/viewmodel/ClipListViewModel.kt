@@ -5,11 +5,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import fm.magiclantern.forum.FocusPixelManager
-import fm.magiclantern.forum.data.repository.ClipChunk
 import fm.magiclantern.forum.data.repository.ClipRepository
 import fm.magiclantern.forum.data.repository.FocusPixelRequirement
+import fm.magiclantern.forum.data.repository.PreparedClipFile
 import fm.magiclantern.forum.domain.model.ClipPreview
 import fm.magiclantern.forum.domain.session.ActiveClipHolder
+import fm.magiclantern.forum.utils.MlvFileRole
+import fm.magiclantern.forum.utils.dedupeAndSortByMlvFileRole
+import fm.magiclantern.forum.utils.mlvClipStem
+import fm.magiclantern.forum.utils.mlvFileRole
+import fm.magiclantern.forum.utils.semanticDedupeKey
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,7 +24,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.util.Locale
 import javax.inject.Inject
 
 /**
@@ -47,6 +51,8 @@ class ClipListViewModel @Inject constructor(
 
     private var currentLoadJob: Job? = null
     private val promptedFocusPixelClips = mutableSetOf<Long>()
+    private val pendingChunksByGuid = mutableMapOf<Long, List<PreparedClipFile>>()
+    private val pendingChunksByStem = mutableMapOf<String, List<PreparedClipFile>>()
 
     /**
      * Set system info (memory/cores) - called from MainActivity or NavController
@@ -64,25 +70,41 @@ class ClipListViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isPreparingClips = true) }
             var failedCount = 0
+            var attachedChunkCount = 0
+            var pendingChunkCount = 0
+            var activeClipReloadGuid: Long? = null
             for (uri in uris) {
-                val chunk = runCatching {
-                    repository.prepareClipChunk(uri, cacheSizeMiB, cpuCores)
+                val preparedFile = runCatching {
+                    repository.prepareClipFile(uri, cacheSizeMiB, cpuCores)
                 }.getOrNull()
 
-                if (chunk != null) {
-                    _uiState.update { state ->
-                        val nextPreviews = mergeChunkToPreview(state.clips, chunk)
-                        state.copy(clips = nextPreviews)
+                if (preparedFile != null) {
+                    val outcome = mergePreparedFile(preparedFile)
+                    attachedChunkCount += outcome.attachedChunks
+                    pendingChunkCount += outcome.pendingChunks
+                    if (outcome.attachedChunks > 0 &&
+                        activeClipHolder.activeClip.value?.guid == outcome.changedClipGuid
+                    ) {
+                        activeClipReloadGuid = outcome.changedClipGuid
                     }
                 } else {
                     failedCount++
                 }
             }
 
+            if (attachedChunkCount > 0 || pendingChunkCount > 0) {
+                _events.tryEmit(
+                    ClipListEvent.ChunkImportFeedback(
+                        attachedCount = attachedChunkCount,
+                        pendingCount = pendingChunkCount
+                    )
+                )
+            }
             if (failedCount > 0) {
                 _events.tryEmit(ClipListEvent.ClipPreparationFailed(failedCount, uris.size))
             }
             _uiState.update { it.copy(isPreparingClips = false) }
+            activeClipReloadGuid?.let { reloadActiveClipIfUrisChanged(it) }
         }
     }
 
@@ -90,8 +112,12 @@ class ClipListViewModel @Inject constructor(
      * Handle clip selection from list
      */
     fun onClipSelected(clipGuid: Long) {
+        activateClipByGuid(clipGuid, forceReload = false)
+    }
+
+    private fun activateClipByGuid(clipGuid: Long, forceReload: Boolean) {
         val preview = _uiState.value.clips.firstOrNull { it.guid == clipGuid } ?: return
-        if (_uiState.value.isActivatingClip && _uiState.value.selectedClipGuid == clipGuid) return
+        if (!forceReload && _uiState.value.isActivatingClip && _uiState.value.selectedClipGuid == clipGuid) return
 
         currentLoadJob?.cancel()
         
@@ -153,6 +179,14 @@ class ClipListViewModel @Inject constructor(
                 _events.tryEmit(ClipListEvent.LoadFailed(clipGuid, throwable))
             }
         }
+    }
+
+    private fun reloadActiveClipIfUrisChanged(clipGuid: Long) {
+        val activeClip = activeClipHolder.activeClip.value ?: return
+        if (activeClip.guid != clipGuid) return
+        val updatedPreview = _uiState.value.clips.firstOrNull { it.guid == clipGuid } ?: return
+        if (updatedPreview.uris == activeClip.uris && updatedPreview.fileNames == activeClip.fileNames) return
+        activateClipByGuid(clipGuid, forceReload = true)
     }
 
     /**
@@ -301,37 +335,190 @@ class ClipListViewModel @Inject constructor(
 
     // ==================== Conversion Helpers (temporary during migration) ====================
 
-    private fun mergeChunkToPreview(existing: List<ClipPreview>, chunk: ClipChunk): List<ClipPreview> {
-        val index = existing.indexOfFirst { it.guid == chunk.guid }
+    private fun mergePreparedFile(file: PreparedClipFile): PreparedFileMergeOutcome {
+        return when (file.role) {
+            MlvFileRole.BaseMlv, MlvFileRole.Mcraw -> {
+                val pendingChunks = if (file.role == MlvFileRole.BaseMlv) {
+                    dedupeAndSortPreparedFiles(
+                        pendingChunksByGuid.remove(file.guid).orEmpty() +
+                                pendingChunksByStem.remove(file.clipStem).orEmpty()
+                    )
+                } else {
+                    emptyList()
+                }
+                var attachedChunks = 0
+                _uiState.update { state ->
+                    val result = mergePrimaryFileToPreview(state.clips, file, pendingChunks)
+                    attachedChunks = result.attachedChunkCount
+                    state.copy(clips = result.clips)
+                }
+                PreparedFileMergeOutcome(
+                    attachedChunks = attachedChunks,
+                    changedClipGuid = file.guid
+                )
+            }
+            is MlvFileRole.Chunk -> {
+                val existing = _uiState.value.clips
+                val index = findExistingMlvClipIndexForChunk(existing, file)
+                if (index >= 0) {
+                    val changedClipGuid = existing[index].guid
+                    var attachedChunks = 0
+                    _uiState.update { state ->
+                        val result = mergeChunksToExistingPreview(state.clips, file, listOf(file))
+                        attachedChunks = result.attachedChunkCount
+                        state.copy(clips = result.clips)
+                    }
+                    PreparedFileMergeOutcome(
+                        attachedChunks = attachedChunks,
+                        changedClipGuid = changedClipGuid
+                    )
+                } else {
+                    val wasPending = isChunkPending(file)
+                    storePendingChunk(file)
+                    PreparedFileMergeOutcome(
+                        pendingChunks = if (wasPending) 0 else 1
+                    )
+                }
+            }
+            MlvFileRole.Unsupported -> PreparedFileMergeOutcome()
+        }
+    }
+
+    private fun mergePrimaryFileToPreview(
+        existing: List<ClipPreview>,
+        primary: PreparedClipFile,
+        pendingChunks: List<PreparedClipFile>
+    ): PreviewMergeResult {
+        val index = existing.indexOfFirst { it.guid == primary.guid }
         if (index >= 0) {
             val current = existing[index]
-            val mergedPairs = current.uris.zip(current.fileNames) + (chunk.uri to chunk.fileName)
-            val dedupedPairs = mergedPairs.distinctBy { (_, name) -> name.lowercase(Locale.ROOT) }
-            val (uris, fileNames) = dedupedPairs.unzip()
+            val attachedCount = countNewFileRoles(
+                existingPairs = current.uris.zip(current.fileNames),
+                newFiles = pendingChunks
+            )
+            val (uris, fileNames) = mergeFilePairs(
+                existingPairs = current.uris.zip(current.fileNames),
+                newFiles = listOf(primary) + pendingChunks
+            )
             val updated = current.copy(
+                displayName = if (primary.role == MlvFileRole.BaseMlv) primary.fileName else current.displayName,
                 uris = uris,
                 fileNames = fileNames,
-                cameraModelId = current.cameraModelId.takeIf { it != 0 } ?: chunk.cameraModelId,
-                focusPixelMapName = current.focusPixelMapName.ifBlank { chunk.focusPixelMapName },
-                isMcraw = current.isMcraw || chunk.isMcraw
+                cameraModelId = current.cameraModelId.takeIf { it != 0 } ?: primary.cameraModelId,
+                focusPixelMapName = current.focusPixelMapName.ifBlank { primary.focusPixelMapName },
+                isMcraw = current.isMcraw || primary.isMcraw
             )
-            return existing.toMutableList().apply { set(index, updated) }
+            return PreviewMergeResult(
+                clips = existing.toMutableList().apply { set(index, updated) },
+                attachedChunkCount = attachedCount
+            )
         }
-        val newPreview = ClipPreview(
-            guid = chunk.guid,
-            displayName = chunk.fileName,
-            uris = listOf(chunk.uri),
-            fileNames = listOf(chunk.fileName),
-            thumbnail = chunk.thumbnail,
-            width = chunk.width,
-            height = chunk.height,
-            stretchFactorX = chunk.stretchFactorX.takeIf { it > 0f } ?: 1.0f,
-            stretchFactorY = chunk.stretchFactorY.takeIf { it > 0f } ?: 1.0f,
-            cameraModelId = chunk.cameraModelId,
-            focusPixelMapName = chunk.focusPixelMapName,
-            isMcraw = chunk.isMcraw
+        val thumbnail = primary.thumbnail ?: return PreviewMergeResult(existing)
+        val (uris, fileNames) = mergeFilePairs(
+            existingPairs = emptyList(),
+            newFiles = listOf(primary) + pendingChunks
         )
-        return existing + newPreview
+        val newPreview = ClipPreview(
+            guid = primary.guid,
+            displayName = primary.fileName,
+            uris = uris,
+            fileNames = fileNames,
+            thumbnail = thumbnail,
+            width = primary.width,
+            height = primary.height,
+            stretchFactorX = primary.stretchFactorX.takeIf { it > 0f } ?: 1.0f,
+            stretchFactorY = primary.stretchFactorY.takeIf { it > 0f } ?: 1.0f,
+            cameraModelId = primary.cameraModelId,
+            focusPixelMapName = primary.focusPixelMapName,
+            isMcraw = primary.isMcraw
+        )
+        return PreviewMergeResult(
+            clips = existing + newPreview,
+            attachedChunkCount = pendingChunks.size
+        )
+    }
+
+    private fun mergeChunksToExistingPreview(
+        existing: List<ClipPreview>,
+        chunk: PreparedClipFile,
+        chunks: List<PreparedClipFile>
+    ): PreviewMergeResult {
+        val index = findExistingMlvClipIndexForChunk(existing, chunk)
+        if (index < 0) return PreviewMergeResult(existing)
+        val current = existing[index]
+        val attachedCount = countNewFileRoles(
+            existingPairs = current.uris.zip(current.fileNames),
+            newFiles = chunks
+        )
+        val (uris, fileNames) = mergeFilePairs(
+            existingPairs = current.uris.zip(current.fileNames),
+            newFiles = chunks
+        )
+        val updated = current.copy(uris = uris, fileNames = fileNames)
+        return PreviewMergeResult(
+            clips = existing.toMutableList().apply { set(index, updated) },
+            attachedChunkCount = attachedCount
+        )
+    }
+
+    private fun mergeFilePairs(
+        existingPairs: List<Pair<Uri, String>>,
+        newFiles: List<PreparedClipFile>
+    ): Pair<List<Uri>, List<String>> {
+        val mergedPairs = existingPairs + newFiles.map { it.uri to it.fileName }
+        return mergedPairs
+            .dedupeAndSortByMlvFileRole { (_, fileName) -> fileName }
+            .unzip()
+    }
+
+    private fun countNewFileRoles(
+        existingPairs: List<Pair<Uri, String>>,
+        newFiles: List<PreparedClipFile>
+    ): Int {
+        val existingKeys = existingPairs
+            .map { (_, fileName) -> mlvFileRole(fileName).semanticDedupeKey(fileName) }
+            .toSet()
+        return newFiles
+            .distinctBy { it.role.semanticDedupeKey(it.fileName) }
+            .count { it.role is MlvFileRole.Chunk && it.role.semanticDedupeKey(it.fileName) !in existingKeys }
+    }
+
+    private fun dedupeAndSortPreparedFiles(files: List<PreparedClipFile>): List<PreparedClipFile> {
+        return files.dedupeAndSortByMlvFileRole { it.fileName }
+    }
+
+    private fun findExistingMlvClipIndexForChunk(
+        existing: List<ClipPreview>,
+        chunk: PreparedClipFile
+    ): Int {
+        return existing.indexOfFirst { preview ->
+            !preview.isMcraw && (
+                    (chunk.guid != 0L && preview.guid == chunk.guid) ||
+                            preview.fileNames.any { fileName ->
+                                mlvFileRole(fileName) == MlvFileRole.BaseMlv &&
+                                        mlvClipStem(fileName) == chunk.clipStem
+                            }
+                    )
+        }
+    }
+
+    private fun isChunkPending(chunk: PreparedClipFile): Boolean {
+        val key = chunk.role.semanticDedupeKey(chunk.fileName)
+        return pendingChunksByStem[chunk.clipStem].orEmpty()
+            .any { it.role.semanticDedupeKey(it.fileName) == key } ||
+                (chunk.guid != 0L && pendingChunksByGuid[chunk.guid].orEmpty()
+                    .any { it.role.semanticDedupeKey(it.fileName) == key })
+    }
+
+    private fun storePendingChunk(chunk: PreparedClipFile) {
+        pendingChunksByStem[chunk.clipStem] = dedupeAndSortPreparedFiles(
+            pendingChunksByStem[chunk.clipStem].orEmpty() + chunk
+        )
+        if (chunk.guid != 0L) {
+            pendingChunksByGuid[chunk.guid] = dedupeAndSortPreparedFiles(
+                pendingChunksByGuid[chunk.guid].orEmpty() + chunk
+            )
+        }
     }
 
     // ==================== Export Support Methods ====================
@@ -386,6 +573,7 @@ sealed interface ClipListEvent {
     data class FocusPixelDownloadFeedback(val outcome: FocusPixelDownloadOutcome) : ClipListEvent
     data class LoadFailed(val clipGuid: Long, val throwable: Throwable) : ClipListEvent
     data class ClipPreparationFailed(val failedCount: Int, val totalCount: Int) : ClipListEvent
+    data class ChunkImportFeedback(val attachedCount: Int, val pendingCount: Int) : ClipListEvent
 }
 
 enum class FocusPixelDownloadOutcome {
@@ -403,4 +591,15 @@ enum class FocusPixelDownloadOutcome {
 data class ClipRemovalState(
     val isInRemovalMode: Boolean = false,
     val selectedClips: Set<Long> = emptySet()
+)
+
+private data class PreparedFileMergeOutcome(
+    val attachedChunks: Int = 0,
+    val pendingChunks: Int = 0,
+    val changedClipGuid: Long? = null
+)
+
+private data class PreviewMergeResult(
+    val clips: List<ClipPreview>,
+    val attachedChunkCount: Int = 0
 )

@@ -16,6 +16,11 @@ object NativeLib {
         cpuCores: Int
     ): fm.magiclantern.forum.data.ClipPreviewData
 
+    external fun probeMlvGuid(
+        fd: Int,
+        clipPath: String
+    ): Long
+
     external fun openClip(
         fds: IntArray,
         clipPath: String,
@@ -115,4 +120,3 @@ object NativeLib {
         options: ExportOptions
     ): Boolean
 }
-

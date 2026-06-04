@@ -22,13 +22,4 @@ data class ClipPreview(
     val cameraModelId: Int = 0,
     val focusPixelMapName: String = "",
     val isMcraw: Boolean = false
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-        other as ClipPreview
-        return guid == other.guid
-    }
-
-    override fun hashCode(): Int = guid.hashCode()
-}
+)
