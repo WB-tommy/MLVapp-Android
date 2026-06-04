@@ -33,7 +33,7 @@ class ClipRepository @Inject constructor(
 
     suspend fun prepareClipChunk(
         uri: Uri,
-        totalMemory: Long,
+        cacheSizeMiB: Long,
         cpuCores: Int
     ): ClipChunk? = withContext(Dispatchers.IO) {
         val fileName = resolveFileName(uri) ?: return@withContext null
@@ -49,7 +49,7 @@ class ClipRepository @Inject constructor(
                 NativeLib.openClipForPreview(
                     fd,
                     fileName,
-                    totalMemory,
+                    cacheSizeMiB,
                     cpuCores
                 )
             }
@@ -76,7 +76,7 @@ class ClipRepository @Inject constructor(
      */
     suspend fun loadClipAsDetails(
         preview: ClipPreview,
-        totalMemory: Long,
+        cacheSizeMiB: Long,
         cpuCores: Int
     ): ClipDetailsLoadResult = withContext(Dispatchers.IO) {
         val sortedUrisAndNames =
@@ -100,7 +100,7 @@ class ClipRepository @Inject constructor(
         val nativeMetadata = NativeLib.openClip(
             fileDescriptors,
             primaryFileName,
-            totalMemory,
+            cacheSizeMiB,
             cpuCores
         )
 

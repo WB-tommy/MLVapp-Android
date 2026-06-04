@@ -33,7 +33,7 @@ class ClipListViewModel @Inject constructor(
 ) : ViewModel() {
 
     // System info - injected via Hilt module
-    private var totalMemory: Long = 4096L
+    private var cacheSizeMiB: Long = 4096L
     private var cpuCores: Int = 4
 
     private val _uiState = MutableStateFlow(ClipListUiState())
@@ -51,8 +51,8 @@ class ClipListViewModel @Inject constructor(
     /**
      * Set system info (memory/cores) - called from MainActivity or NavController
      */
-    fun setSystemInfo(totalMemoryMiB: Long, cores: Int) {
-        totalMemory = totalMemoryMiB
+    fun setSystemInfo(cacheSizeMiB: Long, cores: Int) {
+        this.cacheSizeMiB = cacheSizeMiB
         cpuCores = cores
     }
 
@@ -66,7 +66,7 @@ class ClipListViewModel @Inject constructor(
             var failedCount = 0
             for (uri in uris) {
                 val chunk = runCatching {
-                    repository.prepareClipChunk(uri, totalMemory, cpuCores)
+                    repository.prepareClipChunk(uri, cacheSizeMiB, cpuCores)
                 }.getOrNull()
 
                 if (chunk != null) {
@@ -108,7 +108,7 @@ class ClipListViewModel @Inject constructor(
             
             // Use new domain-based loading
             val result = runCatching {
-                repository.loadClipAsDetails(preview, totalMemory, cpuCores)
+                repository.loadClipAsDetails(preview, cacheSizeMiB, cpuCores)
             }
 
             result.onSuccess { loadResult ->
@@ -242,7 +242,7 @@ class ClipListViewModel @Inject constructor(
             // Need to reload to get full details with nativeHandle
             viewModelScope.launch {
                 val result = runCatching {
-                    repository.loadClipAsDetails(preview, totalMemory, cpuCores)
+                    repository.loadClipAsDetails(preview, cacheSizeMiB, cpuCores)
                 }
                 result.onSuccess { loadResult ->
                     loadResult.details?.let { activeClipHolder.activateClip(it) }

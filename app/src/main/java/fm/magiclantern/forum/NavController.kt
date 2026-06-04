@@ -41,8 +41,8 @@ private const val ROUTE_ONBOARDING = "onboarding"
 @Composable
 fun NavController(
     windowSizeClass: WindowSizeClass,
-    cacheSize: Long,
-    cores: Int
+    cacheSizeMiB: Long,
+    cpuCores: Int
 ) {
     val navController = rememberNavController()
     val context = LocalContext.current
@@ -60,8 +60,8 @@ fun NavController(
     val gradingViewModel: GradingViewModel = hiltViewModel()
 
     // Set system info (memory/cores) for clip loading
-    LaunchedEffect(cacheSize, cores) {
-        clipListViewModel.setSystemInfo(cacheSize, cores)
+    LaunchedEffect(cacheSizeMiB, cpuCores) {
+        clipListViewModel.setSystemInfo(cacheSizeMiB, cpuCores)
     }
 
     // ExportPreferences - create locally since it needs to be passed to factory
@@ -69,12 +69,18 @@ fun NavController(
 
     // ExportViewModel still uses factory (needs ClipListViewModel and GradingViewModel references)
     val exportViewModel: ExportViewModel = viewModel(
-        factory = remember(clipListViewModel, gradingViewModel, cacheSize, cores, exportPreferences) {
+        factory = remember(
+            clipListViewModel,
+            gradingViewModel,
+            cacheSizeMiB,
+            cpuCores,
+            exportPreferences
+        ) {
             ExportViewModelFactory(
                 clipListViewModel = clipListViewModel,
                 gradingViewModel = gradingViewModel,
-                totalMemory = cacheSize,
-                cpuCores = cores,
+                cacheSizeMiB = cacheSizeMiB,
+                cpuCores = cpuCores,
                 exportPreferences = exportPreferences
             )
         }
@@ -100,7 +106,7 @@ fun NavController(
         composable(ROUTE_HOME) {
             MainScreen(
                 windowSizeClass = windowSizeClass,
-                cpuCores = cores,
+                cpuCores = cpuCores,
                 navController = navController,
                 clipListViewModel = clipListViewModel,
                 playerViewModel = playerViewModel,
@@ -113,7 +119,7 @@ fun NavController(
             FullScreenView(
                 navController = navController,
                 playerViewModel = playerViewModel,
-                cpuCores = cores,
+                cpuCores = cpuCores,
                 gradingViewModel = gradingViewModel,
             )
         }

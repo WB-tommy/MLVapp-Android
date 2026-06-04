@@ -62,7 +62,7 @@ class ExportService : Service() {
     private var completedClips: Int = 0
 
     @Volatile
-    private var cacheSize: Long = 0L
+    private var cacheSizeMiB: Long = 0L
 
     @Volatile
     private var cpuCores: Int = 1
@@ -103,7 +103,7 @@ class ExportService : Service() {
 
         exportSettings = safeIntent.getParcelableExtra(EXTRA_EXPORT_SETTINGS) ?: ExportSettings()
 
-        cacheSize = safeIntent.getLongExtra(EXTRA_TOTAL_MEMORY, cacheSize).coerceAtLeast(0L)
+        cacheSizeMiB = safeIntent.getLongExtra(EXTRA_CACHE_SIZE_MIB, cacheSizeMiB).coerceAtLeast(0L)
         cpuCores = safeIntent.getIntExtra(EXTRA_CPU_CORES, cpuCores).coerceAtLeast(1)
 
         totalClips = clipPayloads.size
@@ -216,7 +216,7 @@ class ExportService : Service() {
             )
             try {
                 NativeLib.exportHandler(
-                    memSize = cacheSize,
+                    memSize = cacheSizeMiB,
                     cpuCores = cpuCores,
                     clipFds = clipFds,
                     options = exportOptions,
@@ -273,7 +273,7 @@ class ExportService : Service() {
 
         try {
             NativeLib.exportHandler(
-                memSize = cacheSize,
+                memSize = cacheSizeMiB,
                 cpuCores = cpuCores,
                 clipFds = clipFds,
                 options = exportOptions,
@@ -528,7 +528,7 @@ class ExportService : Service() {
 
         const val EXTRA_EXPORT_CLIPS = "export_clips"
         const val EXTRA_OUTPUT_DIRECTORY_URI = "output_directory_uri"
-        const val EXTRA_TOTAL_MEMORY = "total_memory"
+        const val EXTRA_CACHE_SIZE_MIB = "cache_size_mib"
         const val EXTRA_CPU_CORES = "cpu_cores"
         const val EXTRA_EXPORT_SETTINGS = "export_settings"
     }

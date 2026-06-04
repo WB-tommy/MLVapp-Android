@@ -1,6 +1,5 @@
 package fm.magiclantern.forum
 
-import android.app.ActivityManager
 import android.content.pm.ActivityInfo
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -12,11 +11,16 @@ import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSiz
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.ui.Modifier
 import dagger.hilt.android.AndroidEntryPoint
+import fm.magiclantern.forum.di.SystemInfoProvider
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.ui.theme.MLVappTheme
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject
+    lateinit var systemInfoProvider: SystemInfoProvider
+
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,6 +33,7 @@ class MainActivity : ComponentActivity() {
         }
 
         NativeLib.setBaseDir(this.filesDir.absolutePath)
+        val systemInfo = systemInfoProvider.runtimeInfo
 
         setContent {
             MLVappTheme {
@@ -37,29 +42,10 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val windowSizeClass = calculateWindowSizeClass(this)
-                    val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
-                    val memoryInfo = ActivityManager.MemoryInfo()
-                    activityManager.getMemoryInfo(memoryInfo)
-                    // totalMem is in bytes; JNI expects MiB
-                    val totalMemMiB = memoryInfo.totalMem / (1024L * 1024L)
-                    val maxCacheSize = 1536L
-                    val minCacheSize = 256L
-
-                    val calculatedCache = when {
-                        totalMemMiB < 4000 -> totalMemMiB / 4
-                        totalMemMiB < 8000 -> totalMemMiB / 3
-                        else -> (totalMemMiB - 4000) / 2
-                    }
-
-                    val cacheSize = calculatedCache.coerceIn(minCacheSize, maxCacheSize)
-
-                    val cpuCores = Runtime.getRuntime().availableProcessors()
-                    val cores = if (cpuCores > 0) cpuCores else 4
-
                     NavController(
                         windowSizeClass = windowSizeClass,
-                        cacheSize = cacheSize,
-                        cores = cores
+                        cacheSizeMiB = systemInfo.frameCacheSizeMiB,
+                        cpuCores = systemInfo.cpuCores
                     )
                 }
             }

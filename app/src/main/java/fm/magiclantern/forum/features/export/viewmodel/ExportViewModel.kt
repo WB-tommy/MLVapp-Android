@@ -49,7 +49,7 @@ import kotlinx.coroutines.launch
 class ExportViewModel(
     private val clipListViewModel: ClipListViewModel,
     private val gradingViewModel: GradingViewModel,
-    private val totalMemory: Long,
+    private val cacheSizeMiB: Long,
     private val cpuCores: Int,
     private val exportPreferences: ExportPreferences
 ) : ViewModel() {
@@ -324,7 +324,7 @@ class ExportViewModel(
                 ArrayList(payload)
             )
             putExtra(ExportService.EXTRA_OUTPUT_DIRECTORY_URI, outputDirectory)
-            putExtra(ExportService.EXTRA_TOTAL_MEMORY, totalMemory)
+            putExtra(ExportService.EXTRA_CACHE_SIZE_MIB, cacheSizeMiB)
             putExtra(ExportService.EXTRA_CPU_CORES, cpuCores)
             putExtra(ExportService.EXTRA_EXPORT_SETTINGS, uiState.value.settings)
 

@@ -54,20 +54,18 @@ mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
     if (filePath != nullptr) { // Always check for null after GetStringUTFChars
         size_t len = strlen(filePath);
 
-        bool isMlv = (len >= 4) && ((strncmp(filePath + len - 4, ".mlv", 4) == 0) ||
-                                    (strncmp(filePath + len - 4, ".MLV", 4) == 0));
+        bool isMcraw = (len >= 5) && (strncmp(filePath + len - 5, ".mcraw", 4) != 0);
 
         jint *fdArray = env->GetIntArrayElements(fds, nullptr);
         jsize numFds = env->GetArrayLength(fds);
 
-        if (isMlv) {
-            nativeClip = initMlvObjectWithClip(fdArray, (int) numFds, (char *) filePath,
-                                               openMode, &mlvErr, mlvErrMsg);
-
-            env->ReleaseIntArrayElements(fds, fdArray, JNI_ABORT);
-        } else {
+        if (isMcraw) {
             nativeClip = initMlvObjectWithMcrawClip(fdArray[0], (char *) filePath,
                                                     openMode, &mlvErr, mlvErrMsg);
+        } else {
+            nativeClip = initMlvObjectWithClip(fdArray, (int) numFds, (char *) filePath,
+                                               openMode, &mlvErr, mlvErrMsg);
+            env->ReleaseIntArrayElements(fds, fdArray, JNI_ABORT);
         }
     }
 
@@ -355,8 +353,11 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
                 hasAudio ? static_cast<int>(getMlvSampleRate(nativeClip)) : 0;
         const int blackLevel = static_cast<int>(getMlvBlackLevel(nativeClip));
         const int whiteLevel = static_cast<int>(getMlvWhiteLevel(nativeClip));
-        const int whiteBalanceKelvin = getMlvWbKelvin(nativeClip) > 0 ? static_cast<int>(getMlvWbKelvin(nativeClip)) : 6500;
-        const int whiteBalanceTint = nativeClip->processing ? static_cast<int>(nativeClip->processing->wb_tint * 10.0f) : 0;
+        const int whiteBalanceKelvin =
+                getMlvWbKelvin(nativeClip) > 0 ? static_cast<int>(getMlvWbKelvin(nativeClip))
+                                               : 6500;
+        const int whiteBalanceTint = nativeClip->processing ? static_cast<int>(
+                nativeClip->processing->wb_tint * 10.0f) : 0;
 
         jstring jCamera = env->NewStringUTF(camera ? camera : "");
         jstring jLens = env->NewStringUTF(lens ? lens : "");

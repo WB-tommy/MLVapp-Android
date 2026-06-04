@@ -11,6 +11,8 @@ import fm.magiclantern.forum.features.settings.viewmodel.DebayerMode
 import fm.magiclantern.forum.features.settings.viewmodel.SettingsRepository
 import fm.magiclantern.forum.features.player.PlaybackContext
 import fm.magiclantern.forum.features.player.PlaybackEngine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,10 +30,12 @@ import javax.inject.Inject
  * Only manages playback state (play/pause/seek), not clip metadata storage.
  */
 @HiltViewModel
+@OptIn(ExperimentalCoroutinesApi::class)
 class PlayerViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val activeClipHolder: ActiveClipHolder
 ) : ViewModel() {
+    private val nativeDispatcher = Dispatchers.Default.limitedParallelism(1)
 
     private val tag = "PlayerViewModel"
 
@@ -180,7 +184,7 @@ class PlayerViewModel @Inject constructor(
             activeClipHolder.currentReceiptDebayerMode.collectLatest { mode ->
                 // Only apply receipt debayer if currently paused
                 if (!_isPlaying.value && clipHandle.value != 0L) {
-                    NativeLib.setDebayerMode(clipHandle.value, mode.nativeId)
+                    scheduleDebayerMode(clipHandle.value, mode.nativeId)
                 }
             }
         }
@@ -402,7 +406,7 @@ class PlayerViewModel @Inject constructor(
     private fun applyDebayerMode(mode: DebayerMode) {
         val handle = clipHandle.value
         if (handle == 0L) return
-        NativeLib.setDebayerMode(handle, mode.nativeId)
+        scheduleDebayerMode(handle, mode.nativeId)
     }
     
     /**
@@ -413,6 +417,14 @@ class PlayerViewModel @Inject constructor(
         val handle = clipHandle.value
         if (handle == 0L) return
         val receiptMode = activeClipHolder.currentReceiptDebayerMode.value
-        NativeLib.setDebayerMode(handle, receiptMode.nativeId)
+        scheduleDebayerMode(handle, receiptMode.nativeId)
+    }
+
+    private fun scheduleDebayerMode(handle: Long, nativeId: Int) {
+        viewModelScope.launch(nativeDispatcher) {
+            runCatching {
+                NativeLib.setDebayerMode(handle, nativeId)
+            }
+        }
     }
 }

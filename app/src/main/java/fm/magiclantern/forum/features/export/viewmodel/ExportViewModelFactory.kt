@@ -15,7 +15,7 @@ import fm.magiclantern.forum.features.grading.viewmodel.GradingViewModel
 class ExportViewModelFactory(
     private val clipListViewModel: ClipListViewModel,
     private val gradingViewModel: GradingViewModel,
-    private val totalMemory: Long,
+    private val cacheSizeMiB: Long,
     private val cpuCores: Int,
     private val exportPreferences: ExportPreferences
 ) : ViewModelProvider.Factory {
@@ -25,7 +25,7 @@ class ExportViewModelFactory(
             return ExportViewModel(
                 clipListViewModel = clipListViewModel,
                 gradingViewModel = gradingViewModel,
-                totalMemory = totalMemory,
+                cacheSizeMiB = cacheSizeMiB,
                 cpuCores = cpuCores,
                 exportPreferences = exportPreferences
             ) as T

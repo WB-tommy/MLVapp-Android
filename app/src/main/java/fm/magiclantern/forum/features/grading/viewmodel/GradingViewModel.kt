@@ -14,6 +14,8 @@ import fm.magiclantern.forum.domain.model.ProfilePreset
 import fm.magiclantern.forum.domain.session.ActiveClipHolder
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.nativeInterface.RawCorrectionNative
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -30,9 +32,11 @@ import javax.inject.Inject
  * All native JNI calls are made from here when user changes settings.
  */
 @HiltViewModel
+@OptIn(ExperimentalCoroutinesApi::class)
 class GradingViewModel @Inject constructor(
     private val activeClipHolder: ActiveClipHolder
 ) : ViewModel() {
+    private val nativeDispatcher = Dispatchers.Default.limitedParallelism(1)
 
     // Per-clip grading storage (in-memory)
     private val clipGradingStates = mutableMapOf<Long, ClipGradingData>()
@@ -148,10 +152,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(enabled = enabled))
         }
 
-        try {
+        launchNativeUpdate("toggle raw correction") {
             RawCorrectionNative.setRawCorrectionEnabled(handle, enabled)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to toggle raw correction: ${e.message}", e)
         }
     }
 
@@ -169,10 +171,8 @@ class GradingViewModel @Inject constructor(
         // Share with ActiveClipHolder so PlayerViewModel can access it
         activeClipHolder.setReceiptDebayerMode(mode)
 
-        try {
+        launchNativeUpdate("set debayer mode") {
             NativeLib.setDebayerMode(handle, mode.nativeId)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set debayer mode: ${e.message}", e)
         }
     }
 
@@ -184,10 +184,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(dualIso = mode))
         }
 
-        try {
+        launchNativeUpdate("set Dual ISO") {
             RawCorrectionNative.setDualIsoMode(handle, mode)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set Dual ISO: ${e.message}", e)
         }
     }
 
@@ -199,10 +197,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(dualIsoForced = isForced))
         }
 
-        try {
+        launchNativeUpdate("set Dual ISO forced") {
             RawCorrectionNative.setDualIsoForced(handle, isForced)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set Dual ISO forced: ${e.message}", e)
         }
     }
 
@@ -214,10 +210,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(dualIsoInterpolation = interpolation))
         }
 
-        try {
+        launchNativeUpdate("set Dual ISO interpolation") {
             RawCorrectionNative.setDualIsoInterpolation(handle, interpolation)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set Dual ISO interpolation: ${e.message}", e)
         }
     }
 
@@ -230,10 +224,8 @@ class GradingViewModel @Inject constructor(
         }
 
         if (_currentGrading.value.rawCorrection.dualIso > 0) {
-            try {
+            launchNativeUpdate("set Dual ISO alias map") {
                 RawCorrectionNative.setDualIsoAliasMap(handle, isEnabled)
-            } catch (e: Exception) {
-                Log.e("GradingViewModel", "Failed to set Dual ISO alias map: ${e.message}", e)
             }
         }
     }
@@ -253,12 +245,14 @@ class GradingViewModel @Inject constructor(
             )
         }
 
-        try {
-            context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                RawCorrectionNative.setDarkFrameFile(handle, pfd.fd)
+        viewModelScope.launch(nativeDispatcher) {
+            try {
+                context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    RawCorrectionNative.setDarkFrameFile(handle, pfd.fd)
+                }
+            } catch (e: Exception) {
+                Log.e("GradingViewModel", "Failed to set dark frame: ${e.message}", e)
             }
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set dark frame: ${e.message}", e)
         }
     }
 
@@ -270,10 +264,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(darkFrameEnabled = mode))
         }
 
-        try {
+        launchNativeUpdate("set dark frame mode") {
             RawCorrectionNative.setDarkFrameMode(handle, mode)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set dark frame mode: ${e.message}", e)
         }
     }
 
@@ -290,10 +282,8 @@ class GradingViewModel @Inject constructor(
             )
         }
 
-        try {
+        launchNativeUpdate("set focus dots") {
             RawCorrectionNative.setFocusDotsMode(handle, mode, interpolation)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set focus dots: ${e.message}", e)
         }
     }
 
@@ -311,10 +301,8 @@ class GradingViewModel @Inject constructor(
             )
         }
 
-        try {
+        launchNativeUpdate("set bad pixels") {
             RawCorrectionNative.setBadPixelsMode(handle, mode, searchMethod, interpolation)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set bad pixels: ${e.message}", e)
         }
     }
 
@@ -326,10 +314,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(chromaSmooth = mode))
         }
 
-        try {
+        launchNativeUpdate("set chroma smooth") {
             RawCorrectionNative.setChromaSmoothMode(handle, mode)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set chroma smooth: ${e.message}", e)
         }
     }
 
@@ -341,10 +327,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(verticalStripes = mode))
         }
 
-        try {
+        launchNativeUpdate("set vertical stripes") {
             RawCorrectionNative.setVerticalStripesMode(handle, mode)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set vertical stripes: ${e.message}", e)
         }
     }
 
@@ -356,10 +340,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(patternNoise = if (enable) 1 else 0))
         }
 
-        try {
+        launchNativeUpdate("set pattern noise") {
             RawCorrectionNative.setPatternNoise(handle, enable)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set pattern noise: ${e.message}", e)
         }
     }
 
@@ -371,10 +353,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(dualIsoBlack = level))
         }
 
-        try {
+        launchNativeUpdate("set raw black level") {
             RawCorrectionNative.setRawBlackLevel(handle, level)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set raw black level: ${e.message}", e)
         }
     }
 
@@ -386,10 +366,8 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(dualIsoWhite = level))
         }
 
-        try {
+        launchNativeUpdate("set raw white level") {
             RawCorrectionNative.setRawWhiteLevel(handle, level)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set raw white level: ${e.message}", e)
         }
     }
 
@@ -401,10 +379,8 @@ class GradingViewModel @Inject constructor(
             it.copy(colorGrading = it.colorGrading.copy(exposure = exposure))
         }
 
-        try {
+        launchNativeUpdate("set exposure") {
             RawCorrectionNative.setExposureStops(handle, exposure)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set exposure: ${e.message}", e)
         }
     }
 
@@ -418,10 +394,8 @@ class GradingViewModel @Inject constructor(
             it.copy(colorGrading = it.colorGrading.copy(temperature = clampedKelvin))
         }
 
-        try {
+        launchNativeUpdate("set temperature") {
             RawCorrectionNative.setWhiteBalanceTemperature(handle, clampedKelvin)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set temperature: ${e.message}", e)
         }
     }
 
@@ -433,10 +407,8 @@ class GradingViewModel @Inject constructor(
             it.copy(colorGrading = it.colorGrading.copy(tint = tint))
         }
 
-        try {
+        launchNativeUpdate("set tint") {
             RawCorrectionNative.setWhiteBalanceTint(handle, tint.toFloat())
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set tint: ${e.message}", e)
         }
     }
 
@@ -451,10 +423,8 @@ class GradingViewModel @Inject constructor(
             ))
         }
 
-        try {
+        launchNativeUpdate("set tonemap") {
             RawCorrectionNative.setTonemappingFunction(handle, tonemap)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set tonemap: ${e.message}", e)
         }
     }
 
@@ -469,10 +439,8 @@ class GradingViewModel @Inject constructor(
             ))
         }
 
-        try {
+        launchNativeUpdate("set transfer function") {
             RawCorrectionNative.setTransferFunction(handle, function)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set transfer function: ${e.message}", e)
         }
     }
 
@@ -487,10 +455,8 @@ class GradingViewModel @Inject constructor(
             ))
         }
 
-        try {
+        launchNativeUpdate("set gamut") {
             RawCorrectionNative.setGamut(handle, gamut)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set gamut: ${e.message}", e)
         }
     }
 
@@ -518,10 +484,8 @@ class GradingViewModel @Inject constructor(
             )
         }
 
-        try {
+        launchNativeUpdate("apply profile preset") {
             RawCorrectionNative.setImageProfile(handle, preset.id)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to apply profile preset: ${e.message}", e)
         }
     }
 
@@ -538,10 +502,8 @@ class GradingViewModel @Inject constructor(
             it.copy(colorGrading = it.colorGrading.copy(camMatrixUsed = mode))
         }
 
-        try {
+        launchNativeUpdate("set camera matrix") {
             RawCorrectionNative.setCamMatrixMode(handle, mode)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set camera matrix: ${e.message}", e)
         }
     }
 
@@ -559,10 +521,8 @@ class GradingViewModel @Inject constructor(
             ))
         }
 
-        try {
+        launchNativeUpdate("set creative adjustments") {
             RawCorrectionNative.setCreativeAdjustments(handle, allow)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set creative adjustments: ${e.message}", e)
         }
     }
 
@@ -579,10 +539,8 @@ class GradingViewModel @Inject constructor(
             ))
         }
 
-        try {
+        launchNativeUpdate("set EXR mode") {
             RawCorrectionNative.setExrMode(handle, enable)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set EXR mode: ${e.message}", e)
         }
     }
 
@@ -599,10 +557,8 @@ class GradingViewModel @Inject constructor(
             ))
         }
 
-        try {
+        launchNativeUpdate("set AgX") {
             RawCorrectionNative.setAgX(handle, enable)
-        } catch (e: Exception) {
-            Log.e("GradingViewModel", "Failed to set AgX: ${e.message}", e)
         }
     }
 
@@ -671,5 +627,15 @@ class GradingViewModel @Inject constructor(
 
     fun initializeClipGrading(guid: Long, grading: ClipGradingData) {
         clipGradingStates[guid] = grading
+    }
+
+    private fun launchNativeUpdate(action: String, block: () -> Unit) {
+        viewModelScope.launch(nativeDispatcher) {
+            try {
+                block()
+            } catch (e: Exception) {
+                Log.e("GradingViewModel", "Failed to $action: ${e.message}", e)
+            }
+        }
     }
 }
