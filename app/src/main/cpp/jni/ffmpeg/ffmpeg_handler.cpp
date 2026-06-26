@@ -341,7 +341,8 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
     return EXPORT_ERROR_CODEC_UNAVAILABLE;
   }
 
-  AVPixelFormat actual_pix_fmt = codec_ctx->pix_fmt;
+  const bool uses_hw_frames = codec_context_uses_hw_frames(codec_ctx);
+  AVPixelFormat upload_pix_fmt = codec_context_upload_format(codec_ctx);
   if (preset.codec_id == AV_CODEC_ID_HEVC) {
     video_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
   }
@@ -398,7 +399,7 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
   const int scale_flags = select_scale_flags(options.resize_algorithm);
   SwsContext *sws_ctx =
       sws_getContext(src_w, src_h, AV_PIX_FMT_RGB48LE, dst_w, dst_h,
-                     actual_pix_fmt, scale_flags, nullptr, nullptr, nullptr);
+                     upload_pix_fmt, scale_flags, nullptr, nullptr, nullptr);
 
   // Set correct RGB→YUV matrix based on processing gamut
   if (sws_ctx) {
@@ -413,15 +414,19 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
   }
 
   AVFrame *frame = nullptr;
+  AVFrame *hardware_frame = nullptr;
   if (sws_ctx) {
     frame = av_frame_alloc();
     if (frame) {
-      frame->format = actual_pix_fmt;
+      frame->format = upload_pix_fmt;
       frame->width = dst_w;
       frame->height = dst_h;
       if (av_frame_get_buffer(frame, 0) < 0) {
         av_frame_free(&frame);
       }
+    }
+    if (uses_hw_frames) {
+      hardware_frame = av_frame_alloc();
     }
   }
 
@@ -431,11 +436,13 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
     ret = EXPORT_ERROR_INSUFFICIENT_MEMORY;
   }
 
-  if (!frame || !pkt) {
+  if (!frame || !pkt || (uses_hw_frames && !hardware_frame)) {
     if (sws_ctx)
       sws_freeContext(sws_ctx);
     if (frame)
       av_frame_free(&frame);
+    if (hardware_frame)
+      av_frame_free(&hardware_frame);
     if (pkt)
       av_packet_free(&pkt);
     cleanup_audio_transcode(audio_transcode_ctx);
@@ -473,7 +480,16 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
               frame->linesize);
     frame->pts = pts++;
 
-    int enc_ret = avcodec_send_frame(codec_ctx, frame);
+    AVFrame *encoder_frame = nullptr;
+    int enc_ret =
+        prepare_encoder_input_frame(codec_ctx, frame, hardware_frame,
+                                    &encoder_frame);
+    if (enc_ret < 0) {
+      ret = EXPORT_ERROR_FRAME_PROCESSING_FAILED;
+      break;
+    }
+
+    enc_ret = avcodec_send_frame(codec_ctx, encoder_frame);
     if (enc_ret < 0) {
       ret = EXPORT_ERROR_FRAME_PROCESSING_FAILED;
       break;
@@ -532,6 +548,7 @@ int export_video_container(mlvObject_t *video, const export_options_t &options,
   }
 
   av_packet_free(&pkt); // Free the shared packet
+  av_frame_free(&hardware_frame);
   av_frame_free(&frame);
   sws_freeContext(sws_ctx);
   cleanup_audio_transcode(audio_transcode_ctx);
@@ -624,7 +641,8 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
     return EXPORT_ERROR_CODEC_UNAVAILABLE;
   }
 
-  AVPixelFormat actual_pix_fmt = codec_ctx->pix_fmt;
+  const bool uses_hw_frames = codec_context_uses_hw_frames(codec_ctx);
+  AVPixelFormat upload_pix_fmt = codec_context_upload_format(codec_ctx);
   if (preset.codec_id == AV_CODEC_ID_HEVC) {
     video_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
   }
@@ -682,7 +700,7 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
   const int scale_flags = select_scale_flags(options.resize_algorithm);
   SwsContext *sws_ctx =
       sws_getContext(src_w, src_h, AV_PIX_FMT_RGB48LE, dst_w, dst_h,
-                     actual_pix_fmt, scale_flags, nullptr, nullptr, nullptr);
+                     upload_pix_fmt, scale_flags, nullptr, nullptr, nullptr);
 
   // Set correct RGB→YUV matrix based on processing gamut
   if (sws_ctx) {
@@ -697,15 +715,19 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
   }
 
   AVFrame *frame = nullptr;
+  AVFrame *hardware_frame = nullptr;
   if (sws_ctx) {
     frame = av_frame_alloc();
     if (frame) {
-      frame->format = actual_pix_fmt;
+      frame->format = upload_pix_fmt;
       frame->width = dst_w;
       frame->height = dst_h;
       if (av_frame_get_buffer(frame, 0) < 0) {
         av_frame_free(&frame);
       }
+    }
+    if (uses_hw_frames) {
+      hardware_frame = av_frame_alloc();
     }
   }
 
@@ -714,11 +736,13 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
     ret = EXPORT_ERROR_INSUFFICIENT_MEMORY;
   }
 
-  if (!frame || !pkt) {
+  if (!frame || !pkt || (uses_hw_frames && !hardware_frame)) {
     if (sws_ctx)
       sws_freeContext(sws_ctx);
     if (frame)
       av_frame_free(&frame);
+    if (hardware_frame)
+      av_frame_free(&hardware_frame);
     if (pkt)
       av_packet_free(&pkt);
     cleanup_audio_transcode(audio_transcode_ctx);
@@ -756,7 +780,16 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
               frame->linesize);
     frame->pts = pts++;
 
-    int enc_ret = avcodec_send_frame(codec_ctx, frame);
+    AVFrame *encoder_frame = nullptr;
+    int enc_ret =
+        prepare_encoder_input_frame(codec_ctx, frame, hardware_frame,
+                                    &encoder_frame);
+    if (enc_ret < 0) {
+      ret = EXPORT_ERROR_FRAME_PROCESSING_FAILED;
+      break;
+    }
+
+    enc_ret = avcodec_send_frame(codec_ctx, encoder_frame);
     if (enc_ret < 0) {
       ret = EXPORT_ERROR_FRAME_PROCESSING_FAILED;
       break;
@@ -815,6 +848,7 @@ int export_video_container_batch(BatchExportContext &batch_ctx,
   }
 
   av_packet_free(&pkt);
+  av_frame_free(&hardware_frame);
   av_frame_free(&frame);
   sws_freeContext(sws_ctx);
   cleanup_audio_transcode(audio_transcode_ctx);

@@ -119,4 +119,14 @@ object NativeLib {
     external fun testEncoderConfiguration(
         options: ExportOptions
     ): Boolean
+
+    external fun testVulkanHardwareDevice(): Boolean
+
+    external fun testVulkanProResEncoding(
+        options: ExportOptions
+    ): Boolean
+
+    external fun testVulkanHevc10Bit422Encoding(
+        options: ExportOptions
+    ): Boolean
 }

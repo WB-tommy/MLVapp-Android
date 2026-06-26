@@ -20,6 +20,8 @@ extern "C" {
 struct CachedEncoder {
   std::string encoder_name; // Name of the working encoder (e.g., "libx264")
   bool is_hardware = false; // Whether it's a hardware encoder
+  AVHWDeviceType hw_device_type = AV_HWDEVICE_TYPE_NONE;
+  AVPixelFormat hw_pixel_format = AV_PIX_FMT_NONE;
   bool valid = false;       // Whether the cache is valid
 };
 

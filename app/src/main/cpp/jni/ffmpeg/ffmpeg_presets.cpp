@@ -202,6 +202,11 @@ VideoPreset select_video_preset(const export_options_t &options) {
     bool is_4444_profile = (options.prores_profile >= 4);
     preset.pixel_format =
         is_4444_profile ? AV_PIX_FMT_YUV444P10LE : AV_PIX_FMT_YUV422P10LE;
+    if (options.force_hardware) {
+      preset.encoder_candidates.push_back({"prores_ks_vulkan", true,
+                                           AV_HWDEVICE_TYPE_VULKAN,
+                                           AV_PIX_FMT_VULKAN});
+    }
     if (!is_4444_profile && options.prores_encoder == 1) {
       preset.encoder_candidates.push_back({"prores_aw", false});
     }
@@ -378,6 +383,7 @@ VideoPreset select_video_preset(const export_options_t &options) {
   // BENCHMARK/DIAGNOSTIC LOGIC: Filter candidates based on force flags
   if (options.force_hardware) {
     LOGW(LOG_TAG, "Forcing HARDWARE encoding (removing software candidates)");
+    preset.allow_generic_fallback = false;
     auto &c = preset.encoder_candidates;
     c.erase(std::remove_if(
                 c.begin(), c.end(),

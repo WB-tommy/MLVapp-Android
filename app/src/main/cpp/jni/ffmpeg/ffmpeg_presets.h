@@ -7,6 +7,7 @@
 extern "C" {
 #include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
+#include "libavutil/hwcontext.h"
 #include "libswscale/swscale.h"
 }
 
@@ -17,6 +18,8 @@ extern "C" {
 struct EncoderCandidate {
   std::string name;         // Encoder name (e.g., "h264_mediacodec", "libx264")
   bool is_hardware = false; // True if this is a hardware encoder
+  AVHWDeviceType hw_device_type = AV_HWDEVICE_TYPE_NONE;
+  AVPixelFormat hw_pixel_format = AV_PIX_FMT_NONE;
 };
 
 // Video encoding preset configuration
@@ -36,6 +39,7 @@ struct VideoPreset {
   bool requires_even_dimensions = false;
   // Optional DNxHD profile tag (not an FFmpeg profile constant)
   int dnxhd_profile = -1;
+  bool allow_generic_fallback = true;
   std::vector<EncoderCandidate>
       encoder_candidates; // Ordered: hardware first, then software
 };

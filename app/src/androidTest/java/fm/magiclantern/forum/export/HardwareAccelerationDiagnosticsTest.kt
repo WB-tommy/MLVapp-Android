@@ -8,7 +8,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import fm.magiclantern.forum.features.export.model.*
 import fm.magiclantern.forum.nativeInterface.NativeLib
+import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -22,9 +24,6 @@ import java.io.File
  * 2. Testing each hardware codec option
  * 3. Logging detailed hardware vs software usage
  *
- * SETUP:
- *   adb push /path/to/test.mlv /data/local/tmp/test.mlv
- *
  * Run with:
  *   ./gradlew connectedDebugAndroidTest \
  *     -Pandroid.testInstrumentationRunnerArguments.class=fm.magiclantern.forum.export.HardwareAccelerationDiagnosticsTest
@@ -37,12 +36,10 @@ class HardwareAccelerationDiagnosticsTest {
 
     companion object {
         private const val TAG = "HWAccelDiag"
-        private const val TEST_MLV_PATH = "/data/local/tmp/test.mlv"
     }
 
     private lateinit var context: Context
     private lateinit var outputDir: File
-    private lateinit var testFile: File
 
     @Before
     fun setup() {
@@ -51,7 +48,6 @@ class HardwareAccelerationDiagnosticsTest {
         if (!outputDir.exists()) {
             outputDir.mkdirs()
         }
-        testFile = File(TEST_MLV_PATH)
 
         Log.i(TAG, "═══════════════════════════════════════════")
         Log.i(TAG, "  Hardware Acceleration Diagnostics")
@@ -60,64 +56,136 @@ class HardwareAccelerationDiagnosticsTest {
 
     @Test
     fun testH264HardwareAcceleration() {
-        if (!testFile.exists()) {
-            Log.e(TAG, "Test file not found: ${testFile.absolutePath}")
-            return
-        }
-
         Log.i(TAG, "\n╔══════════════════════════════════════════╗")
         Log.i(TAG, "║  Testing H.264 Hardware Acceleration    ║")
         Log.i(TAG, "╚══════════════════════════════════════════╝\n")
 
-        // Test with hardware flags enabled
-        testExportWithHardwareFlags(
+        val result = testExportWithHardwareFlags(
             codec = ExportCodec.H264, name = "H264_HW_Test", extension = ".mp4"
         )
+        assertDiagnosticSuccess(result)
     }
 
     @Test
-    fun testH265HardwareAcceleration() {
-        if (!testFile.exists()) {
-            Log.e(TAG, "Test file not found: ${testFile.absolutePath}")
-            return
-        }
-
+    fun testH2658BitHardwareAcceleration() {
         Log.i(TAG, "\n╔══════════════════════════════════════════╗")
-        Log.i(TAG, "║  Testing H.265 Hardware Acceleration    ║")
+        Log.i(TAG, "║  Testing H.265 8-bit Hardware Accel     ║")
         Log.i(TAG, "╚══════════════════════════════════════════╝\n")
 
-        // Test 8-bit
-        Log.i(TAG, "─── Testing 8-bit H.265 ───")
-        testExportWithHardwareFlags(
+        val result = testExportWithHardwareFlags(
             codec = ExportCodec.H265,
             name = "H265_8bit_HW_Test",
             extension = ".mp4",
             h265BitDepth = H265BitDepth.BIT_8
         )
+        assertDiagnosticSuccess(result)
+    }
 
-        // Test 10-bit
-        Log.i(TAG, "\n─── Testing 10-bit H.265 ───")
-        testExportWithHardwareFlags(
+    @Test
+    fun testH26510BitHardwareAcceleration() {
+        Log.i(TAG, "\n╔══════════════════════════════════════════╗")
+        Log.i(TAG, "║  Testing H.265 10-bit Hardware Accel    ║")
+        Log.i(TAG, "╚══════════════════════════════════════════╝\n")
+
+        val result = testExportWithHardwareFlags(
             codec = ExportCodec.H265,
             name = "H265_10bit_HW_Test",
             extension = ".mp4",
             h265BitDepth = H265BitDepth.BIT_10
         )
+        assertDiagnosticSuccess(result)
     }
 
     @Test
     fun testVP9HardwareAcceleration() {
-        if (!testFile.exists()) {
-            Log.e(TAG, "Test file not found: ${testFile.absolutePath}")
-            return
-        }
-
         Log.i(TAG, "\n╔══════════════════════════════════════════╗")
         Log.i(TAG, "║  Testing VP9 Hardware Acceleration      ║")
         Log.i(TAG, "╚══════════════════════════════════════════╝\n")
 
-        testExportWithHardwareFlags(
+        val result = testExportWithHardwareFlags(
             codec = ExportCodec.VP9, name = "VP9_HW_Test", extension = ".webm"
+        )
+        assertDiagnosticSuccess(result)
+    }
+
+    @Test
+    fun testVulkanHardwareDevice() {
+        Log.i(TAG, "\n╔══════════════════════════════════════════╗")
+        Log.i(TAG, "║  Testing FFmpeg Vulkan Device           ║")
+        Log.i(TAG, "╚══════════════════════════════════════════╝\n")
+
+        val success = NativeLib.testVulkanHardwareDevice()
+        if (success) {
+            Log.i(TAG, "✓ FFmpeg Vulkan device initialized successfully")
+        } else {
+            Log.e(TAG, "✗ FFmpeg Vulkan device initialization failed")
+        }
+        assertTrue("FFmpeg Vulkan device initialization failed", success)
+    }
+
+    @Ignore("Qualcomm Adreno currently SIGSEGVs in vkCreateComputePipelines for prores_ks_vulkan.")
+    @Test
+    fun testVulkanProResHardwareAcceleration() {
+        Log.i(TAG, "\n╔══════════════════════════════════════════╗")
+        Log.i(TAG, "║  Testing Vulkan ProRes Acceleration     ║")
+        Log.i(TAG, "╚══════════════════════════════════════════╝\n")
+
+        if (!NativeLib.testVulkanHardwareDevice()) {
+            Log.e(TAG, "Skipping ProRes Vulkan encode test because Vulkan device init failed")
+            assertTrue("ProRes Vulkan encode test cannot run because Vulkan device init failed", false)
+        }
+
+        val options = createBaseExportOptions(
+            codec = ExportCodec.PRORES,
+            name = "ProRes_Vulkan_HW_Test"
+        ).copy(
+            proResProfile = ProResProfile.PRORES_422_HQ,
+            forceHardware = true,
+            forceSoftware = false
+        )
+
+        val startTime = System.currentTimeMillis()
+        val success = NativeLib.testVulkanProResEncoding(options)
+        val duration = System.currentTimeMillis() - startTime
+        if (success) {
+            Log.i(TAG, "✓ Vulkan ProRes one-frame encode succeeded in ${duration}ms")
+        } else {
+            Log.e(TAG, "✗ Vulkan ProRes one-frame encode failed after ${duration}ms")
+        }
+        assertTrue("Vulkan ProRes one-frame encode failed after ${duration}ms", success)
+    }
+
+    @Test
+    fun testVulkanHevc10Bit422HardwareAcceleration() {
+        Log.i(TAG, "\n╔══════════════════════════════════════════╗")
+        Log.i(TAG, "║  Testing Vulkan HEVC 10-bit 4:2:2      ║")
+        Log.i(TAG, "╚══════════════════════════════════════════╝\n")
+
+        if (!NativeLib.testVulkanHardwareDevice()) {
+            Log.e(TAG, "Skipping HEVC Vulkan encode test because Vulkan device init failed")
+            assertTrue("HEVC Vulkan encode test cannot run because Vulkan device init failed", false)
+        }
+
+        val options = createBaseExportOptions(
+            codec = ExportCodec.H265,
+            name = "HEVC_10bit_422_Vulkan_HW_Test",
+            h265BitDepth = H265BitDepth.BIT_10
+        ).copy(
+            forceHardware = true,
+            forceSoftware = false
+        )
+
+        val startTime = System.currentTimeMillis()
+        val success = NativeLib.testVulkanHevc10Bit422Encoding(options)
+        val duration = System.currentTimeMillis() - startTime
+        if (success) {
+            Log.i(TAG, "✓ Vulkan HEVC 10-bit 4:2:2 one-frame encode succeeded in ${duration}ms")
+        } else {
+            Log.e(TAG, "✗ Vulkan HEVC 10-bit 4:2:2 one-frame encode failed after ${duration}ms")
+        }
+        assertTrue(
+            "Vulkan HEVC 10-bit 4:2:2 one-frame encode failed after ${duration}ms",
+            success
         )
     }
 
@@ -133,6 +201,13 @@ class HardwareAccelerationDiagnosticsTest {
         )
 
         return performExport(name, extension, baseOptions)
+    }
+
+    private fun assertDiagnosticSuccess(result: TestResult) {
+        assertTrue(
+            "${result.name} failed after ${result.durationMs}ms: ${result.error}",
+            result.success
+        )
     }
 
     private fun createBaseExportOptions(
@@ -152,7 +227,9 @@ class HardwareAccelerationDiagnosticsTest {
             audioTempDir = outputDir.absolutePath,
             h264Container = H264Container.MP4,
             h265BitDepth = h265BitDepth,
-            h265Container = H265Container.MP4
+            h265Container = H265Container.MP4,
+            forceHardware = true,
+            forceSoftware = false
         )
     }
 
