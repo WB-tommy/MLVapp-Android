@@ -6,8 +6,10 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Binder
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -70,6 +72,9 @@ class ExportService : Service() {
     @Volatile
     private var exportSettings: ExportSettings = ExportSettings()
 
+    @Volatile
+    private var foregroundServiceTimedOut: Boolean = false
+
     private val notificationManager: NotificationManager by lazy {
         getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     }
@@ -109,12 +114,12 @@ class ExportService : Service() {
         totalClips = clipPayloads.size
         activeClipIndex = 0
         completedClips = 0
+        foregroundServiceTimedOut = false
         _progress.value = 0f
         _status.value =
             ExportStatus.Running(clipIndex = 0, totalClips = totalClips, clipName = null)
 
-        startForeground(
-            NOTIFICATION_ID,
+        startExportForeground(
             buildProgressNotification(
                 title = "Exporting clips",
                 text = "Preparing export...",
@@ -131,9 +136,14 @@ class ExportService : Service() {
                 _status.value = ExportStatus.Completed(totalClips)
                 updateNotificationCompleted()
             } catch (ex: CancellationException) {
-                _status.value = ExportStatus.Cancelled(completedClips)
-                updateNotificationCancelled()
-                throw ex
+                if (foregroundServiceTimedOut) {
+                    _status.value = ExportStatus.Failed(FOREGROUND_TIMEOUT_MESSAGE)
+                    updateNotificationFailed(FOREGROUND_TIMEOUT_MESSAGE)
+                } else {
+                    _status.value = ExportStatus.Cancelled(completedClips)
+                    updateNotificationCancelled()
+                    throw ex
+                }
             } catch (throwable: Throwable) {
                 val message = throwable.message ?: "Export failed"
                 _status.value = ExportStatus.Failed(message)
@@ -145,6 +155,17 @@ class ExportService : Service() {
         }
 
         return START_REDELIVER_INTENT
+    }
+
+    override fun onTimeout(type: Int, startId: Int) {
+        Log.w(TAG, "Foreground service timeout reached: type=$type, startId=$startId")
+        foregroundServiceTimedOut = true
+        _status.value = ExportStatus.Failed(FOREGROUND_TIMEOUT_MESSAGE)
+        NativeLib.cancelExport()
+        currentExportJob?.cancel(CancellationException(FOREGROUND_TIMEOUT_MESSAGE))
+        cleanupTempAudioArtifacts()
+        updateNotificationFailed(FOREGROUND_TIMEOUT_MESSAGE)
+        stopSelfResult(startId)
     }
 
     fun cancelExport() {
@@ -511,6 +532,23 @@ class ExportService : Service() {
         )
     }
 
+    private fun startExportForeground(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, exportForegroundServiceType())
+        } else {
+            @Suppress("DEPRECATION")
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun exportForegroundServiceType(): Int {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
+        } else {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        }
+    }
+
     private fun createNotificationChannel() {
         val name = "Export"
         val descriptionText = "Shows the progress of the export"
@@ -525,6 +563,8 @@ class ExportService : Service() {
         private const val CHANNEL_ID = "ExportServiceChannel"
         private const val NOTIFICATION_ID = 1
         private const val TAG = "fm.forum.mlv.ExportService"
+        private const val FOREGROUND_TIMEOUT_MESSAGE =
+            "Export stopped because Android's foreground service time limit was reached."
 
         const val EXTRA_EXPORT_CLIPS = "export_clips"
         const val EXTRA_OUTPUT_DIRECTORY_URI = "output_directory_uri"
