@@ -35,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -71,6 +72,9 @@ fun SettingsScreen(
 @Composable
 fun SettingsContent(viewModel: SettingsViewModel, modifier: Modifier = Modifier) {
     val isDropFrameMode by viewModel.isDropFrameMode.collectAsState()
+    val experimentalMcrawGpuPreview by viewModel.experimentalMcrawGpuPreview.collectAsState()
+    val experimentalMcrawParallelDecoder by
+        viewModel.experimentalMcrawParallelDecoder.collectAsState()
     val debayerMode by viewModel.debayerMode.collectAsState()
     var showDebayerDialog by remember { mutableStateOf(false) }
 
@@ -86,6 +90,21 @@ fun SettingsContent(viewModel: SettingsViewModel, modifier: Modifier = Modifier)
             summary = if (isDropFrameMode) "Drop frames to stay in sync" else "Advance one frame at a time",
             checked = isDropFrameMode,
             onCheckedChange = { enabled -> viewModel.setDropFrameMode(enabled) }
+        )
+
+        SwitchSettingItem(
+            title = "Experimental MCRAW GPU Playback",
+            summary = "MCRAW only: levels, WB, bilinear demosaic and tone; other formats use standard playback",
+            checked = experimentalMcrawGpuPreview,
+            onCheckedChange = viewModel::setExperimentalMcrawGpuPreview
+        )
+
+        SwitchSettingItem(
+            title = "MotionCam Parallel Decoder (Test)",
+            summary = "GPU MCRAW only: four-row-group decode with up to 4 CPU workers",
+            checked = experimentalMcrawParallelDecoder,
+            onCheckedChange = viewModel::setExperimentalMcrawParallelDecoder,
+            enabled = experimentalMcrawGpuPreview
         )
 
         HorizontalDivider(
@@ -130,12 +149,14 @@ private fun SwitchSettingItem(
     title: String,
     summary: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
+            .clickable(enabled = enabled) { onCheckedChange(!checked) }
+            .alpha(if (enabled) 1f else 0.38f)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -148,7 +169,11 @@ private fun SwitchSettingItem(
             )
         }
         Spacer(Modifier.width(16.dp))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled
+        )
     }
 }
 

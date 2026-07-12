@@ -37,6 +37,39 @@ object NativeLib {
         height: Int
     ): Boolean
 
+    /**
+     * Decodes one MCRAW frame into its native-scale, original-CFA Bayer plane.
+     * [dst] must be a direct buffer with at least width * height * 2 bytes.
+     */
+    external fun fillMcrawBayer16(
+        handle: Long,
+        frameIndex: Int,
+        dst: ByteBuffer,
+        decoderBackend: Int,
+        decoderThreads: Int
+    ): Int
+
+    /**
+     * Copies the immutable inputs for one GPU-preview render-state snapshot.
+     * Both buffers must be direct and use native byte order. [params] holds
+     * 16 Float values (64 bytes); [toneLut] holds 65,536 unsigned 16-bit
+     * entries (131,072 bytes). Parameter layout: native-scale black and white
+     * at 0..1, R/G/B Bayer gains at 2..4, CFA enum at 5 (RGGB/GBRG/BGGR/GRBG
+     * = 0/1/2/3), row-major 3x3 color matrix at 6..14, and flags at 15
+     * (bit 0 enables the AgX matrix sandwich).
+     */
+    external fun fillMcrawGpuPreviewState(
+        handle: Long,
+        params: ByteBuffer,
+        toneLut: ByteBuffer
+    ): Boolean
+
+    /** Enables or disables the CPU RGB frame cache for MCRAW benchmarking. */
+    external fun setMcrawGpuPreviewCaching(
+        handle: Long,
+        enabled: Boolean
+    ): Boolean
+
     external fun getVideoFrameTimestamps(
         handle: Long
     ): LongArray?

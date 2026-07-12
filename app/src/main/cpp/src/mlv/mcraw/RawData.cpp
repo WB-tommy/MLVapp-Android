@@ -16,12 +16,24 @@
 
 // Changed:
 // - Add c API function mr_decode_video_frame(...)
+// - Add an isolated row-parallel build used only by the experimental GPU
+//   preview. It uses the original unpack implementation and adapts row grouping
+//   prototyped on MotionCam's performance branch before merge. Baseline
+//   selection/unpack behavior remains, with shared packet validation hardened.
 
 #include <cstdint>
-#include <vector>
 #include <cstring>
+#include <memory>
+#include <new>
+#include <vector>
 #if defined(__x86_64__)
 #include <immintrin.h>
+#endif
+
+#if defined(MCRAW_BUILD_EXPERIMENTAL_PARALLEL)
+#define MCRAW_DECODE_FUNCTION DecodeMotionCamParallel
+#else
+#define MCRAW_DECODE_FUNCTION Decode
 #endif
 
 #include "mcraw.h"
@@ -545,8 +557,10 @@ namespace motioncam {
         const size_t len)
     {
         // Don't decode if past end of input
-        if(offset + ENCODING_BLOCK_LENGTH[bits] > len)
-            return len - offset;
+        if (bits > 16u || offset > len ||
+            ENCODING_BLOCK_LENGTH[bits] > len - offset) {
+            return SIZE_MAX;
+        }
      
         input += offset;
 
@@ -590,18 +604,25 @@ namespace motioncam {
     }
     
     inline
-    size_t DecodeMetadata(
+    bool DecodeMetadata(
         const uint8_t* input,
         size_t offset,
         const size_t len,
         std::vector<uint16_t>& outMetadata)
     {
+        if (offset > len || len - offset < 4u) {
+            return false;
+        }
         uint32_t numBlocks =
                  static_cast<uint32_t>(input[offset])
             |   (static_cast<uint32_t>(input[offset+1]) << 8)
             |   (static_cast<uint32_t>(input[offset+2]) << 16)
             |   (static_cast<uint32_t>(input[offset+3]) << 24);
     
+        if (numBlocks == 0 || numBlocks % ENCODING_BLOCK != 0) {
+            return false;
+        }
+
         outMetadata.resize(numBlocks);
         offset += 4;
         
@@ -611,11 +632,22 @@ namespace motioncam {
         // Decode bits
         uint16_t* data = outMetadata.data();
 
-        for(int i = 0; i < numBlocks; i+=ENCODING_BLOCK) {
+        for(uint32_t i = 0; i < numBlocks; i+=ENCODING_BLOCK) {
+            if (offset > len || len - offset < HEADER_LENGTH) {
+                return false;
+            }
             DecodeHeader(bits, reference, input+offset);
-            
+            if (bits > 16u) {
+                return false;
+            }
+
             offset += HEADER_LENGTH;
-            offset += DecodeBlock(data, bits, input, offset, len);
+            const size_t expected = ENCODING_BLOCK_LENGTH[bits];
+            const size_t consumed = DecodeBlock(data, bits, input, offset, len);
+            if (consumed != expected) {
+                return false;
+            }
+            offset += consumed;
             
             for(int x = 0; x < ENCODING_BLOCK; x++)
                 data[x] += reference;
@@ -623,9 +655,10 @@ namespace motioncam {
             data += ENCODING_BLOCK;
         }
         
-        return offset;
+        return true;
     }
     
+    inline
     void ReadMetadataHeader(const uint8_t* input, uint32_t& encodedWidth, uint32_t& encodedHeight, uint32_t& bitsOffset, uint32_t& refsOffset) {
         encodedWidth =
                  static_cast<uint32_t>(input[0])
@@ -654,42 +687,230 @@ namespace motioncam {
     
     } // unnamed namespace
 
-    size_t Decode(
+    size_t MCRAW_DECODE_FUNCTION(
         uint16_t* output,
         const int width,
         const int height,
         const uint8_t* input,
-        const size_t len)
+        const size_t len
+#if defined(MCRAW_BUILD_EXPERIMENTAL_PARALLEL)
+        , const int decoderThreads
+#endif
+        )
     {
-        uint16_t* outputStart = output;
-        
-        uint16_t p0[ENCODING_BLOCK];
-        uint16_t p1[ENCODING_BLOCK];
-        uint16_t p2[ENCODING_BLOCK];
-        uint16_t p3[ENCODING_BLOCK];
+        if (output == nullptr || input == nullptr || width <= 0 || height <= 0 ||
+            len < METADATA_OFFSET) {
+            return 0;
+        }
 
         std::vector<uint16_t> bits, refs;
         uint32_t encodedWidth, encodedHeight, bitsOffset, refsOffset;
 
         ReadMetadataHeader(input, encodedWidth, encodedHeight, bitsOffset, refsOffset);
-        
-        if(bitsOffset > len || refsOffset > len)
+
+        // The decoder writes four complete visible rows per loop. Validate the
+        // packet dimensions and metadata envelope before any output write or
+        // metadata allocation so a corrupt item cannot overrun the JNI buffer.
+        if (encodedWidth % ENCODING_BLOCK != 0 || encodedWidth < (uint32_t)width ||
+            static_cast<uint64_t>(encodedWidth) >
+                static_cast<uint64_t>(width) * 4u ||
+            encodedHeight != (uint32_t)height || encodedHeight % 4u != 0u ||
+            bitsOffset < METADATA_OFFSET || refsOffset < METADATA_OFFSET ||
+            len < 6u || bitsOffset > len - 6u || refsOffset > len - 6u) {
             return 0;
-        
-        if(encodedWidth % ENCODING_BLOCK > 0)
+        }
+
+        const auto readUint32 = [input](size_t offset) -> uint32_t {
+            return static_cast<uint32_t>(input[offset]) |
+                   (static_cast<uint32_t>(input[offset + 1]) << 8) |
+                   (static_cast<uint32_t>(input[offset + 2]) << 16) |
+                   (static_cast<uint32_t>(input[offset + 3]) << 24);
+        };
+        const uint64_t metadataEntries =
+            (static_cast<uint64_t>(encodedWidth) * encodedHeight) /
+            ENCODING_BLOCK;
+        const uint64_t paddedMetadataEntries =
+            (metadataEntries + ENCODING_BLOCK - 1u) &
+            ~(static_cast<uint64_t>(ENCODING_BLOCK) - 1u);
+        if (paddedMetadataEntries == 0 || paddedMetadataEntries > UINT32_MAX ||
+            readUint32(bitsOffset) != paddedMetadataEntries ||
+            readUint32(refsOffset) != paddedMetadataEntries) {
             return 0;
-            
-        if(encodedWidth < width)
-            return 0;
+        }
 
         // Decode bits
-        DecodeMetadata(input, bitsOffset, len, bits);
+        if (!DecodeMetadata(input, bitsOffset, len, bits)) {
+            return 0;
+        }
         
         // Decode refs
-        DecodeMetadata(input, refsOffset, len, refs);
+        if (!DecodeMetadata(input, refsOffset, len, refs)) {
+            return 0;
+        }
 
+        if (bits.size() < metadataEntries || refs.size() < metadataEntries) {
+            return 0;
+        }
+        for (size_t i = 0; i < metadataEntries; ++i) {
+            if (bits[i] > 16u) {
+                return 0;
+            }
+        }
+
+        const size_t payloadEnd = bitsOffset < refsOffset ? bitsOffset : refsOffset;
+
+#if defined(MCRAW_BUILD_EXPERIMENTAL_PARALLEL)
+        // MotionCam prototyped this row-group strategy on its performance
+        // branch, then removed the bundled thread-pool dependency before
+        // merge. Precompute independent payload offsets serially, then use the
+        // app's existing OpenMP runtime. Each worker owns its unpack scratch
+        // and writes four disjoint output rows.
+        const int rowGroups = static_cast<int>(encodedHeight / 4u);
+        const int blocksPerGroup = static_cast<int>(encodedWidth / ENCODING_BLOCK);
+        std::vector<size_t> groupOffsets(static_cast<size_t>(rowGroups));
+        size_t metadataIdx = 0;
+        size_t currentOffset = METADATA_OFFSET;
+        for (int group = 0; group < rowGroups; ++group) {
+            groupOffsets[static_cast<size_t>(group)] = currentOffset;
+            for (int block = 0; block < blocksPerGroup; ++block) {
+                for (int plane = 0; plane < 4; ++plane) {
+                    const size_t bytes = ENCODING_BLOCK_LENGTH[bits[metadataIdx++]];
+                    if (currentOffset > payloadEnd ||
+                        bytes > payloadEnd - currentOffset) {
+                        return 0;
+                    }
+                    currentOffset += bytes;
+                }
+            }
+        }
+        if (metadataIdx != metadataEntries) {
+            return 0;
+        }
+
+        int workerCount = decoderThreads > 0 ? decoderThreads : 1;
+        if (workerCount > rowGroups) workerCount = rowGroups;
+        // Four workers were consistently faster than all eight reported cores
+        // on the target big.LITTLE phone. Keep this temporary backend from
+        // occupying efficiency cores or adding extra per-frame team overhead.
+        if (workerCount > MCRAW_PARALLEL_MAX_THREADS) {
+            workerCount = MCRAW_PARALLEL_MAX_THREADS;
+        }
+        int decodeFailed = 0;
+
+        #pragma omp parallel num_threads(workerCount) if(workerCount > 1) \
+            reduction(|:decodeFailed)
+        {
+            uint16_t p0[ENCODING_BLOCK];
+            uint16_t p1[ENCODING_BLOCK];
+            uint16_t p2[ENCODING_BLOCK];
+            uint16_t p3[ENCODING_BLOCK];
+            std::unique_ptr<uint16_t[]> row0(
+                new (std::nothrow) uint16_t[encodedWidth]);
+            std::unique_ptr<uint16_t[]> row1(
+                new (std::nothrow) uint16_t[encodedWidth]);
+            std::unique_ptr<uint16_t[]> row2(
+                new (std::nothrow) uint16_t[encodedWidth]);
+            std::unique_ptr<uint16_t[]> row3(
+                new (std::nothrow) uint16_t[encodedWidth]);
+            const bool scratchReady = row0 && row1 && row2 && row3;
+            if (!scratchReady) {
+                decodeFailed |= 1;
+            }
+
+            #pragma omp for schedule(static)
+            for (int group = 0; group < rowGroups; ++group) {
+                if (!scratchReady) {
+                    continue;
+                }
+                size_t groupMetadataIdx =
+                    static_cast<size_t>(group) * blocksPerGroup * 4u;
+                size_t offset = groupOffsets[static_cast<size_t>(group)];
+                bool groupOk = true;
+
+                for (int x = 0; x < static_cast<int>(encodedWidth);
+                     x += ENCODING_BLOCK) {
+                    const uint16_t blockBits[4] = {
+                        bits[groupMetadataIdx], bits[groupMetadataIdx + 1],
+                        bits[groupMetadataIdx + 2], bits[groupMetadataIdx + 3]
+                    };
+                    const uint16_t blockRef[4] = {
+                        refs[groupMetadataIdx], refs[groupMetadataIdx + 1],
+                        refs[groupMetadataIdx + 2], refs[groupMetadataIdx + 3]
+                    };
+
+                    size_t consumed = DecodeBlock(&p0[0], blockBits[0], input,
+                                                  offset, payloadEnd);
+                    if (consumed != ENCODING_BLOCK_LENGTH[blockBits[0]]) {
+                        groupOk = false;
+                        break;
+                    }
+                    offset += consumed;
+                    consumed = DecodeBlock(&p1[0], blockBits[1], input, offset,
+                                           payloadEnd);
+                    if (consumed != ENCODING_BLOCK_LENGTH[blockBits[1]]) {
+                        groupOk = false;
+                        break;
+                    }
+                    offset += consumed;
+                    consumed = DecodeBlock(&p2[0], blockBits[2], input, offset,
+                                           payloadEnd);
+                    if (consumed != ENCODING_BLOCK_LENGTH[blockBits[2]]) {
+                        groupOk = false;
+                        break;
+                    }
+                    offset += consumed;
+                    consumed = DecodeBlock(&p3[0], blockBits[3], input, offset,
+                                           payloadEnd);
+                    if (consumed != ENCODING_BLOCK_LENGTH[blockBits[3]]) {
+                        groupOk = false;
+                        break;
+                    }
+                    offset += consumed;
+
+                    for (int i = 0; i < ENCODING_BLOCK; i += 2) {
+                        row0[x + i] = p0[i / 2] + blockRef[0];
+                        row0[x + i + 1] = p1[i / 2] + blockRef[1];
+                        row1[x + i] = p2[i / 2] + blockRef[2];
+                        row1[x + i + 1] = p3[i / 2] + blockRef[3];
+                        row2[x + i] =
+                            p0[ENCODING_BLOCK / 2 + i / 2] + blockRef[0];
+                        row2[x + i + 1] =
+                            p1[ENCODING_BLOCK / 2 + i / 2] + blockRef[1];
+                        row3[x + i] =
+                            p2[ENCODING_BLOCK / 2 + i / 2] + blockRef[2];
+                        row3[x + i + 1] =
+                            p3[ENCODING_BLOCK / 2 + i / 2] + blockRef[3];
+                    }
+
+                    groupMetadataIdx += 4;
+                }
+
+                if (!groupOk) {
+                    decodeFailed |= 1;
+                    continue;
+                }
+
+                uint16_t *dst = output +
+                    static_cast<size_t>(group * 4) * static_cast<size_t>(width);
+                std::memcpy(dst, row0.get(), width * sizeof(uint16_t));
+                std::memcpy(dst + width, row1.get(), width * sizeof(uint16_t));
+                std::memcpy(dst + width * 2, row2.get(),
+                            width * sizeof(uint16_t));
+                std::memcpy(dst + width * 3, row3.get(),
+                            width * sizeof(uint16_t));
+            }
+        }
+
+        return decodeFailed == 0
+            ? static_cast<size_t>(width) * static_cast<size_t>(height)
+            : 0;
+#else
+        uint16_t* outputStart = output;
+        uint16_t p0[ENCODING_BLOCK];
+        uint16_t p1[ENCODING_BLOCK];
+        uint16_t p2[ENCODING_BLOCK];
+        uint16_t p3[ENCODING_BLOCK];
         size_t offset = METADATA_OFFSET;
-        
         std::vector<uint16_t> row0(encodedWidth);
         std::vector<uint16_t> row1(encodedWidth);
         std::vector<uint16_t> row2(encodedWidth);
@@ -702,10 +923,22 @@ namespace motioncam {
                 uint16_t blockBits[4] = { bits[metadataIdx], bits[metadataIdx+1], bits[metadataIdx+2], bits[metadataIdx+3] };
                 uint16_t blockRef[4] = { refs[metadataIdx], refs[metadataIdx+1], refs[metadataIdx+2], refs[metadataIdx+3] };
             
-                offset += DecodeBlock(&p0[0], blockBits[0], input, offset, len);
-                offset += DecodeBlock(&p1[0], blockBits[1], input, offset, len);
-                offset += DecodeBlock(&p2[0], blockBits[2], input, offset, len);
-                offset += DecodeBlock(&p3[0], blockBits[3], input, offset, len);
+                size_t consumed = DecodeBlock(&p0[0], blockBits[0], input,
+                                              offset, payloadEnd);
+                if (consumed != ENCODING_BLOCK_LENGTH[blockBits[0]]) return 0;
+                offset += consumed;
+                consumed = DecodeBlock(&p1[0], blockBits[1], input, offset,
+                                       payloadEnd);
+                if (consumed != ENCODING_BLOCK_LENGTH[blockBits[1]]) return 0;
+                offset += consumed;
+                consumed = DecodeBlock(&p2[0], blockBits[2], input, offset,
+                                       payloadEnd);
+                if (consumed != ENCODING_BLOCK_LENGTH[blockBits[2]]) return 0;
+                offset += consumed;
+                consumed = DecodeBlock(&p3[0], blockBits[3], input, offset,
+                                       payloadEnd);
+                if (consumed != ENCODING_BLOCK_LENGTH[blockBits[3]]) return 0;
+                offset += consumed;
 
                 for(int i = 0; i < ENCODING_BLOCK; i+=2) {
                     row0[x + i]     = p0[i/2] + blockRef[0];
@@ -738,14 +971,50 @@ namespace motioncam {
         }
         
         return (output - outputStart);
+#endif
     }
 }}
 
-extern "C" size_t mr_decode_video_frame(uint8_t *dstData, uint8_t *srcData, uint32_t srcSize, int width, int height, int compression_type)
+#if defined(MCRAW_BUILD_EXPERIMENTAL_PARALLEL)
+extern "C" size_t mr_decode_video_frame_parallel(uint8_t *dstData,
+                                                   const uint8_t *srcData,
+                                                   uint32_t srcSize,
+                                                   int width,
+                                                   int height,
+                                                   int compression_type,
+                                                   int decoder_threads)
 {
-    if (compression_type == MOTIONCAM_COMPRESSION_TYPE) {
-        return motioncam::raw::Decode((uint16_t*)dstData, width, height, srcData, srcSize);
+    if (compression_type != MOTIONCAM_COMPRESSION_TYPE) {
+        return 0;
     }
 
-    return motioncam::raw::DecodeLegacy((uint16_t*)dstData, width, height, srcData, srcSize);
+    try {
+        return motioncam::raw::DecodeMotionCamParallel(
+            reinterpret_cast<uint16_t *>(dstData), width, height, srcData,
+            srcSize, decoder_threads);
+    } catch (...) {
+        // Never allow C++ allocation failures to cross the C/JNI boundary.
+        return 0;
+    }
 }
+#else
+extern "C" size_t mr_decode_video_frame(uint8_t *dstData, uint8_t *srcData,
+                                          uint32_t srcSize, int width,
+                                          int height, int compression_type)
+{
+    try {
+        if (compression_type == MOTIONCAM_COMPRESSION_TYPE) {
+            return motioncam::raw::Decode(reinterpret_cast<uint16_t *>(dstData),
+                                          width, height, srcData, srcSize);
+        }
+
+        return motioncam::raw::DecodeLegacy(
+            reinterpret_cast<uint16_t *>(dstData), width, height, srcData,
+            srcSize);
+    } catch (...) {
+        return 0;
+    }
+}
+#endif
+
+#undef MCRAW_DECODE_FUNCTION

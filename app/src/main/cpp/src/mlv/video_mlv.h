@@ -66,6 +66,28 @@ void getMlvProcessedFrame16(mlvObject_t * video, uint64_t frameIndex, uint16_t *
  * Needs memory to return to, sized: sizeof(float) * getMlvHeight(urvid) * getMlvWidth(urvid)
  * Output values will be in range 0-65535 (16 bit), float is only because AMAzE uses it */
 int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * unpackedFrame);
+/* Decode MCRAW to its original native-scale Bayer mosaic without the legacy
+ * CFA phase shift used by the CPU debayer path. The decoder selection exists
+ * only for the experimental GPU-preview A/B test. */
+enum mcraw_decoder_backend
+{
+    MCRAW_DECODER_BASELINE = 0,
+    MCRAW_DECODER_ROW_PARALLEL = 1
+};
+
+typedef struct
+{
+    uint64_t read_ns;
+    uint64_t decode_ns;
+    int requested_backend;
+    int actual_backend;
+    int decoder_threads;
+    int fallback_count;
+} mcraw_decode_metrics_t;
+
+int getMcrawRawFrameUint16(mlvObject_t * video, uint64_t frameIndex,
+                           uint16_t * unpackedFrame, int requested_backend,
+                           int decoder_threads, mcraw_decode_metrics_t * metrics);
 void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outputFrame);
 
 /* Gets a debayered 16 bit frame */

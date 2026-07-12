@@ -76,11 +76,22 @@ add_library(mcraw STATIC
         ${MLV_SRC_DIR}/mlv/mcraw/cJSON.c
 )
 
+# Temporary A/B backend for the opt-in MCRAW GPU preview. Compile the type-7
+# MotionCam payload decoder a second time under unique symbols so the normal
+# preview/export selection stays on the baseline. The alternate uses the same
+# unpack code and changes only the outer four-row scheduling.
+add_library(mcraw_parallel STATIC
+        ${MLV_SRC_DIR}/mlv/mcraw/RawData.cpp
+)
+target_compile_definitions(mcraw_parallel PRIVATE
+        MCRAW_BUILD_EXPERIMENTAL_PARALLEL=1
+)
+
 # Apply OpenMP compile flags to all static libraries that contain
 # #pragma omp directives. Without these flags at COMPILE time, the
 # pragmas are silently ignored and the code runs single-threaded.
 # Note: linking OpenMP only at the final shared lib is NOT sufficient.
-set(OMP_TARGETS processing ca debayer mlv mcraw)
+set(OMP_TARGETS processing ca debayer mlv mcraw mcraw_parallel)
 foreach(OMP_TGT ${OMP_TARGETS})
     if(OpenMP_C_FOUND)
         target_compile_options(${OMP_TGT} PRIVATE ${OpenMP_C_FLAGS})
@@ -158,6 +169,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
         matrix
         mlv
         mcraw
+        mcraw_parallel
         rtprocess
         m
         ${jnigraphics-lib}

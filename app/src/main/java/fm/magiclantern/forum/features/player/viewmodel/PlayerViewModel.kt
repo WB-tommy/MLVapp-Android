@@ -1,5 +1,6 @@
 package fm.magiclantern.forum.features.player.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -55,6 +56,14 @@ class PlayerViewModel @Inject constructor(
     // Drop frame mode
     private val _isDropFrameMode = MutableStateFlow(true)
     val isDropFrameMode: StateFlow<Boolean> = _isDropFrameMode
+
+    /** Opt-in MCRAW-only GPU preview experiment. */
+    val experimentalMcrawGpuPreview: StateFlow<Boolean> =
+        settingsRepository.experimentalMcrawGpuPreview
+
+    /** Decoder A/B choice for the opt-in MCRAW GPU preview experiment. */
+    val experimentalMcrawParallelDecoder: StateFlow<Boolean> =
+        settingsRepository.experimentalMcrawParallelDecoder
 
     // Performance timing
     private val _averageDecodeUs = MutableStateFlow(0L)
@@ -140,7 +149,7 @@ class PlayerViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val isMcraw: StateFlow<Boolean> = activeClipHolder.activeClip
-        .map { it?.isMcraw ?: false }
+        .map { details -> details?.metadata?.isMcraw ?: details?.isMcraw ?: false }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val processingData: StateFlow<fm.magiclantern.forum.domain.model.ClipProcessingData> = activeClipHolder.activeClip
@@ -175,6 +184,24 @@ class PlayerViewModel @Inject constructor(
                 // Only apply playback debayer if currently playing
                 if (_isPlaying.value) {
                     applyDebayerMode(mode)
+                }
+            }
+        }
+        viewModelScope.launch(nativeDispatcher) {
+            combine(activeClip, experimentalMcrawGpuPreview) { details, gpuEnabled ->
+                details to gpuEnabled
+            }.collectLatest { (details, gpuEnabled) ->
+                val nativeMcraw = details?.metadata?.isMcraw ?: details?.isMcraw ?: false
+                if (details != null && details.nativeHandle != 0L && nativeMcraw) {
+                    // Background RGB caching performs CPU RAW fixes and demosaic. Keep it
+                    // out of GPU benchmark measurements, then restore it for CPU preview.
+                    val configured = NativeLib.setMcrawGpuPreviewCaching(
+                        details.nativeHandle,
+                        !gpuEnabled
+                    )
+                    if (!configured) {
+                        Log.w(tag, "Could not configure MCRAW cache mode")
+                    }
                 }
             }
         }
@@ -311,6 +338,14 @@ class PlayerViewModel @Inject constructor(
 
     fun changeLoadingStatus(status: Boolean) {
         _isLoading.value = status
+    }
+
+    /** Restore normal CPU caching when a renderer cannot use the experimental path. */
+    fun restoreMcrawCpuCachingAfterGpuFailure(handle: Long) {
+        if (handle == 0L) return
+        viewModelScope.launch(nativeDispatcher) {
+            NativeLib.setMcrawGpuPreviewCaching(handle, true)
+        }
     }
 
     fun nextFrame() {

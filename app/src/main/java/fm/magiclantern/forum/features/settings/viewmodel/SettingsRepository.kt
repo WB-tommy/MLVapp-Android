@@ -33,6 +33,18 @@ class SettingsRepository @Inject constructor(
     private val dropFrameFlow = MutableStateFlow(prefs.getBoolean(KEY_DROP_FRAME_MODE, true))
     val dropFrameMode: StateFlow<Boolean> = dropFrameFlow.asStateFlow()
 
+    private val experimentalMcrawGpuPreviewFlow = MutableStateFlow(
+        prefs.getBoolean(KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW, false)
+    )
+    val experimentalMcrawGpuPreview: StateFlow<Boolean> =
+        experimentalMcrawGpuPreviewFlow.asStateFlow()
+
+    private val experimentalMcrawParallelDecoderFlow = MutableStateFlow(
+        prefs.getBoolean(KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER, false)
+    )
+    val experimentalMcrawParallelDecoder: StateFlow<Boolean> =
+        experimentalMcrawParallelDecoderFlow.asStateFlow()
+
     private val debayerModeFlow = MutableStateFlow(
         prefs.getString(KEY_DEBAYER_MODE, DebayerMode.AMAZE.name)?.let { stored ->
             runCatching { DebayerMode.valueOf(stored) }.getOrDefault(DebayerMode.AMAZE)
@@ -49,6 +61,20 @@ class SettingsRepository @Inject constructor(
         }
     }
 
+    suspend fun setExperimentalMcrawGpuPreview(enabled: Boolean) {
+        mutex.withLock {
+            prefs.edit().putBoolean(KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW, enabled).apply()
+            experimentalMcrawGpuPreviewFlow.value = enabled
+        }
+    }
+
+    suspend fun setExperimentalMcrawParallelDecoder(enabled: Boolean) {
+        mutex.withLock {
+            prefs.edit().putBoolean(KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER, enabled).apply()
+            experimentalMcrawParallelDecoderFlow.value = enabled
+        }
+    }
+
     suspend fun setDebayerMode(mode: DebayerMode) {
         mutex.withLock {
             prefs.edit().putString(KEY_DEBAYER_MODE, mode.name).apply()
@@ -59,6 +85,10 @@ class SettingsRepository @Inject constructor(
     companion object {
         private const val PREFS_NAME = "mlvapp_settings"
         private const val KEY_DROP_FRAME_MODE = "drop_frame_mode"
+        private const val KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW =
+            "experimental_mcraw_gpu_preview"
+        private const val KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER =
+            "experimental_mcraw_parallel_decoder"
         private const val KEY_DEBAYER_MODE = "debayer_mode"
     }
 }

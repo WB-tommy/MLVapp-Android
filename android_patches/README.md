@@ -26,6 +26,7 @@ bash android_patches/apply_all.sh
 | `03_save_dng_fd.patch` | `dng.c`, `dng.h` | Adds `saveDngFrameFd(int fd, ...)` — saves a DNG frame to a pre-opened file descriptor. Required for Android scoped storage during DNG export. |
 | `04_cmake_fixes.patch` | `librtprocess/src/CMakeLists.txt` | Restores `librtprocesswrapper.cpp` to the rtprocess source list and `librtprocesswrapper.h` to `PUBLIC_HEADER`. Upstream drops these Android-specific wrapper files on every sync. |
 | `05_header_fixes.patch` | `image_profile.h`, `processing.c` | Adds missing `#include <stdint.h>` to `image_profile.h` (fixes `uint8_t` unknown type on Android NDK), and adds `#include <math.h>` + macros to `processing.c`. |
+| `06_mcraw_gpu_decode.patch` | `video_mlv.c/h`, `mcraw/RawData.cpp`, `mcraw/mcraw.h` | Preserves the original-CFA Bayer entry point plus an isolated four-row-group OpenMP decoder using the original unpack code for the experimental GLES A/B test, while leaving the normal CPU/export decoder selected by default. |
 
 ---
 
@@ -67,7 +68,5 @@ git apply --3way android_patches/02_dark_frame_fds.patch
   both Android fd changes AND the upstream Dual ISO overhaul mixed together.
   If it conflicts heavily, consider applying it with `--3way` from the start.
 
-- `05_thumbnail_android.patch` creates a **new file** (`video_mlv_misc.c`).
-  If upstream adds a file with the same name, you will need to merge manually.
-
-- Patches were generated on **2026-03-06** against commit `20558de`.
+- Patches 01–05 were generated on **2026-03-06** against commit `20558de`.
+- Patch 06 was regenerated on **2026-07-13** against Android commit `e03ab7f`.

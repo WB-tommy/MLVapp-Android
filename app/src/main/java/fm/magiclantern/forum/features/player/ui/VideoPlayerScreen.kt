@@ -37,6 +37,8 @@ fun VideoPlayerScreen(
     val clipHandle by viewModel.clipHandle.collectAsState()
     val currentFrame by viewModel.currentFrame.collectAsState()
     val processingVersion by viewModel.processingVersion.collectAsState()
+    val experimentalMcrawGpuPreview by viewModel.experimentalMcrawGpuPreview.collectAsState()
+    val experimentalMcrawParallelDecoder by viewModel.experimentalMcrawParallelDecoder.collectAsState()
     
     // Debounce for fullscreen navigation to prevent crashes from rapid toggling
     val lastFullscreenNavigationTime = remember { mutableLongStateOf(0L) }
@@ -49,13 +51,14 @@ fun VideoPlayerScreen(
     ) {
         key(clipGUID) {
             if (clipHandle != 0L) {
+                val renderer = remember { MlvRenderer(cpuCores, viewModel) }
                 AndroidView(
                     factory = { context ->
                         GLSurfaceView(context).apply {
                             setEGLContextClientVersion(3)
                             setZOrderMediaOverlay(true)
                             holder.setFormat(PixelFormat.TRANSLUCENT)
-                            setRenderer(MlvRenderer(cpuCores, viewModel))
+                            setRenderer(renderer)
                             renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
                         }
                     },
@@ -63,7 +66,13 @@ fun VideoPlayerScreen(
                         // Read both to trigger recomposition on either change
                         currentFrame.let { _ -> }
                         processingVersion.let { _ -> }
+                        experimentalMcrawGpuPreview.let { _ -> }
+                        experimentalMcrawParallelDecoder.let { _ -> }
                         glSurfaceView.requestRender()
+                    },
+                    onRelease = { glSurfaceView ->
+                        glSurfaceView.onPause()
+                        renderer.onSurfaceDestroyed()
                     },
 
                     modifier = Modifier.fillMaxSize()

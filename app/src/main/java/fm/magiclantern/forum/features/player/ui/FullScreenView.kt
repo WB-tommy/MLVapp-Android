@@ -90,6 +90,10 @@ fun FullScreenView(
     val clipHandle by playerViewModel.clipHandle.collectAsState()
     val currentFrame by playerViewModel.currentFrame.collectAsState()
     val processingVersion by playerViewModel.processingVersion.collectAsState()
+    val experimentalMcrawGpuPreview by
+        playerViewModel.experimentalMcrawGpuPreview.collectAsState()
+    val experimentalMcrawParallelDecoder by
+        playerViewModel.experimentalMcrawParallelDecoder.collectAsState()
 
     var controlsVisible by rememberSaveable(clipGUID) { mutableStateOf(true) }
     var autoHideJobKey by remember(clipGUID) { mutableLongStateOf(0L) }
@@ -134,6 +138,8 @@ fun FullScreenView(
                         // Read both to trigger recomposition on either change
                         currentFrame.let { _ -> }
                         processingVersion.let { _ -> }
+                        experimentalMcrawGpuPreview.let { _ -> }
+                        experimentalMcrawParallelDecoder.let { _ -> }
                         glSurfaceView.requestRender()
                     },
                     onRelease = { glSurfaceView ->

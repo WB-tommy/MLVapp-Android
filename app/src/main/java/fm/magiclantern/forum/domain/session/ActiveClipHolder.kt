@@ -6,6 +6,7 @@ import fm.magiclantern.forum.domain.model.DebayerAlgorithm
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -91,7 +92,7 @@ class ActiveClipHolder @Inject constructor() {
      * Call this when grading/processing settings are changed to trigger a redraw.
      */
     fun notifyProcessingChanged() {
-        _processingVersion.value++
+        _processingVersion.update { version -> version + 1L }
     }
 
     

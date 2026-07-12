@@ -633,6 +633,12 @@ class GradingViewModel @Inject constructor(
         viewModelScope.launch(nativeDispatcher) {
             try {
                 block()
+                // updateGrading() requests an immediate redraw for responsive UI,
+                // but native processing setters run on this dispatcher. Request a
+                // second redraw after the native state/LUT is actually committed so
+                // GPU preview never caches the pre-update snapshot under the new
+                // processing version.
+                activeClipHolder.notifyProcessingChanged()
             } catch (e: Exception) {
                 Log.e("GradingViewModel", "Failed to $action: ${e.message}", e)
             }

@@ -64,6 +64,7 @@ apply_patch "02" "dark_frame_fds"       # llrawproc_object.h, darkframe.h/c
 apply_patch "03" "save_dng_fd"          # dng.c/h
 apply_patch "04" "cmake_fixes"          # librtprocess/src/CMakeLists.txt
 apply_patch "05" "header_fixes"         # image_profile.h, processing.c
+apply_patch "06" "mcraw_gpu_decode"     # Bayer GPU entry point + isolated row-parallel decoder
 
 echo ""
 echo "============================================="

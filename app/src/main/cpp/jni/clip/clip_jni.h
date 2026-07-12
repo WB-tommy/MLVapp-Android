@@ -66,6 +66,28 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
         jint width,
         jint height);
 
+JNIEXPORT jint JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawBayer16(
+        JNIEnv *env, jclass /*clazz*/,
+        jlong handle,
+        jint frameIndex,
+        jobject dstByteBuffer,
+        jint decoderBackend,
+        jint decoderThreads);
+
+JNIEXPORT jboolean JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawGpuPreviewState(
+        JNIEnv *env, jclass /*clazz*/,
+        jlong handle,
+        jobject paramsByteBuffer,
+        jobject toneLutByteBuffer);
+
+JNIEXPORT jboolean JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setMcrawGpuPreviewCaching(
+        JNIEnv *env, jclass /*clazz*/,
+        jlong handle,
+        jboolean enabled);
+
 JNIEXPORT jlong JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_getAudioBufferSize(
         JNIEnv *env, jobject /* this */,

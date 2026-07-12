@@ -149,6 +149,14 @@ int mr_read_video_frame(FILE *fd, int64_t offset, mr_packet_t *pkt);
 int mr_read_audio_packet(FILE *fd, int64_t offset, mr_packet_t *pkt);
 int mr_read_frame_metadata(FILE *fd, mr_frame_data_t *frame_data);
 size_t mr_decode_video_frame(uint8_t *dstData, uint8_t *srcData, uint32_t srcSize, int width, int height, int comp_type);
+/* Experimental type-7 payload decoder using the original unpack code with
+ * four-row-group parallelism. It is deliberately separate so GPU-preview
+ * benchmarks can A/B it against mr_decode_video_frame(). */
+#define MCRAW_PARALLEL_MAX_THREADS 4
+size_t mr_decode_video_frame_parallel(uint8_t *dstData,
+                                      const uint8_t *srcData,
+                                      uint32_t srcSize, int width, int height,
+                                      int comp_type, int decoder_threads);
 
 void mr_dump(mr_ctx_t *ctx);
 FILE* mr_get_file_handle(mr_ctx_t *ctx);
