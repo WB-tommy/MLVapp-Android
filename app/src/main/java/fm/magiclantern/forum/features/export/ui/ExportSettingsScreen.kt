@@ -74,7 +74,11 @@ fun ExportSettingsScreen(
         },
         bottomBar = {
             Button(
-                onClick = { navController.navigate("export_location") },
+                onClick = {
+                    if (exportViewModel.onSettingsNextRequested()) {
+                        navController.navigate("export_location")
+                    }
+                },
                 modifier = Modifier
                     .navigationBarsPadding()
                     .fillMaxWidth()
@@ -223,7 +227,7 @@ fun ExportSettingsScreen(
                     SectionTitle("TIFF Options")
                     Text(
                         text = "16-bit RGB TIFF image sequence with BT.709 color space.",
-                        style = MaterialTheme. typography.bodySmall
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
                 ExportCodec.PNG -> {

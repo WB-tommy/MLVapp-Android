@@ -3,11 +3,13 @@ package fm.magiclantern.forum.features.export
 import android.content.ContentResolver
 import android.os.ParcelFileDescriptor
 import androidx.documentfile.provider.DocumentFile
+import java.util.Collections
 
 class ExportFdProvider(
     private val contentResolver: ContentResolver,
     private val outputDirectory: DocumentFile
 ) {
+    private val createdDocuments = Collections.synchronizedList(mutableListOf<DocumentFile>())
 
     fun openFrameFd(frameIndex: Int, relativeName: String): Int =
         createFile(relativeName, "image/x-adobe-dng")
@@ -34,8 +36,25 @@ class ExportFdProvider(
         }
         val target = outputDirectory.createFile(resolvedMime, relativeName)
             ?: throw IllegalStateException("Failed to create SAF document for $relativeName")
+        createdDocuments += target
         val pfd: ParcelFileDescriptor = contentResolver.openFileDescriptor(target.uri, "w")
             ?: throw IllegalStateException("Unable to open descriptor for ${target.uri}")
+        // detachFd transfers ownership of the raw fd to native export.
         return pfd.detachFd()
+    }
+
+    fun deleteCreatedDocuments(): Int {
+        val snapshot = synchronized(createdDocuments) {
+            val copy = createdDocuments.toList()
+            createdDocuments.clear()
+            copy
+        }
+        return snapshot.count { document ->
+            runCatching { document.delete() }.getOrDefault(false)
+        }
+    }
+
+    fun hasCreatedDocuments(): Boolean = synchronized(createdDocuments) {
+        createdDocuments.isNotEmpty()
     }
 }

@@ -20,6 +20,7 @@ static jmethodID g_open_frame_fd_mid = nullptr;
 static jmethodID g_open_container_fd_mid = nullptr;
 static jmethodID g_open_audio_fd_mid = nullptr;
 static std::atomic<bool> g_cancel_requested{false};
+static std::atomic<bool> g_cancel_state_prepared{false};
 
 static std::string jstring_to_string(JNIEnv *env, jstring value) {
   if (!value)
@@ -325,6 +326,13 @@ export_options_t parse_export_options(JNIEnv *env, jobject exportOptions) {
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_prepareExport(
+    JNIEnv *, jobject /*thiz*/) {
+  g_cancel_requested.store(false, std::memory_order_relaxed);
+  g_cancel_state_prepared.store(true, std::memory_order_release);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_cancelExport(
     JNIEnv *, jobject /*thiz*/) {
   g_cancel_requested.store(true, std::memory_order_relaxed);
@@ -336,6 +344,12 @@ bool is_export_cancelled() {
 
 void reset_export_cancel_flag() {
   g_cancel_requested.store(false, std::memory_order_relaxed);
+}
+
+static void prepare_cancel_state_for_export() {
+  if (!g_cancel_state_prepared.exchange(false, std::memory_order_acq_rel)) {
+    reset_export_cancel_flag();
+  }
 }
 
 static void progress_callback(int progress) {
@@ -445,7 +459,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportHandler(
   }
 
   export_options_t options = parse_export_options(env, exportOptions);
-  reset_export_cancel_flag();
+  prepare_cancel_state_for_export();
 
   jstring jFileName = env->NewStringUTF(options.source_file_name.c_str());
   mlvObject_t *video =
@@ -457,6 +471,11 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportHandler(
     if (g_file_provider) {
       env->DeleteGlobalRef(g_file_provider);
       g_file_provider = nullptr;
+    }
+    jclass exceptionCls = env->FindClass("java/lang/RuntimeException");
+    if (exceptionCls) {
+      env->ThrowNew(exceptionCls,
+                    "Export failed: Unable to open the source clip.");
     }
     return;
   }
@@ -575,7 +594,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportBatchHandler(
 
   // Parse export options once for the entire batch
   export_options_t baseOptions = parse_export_options(env, exportOptions);
-  reset_export_cancel_flag();
+  prepare_cancel_state_for_export();
 
   // Initialize batch context with export options
   BatchExportContext batch_ctx;

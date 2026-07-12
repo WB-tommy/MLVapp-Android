@@ -10,22 +10,28 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import fm.magiclantern.forum.data.repository.FocusPixelRequirement
 import fm.magiclantern.forum.domain.model.ClipPreview
-import fm.magiclantern.forum.domain.model.RawCorrectionSettings
 import fm.magiclantern.forum.features.clips.viewmodel.ClipListViewModel
 import fm.magiclantern.forum.features.export.ExportPreferences
+import fm.magiclantern.forum.features.export.ExportRequestBuilder
 import fm.magiclantern.forum.features.export.ExportService
+import fm.magiclantern.forum.features.export.FocusPixelPreflightCoordinator
+import fm.magiclantern.forum.features.export.OutputDirectoryValidator
+import fm.magiclantern.forum.features.export.exportFailureMessage
+import fm.magiclantern.forum.features.export.sanitized
 import fm.magiclantern.forum.features.grading.viewmodel.GradingViewModel
 import fm.magiclantern.forum.features.export.model.CdngNaming
 import fm.magiclantern.forum.features.export.model.CdngVariant
 import fm.magiclantern.forum.features.export.model.DebayerQuality
 import fm.magiclantern.forum.features.export.model.DnxhdProfile
 import fm.magiclantern.forum.features.export.model.DnxhrProfile
-import fm.magiclantern.forum.features.export.model.ExportClipPayload
 import fm.magiclantern.forum.features.export.model.ExportCodec
+import fm.magiclantern.forum.features.export.model.ExportRequest
 import fm.magiclantern.forum.features.export.model.ExportSettings
+import fm.magiclantern.forum.features.export.model.ExportDraft
 import fm.magiclantern.forum.features.export.model.FrameRatePreset
+import fm.magiclantern.forum.features.export.model.FocusPixelExportRequirement
+import fm.magiclantern.forum.features.export.model.FocusPixelPreflightResult
 import fm.magiclantern.forum.features.export.model.H264Container
 import fm.magiclantern.forum.features.export.model.H264Quality
 import fm.magiclantern.forum.features.export.model.H265BitDepth
@@ -36,7 +42,6 @@ import fm.magiclantern.forum.features.export.model.ProResEncoder
 import fm.magiclantern.forum.features.export.model.ProResProfile
 import fm.magiclantern.forum.features.export.model.SmoothingOption
 import fm.magiclantern.forum.features.export.model.Vp9Quality
-import fm.magiclantern.forum.utils.sortedByMlvFileRole
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -63,6 +68,8 @@ class ExportViewModel(
     val uiState: StateFlow<ExportUiState> = _uiState.asStateFlow()
 
     private val _serviceConnection = MutableStateFlow<ExportService.LocalBinder?>(null)
+    private val _serviceStatusFallback =
+        MutableStateFlow<ExportService.ExportStatus>(ExportService.ExportStatus.Idle)
 
     val exportProgress: StateFlow<Float> = _serviceConnection
         .flatMapLatest { binder ->
@@ -73,7 +80,7 @@ class ExportViewModel(
     val exportStatus: StateFlow<ExportService.ExportStatus> = _serviceConnection
         .flatMapLatest { binder ->
             binder?.getService()?.status
-                ?: flowOf<ExportService.ExportStatus>(ExportService.ExportStatus.Idle)
+                ?: _serviceStatusFallback
         }
         .stateIn(
             viewModelScope,
@@ -84,22 +91,46 @@ class ExportViewModel(
     private var currentServiceConnection: ServiceConnection? = null
     private var boundContext: Context? = null
 
-    private fun resetPendingExportData() {
-        pendingExportClips = emptyList()
-        pendingExportPayload = emptyList()
-        pendingOutputDirectory = null
+    private val focusPixelPreflightCoordinator = FocusPixelPreflightCoordinator(
+        findMissing = clipListViewModel::findMissingFocusPixelMapsForExport,
+        downloadMap = clipListViewModel::downloadFocusPixelMapForExport
+    )
+
+    private var currentDraft: ExportDraft? = null
+
+    private fun resetExportDraft() {
+        currentDraft = null
     }
 
-    private fun clipDisplayName(clip: ClipPreview): String {
-        if (clip.displayName.isNotBlank()) return clip.displayName
-        val fromFile = clip.fileNames.firstOrNull()?.substringBeforeLast('.', "")
-        if (!fromFile.isNullOrBlank()) return fromFile
-        return "clip_${clip.guid}"
+    private fun focusPixelRequirementsFor(draft: ExportDraft?): List<FocusPixelExportRequirement> {
+        return when (val preflight = draft?.fpmPreflight) {
+            is FocusPixelPreflightResult.Missing -> preflight.requirements
+            else -> emptyList()
+        }
     }
 
-    private var pendingExportClips: List<ClipPreview> = emptyList()
-    private var pendingExportPayload: List<ExportClipPayload> = emptyList()
-    private var pendingOutputDirectory: Uri? = null
+    private fun focusPixelDownloadFailuresFor(draft: ExportDraft?): List<String> {
+        return when (val preflight = draft?.fpmPreflight) {
+            is FocusPixelPreflightResult.Missing -> preflight.failedDownloads
+            else -> emptyList()
+        }
+    }
+
+    private fun focusPixelPromptStageFor(draft: ExportDraft?): FocusPixelPromptStage? {
+        return if (draft?.fpmPreflight is FocusPixelPreflightResult.Missing) {
+            FocusPixelPromptStage.SELECTION
+        } else {
+            null
+        }
+    }
+
+    private fun ExportUiState.withFocusPixelStateFrom(
+        draft: ExportDraft?
+    ): ExportUiState = copy(
+        focusPixelRequirements = focusPixelRequirementsFor(draft),
+        focusPixelDownloadFailures = focusPixelDownloadFailuresFor(draft),
+        focusPixelPromptStage = focusPixelPromptStageFor(draft)
+    )
 
     init {
         viewModelScope.launch {
@@ -108,10 +139,37 @@ class ExportViewModel(
                     val availableIds = clipState.clips.map { it.guid }.toSet()
                     val filteredSelection =
                         current.selectedClips.filter { it in availableIds }.toSet()
+                    val selectionChanged = filteredSelection != current.selectedClips
+                    if (selectionChanged) {
+                        resetExportDraft()
+                    }
                     // Use ClipPreviews directly
                     current.copy(
                         clips = clipState.clips,
-                        selectedClips = filteredSelection
+                        selectedClips = filteredSelection,
+                        focusPixelRequirements = focusPixelRequirementsFor(currentDraft),
+                        focusPixelDownloadFailures = focusPixelDownloadFailuresFor(currentDraft),
+                        focusPixelPromptStage = focusPixelPromptStageFor(currentDraft),
+                        isFocusPixelCheckInProgress = if (selectionChanged) {
+                            false
+                        } else {
+                            current.isFocusPixelCheckInProgress
+                        },
+                        isFocusPixelDownloadInProgress = if (selectionChanged) {
+                            false
+                        } else {
+                            current.isFocusPixelDownloadInProgress
+                        },
+                        focusPixelPreflightError = if (selectionChanged) {
+                            null
+                        } else {
+                            current.focusPixelPreflightError
+                        },
+                        navigateToExportSettings = if (selectionChanged) {
+                            false
+                        } else {
+                            current.navigateToExportSettings
+                        }
                     )
                 }
             }
@@ -119,29 +177,36 @@ class ExportViewModel(
 
         viewModelScope.launch {
             exportProgress.collect { progress ->
-                val isBound = _serviceConnection.value != null
                 _uiState.update { current ->
-                    val exporting = when {
-                        progress >= 1f -> false
-                        isBound -> true
-                        else -> current.isExporting
-                    }
-                    current.copy(
-                        exportProgress = progress,
-                        isExporting = exporting
-                    )
+                    current.copy(exportProgress = progress)
                 }
             }
         }
 
         viewModelScope.launch {
             exportStatus.collect { status ->
-                if (status is ExportService.ExportStatus.Completed) {
-                    resetPendingExportData()
-                    _uiState.update { current ->
-                        current.copy(
-                            selectedClips = emptySet()
-                        )
+                when (status) {
+                    is ExportService.ExportStatus.Completed -> {
+                        if (shouldClearExportDraft(status)) {
+                            resetExportDraft()
+                        }
+                        _uiState.update { current ->
+                            current.copy(
+                                selectedClips = emptySet(),
+                                isExporting = false,
+                                exportProgress = 1f
+                            )
+                        }
+                    }
+
+                    is ExportService.ExportStatus.Cancelled,
+                    is ExportService.ExportStatus.Failed,
+                    ExportService.ExportStatus.Idle -> {
+                        _uiState.update { it.copy(isExporting = false) }
+                    }
+
+                    is ExportService.ExportStatus.Running -> {
+                        _uiState.update { it.copy(isExporting = true) }
                     }
                 }
             }
@@ -149,12 +214,7 @@ class ExportViewModel(
     }
 
     fun onSelectionNextRequested() {
-        val selectedIds = uiState.value.selectedClips
-        if (selectedIds.isEmpty()) {
-            return
-        }
-
-        val clipsForExport = uiState.value.clips.filter { it.guid in selectedIds }
+        val clipsForExport = selectedClipsForExport()
         if (clipsForExport.isEmpty()) {
             return
         }
@@ -163,192 +223,225 @@ class ExportViewModel(
             return
         }
 
+        val draft = ExportDraft(
+            selectedClips = clipsForExport,
+            settings = uiState.value.settings,
+            outputDirectory = uiState.value.outputDirectory
+        )
+        currentDraft = draft
+
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     isFocusPixelCheckInProgress = true,
-                    focusPixelPromptStage = FocusPixelPromptStage.SELECTION,
+                    focusPixelPromptStage = focusPixelPromptStageFor(draft),
+                    focusPixelPreflightError = null,
                     navigateToExportSettings = false
                 )
             }
 
-            val exportPayload = buildExportPayload(clipsForExport)
-            if (exportPayload.isEmpty()) {
-                _uiState.update { current ->
-                    current.copy(
-                        isFocusPixelCheckInProgress = false,
-                        focusPixelRequirements = emptyList(),
-                        focusPixelPromptStage = null
-                    )
-                }
-                resetPendingExportData()
+            val result = try {
+                focusPixelPreflightCoordinator.check(clipsForExport)
+            } catch (throwable: Throwable) {
+                handleFocusPixelPreflightFailure(draft, throwable)
                 return@launch
             }
-
-            pendingExportClips = clipsForExport
-            pendingExportPayload = exportPayload
-            pendingOutputDirectory = null
-
-            val missingMaps = clipListViewModel.findMissingFocusPixelMapsForExport(clipsForExport)
-            if (missingMaps.isNotEmpty()) {
-                val requirements = missingMaps.mapNotNull { requirement: FocusPixelRequirement ->
-                    val clip = clipsForExport.firstOrNull { it.guid == requirement.clipGuid }
-                        ?: return@mapNotNull null
-                    FocusPixelExportRequirement(
-                        clipGuid = clip.guid,
-                        clipName = clipDisplayName(clip),
-                        requiredFile = requirement.requiredFile
-                    )
-                }
-
-                _uiState.update {
-                    it.copy(
-                        isFocusPixelCheckInProgress = false,
-                        focusPixelRequirements = requirements,
-                        isFocusPixelDownloadInProgress = false,
-                        focusPixelPromptStage = FocusPixelPromptStage.SELECTION,
-                        navigateToExportSettings = false
-                    )
-                }
-                return@launch
-            }
-
-            _uiState.update {
-                it.copy(
-                    isFocusPixelCheckInProgress = false,
-                    focusPixelRequirements = emptyList(),
-                    isFocusPixelDownloadInProgress = false,
-                    focusPixelPromptStage = null,
-                    navigateToExportSettings = true
-                )
-            }
-        }
-    }
-
-    fun startExport(context: Context) {
-        val outputDirectory = uiState.value.outputDirectory ?: return
-
-        // Try to use cached payload first
-        var exportPayload = pendingExportPayload
-
-        // If no cached payload, rebuild from current selection
-        if (exportPayload.isEmpty()) {
-            val selectedIds = uiState.value.selectedClips
-            if (selectedIds.isEmpty()) {
-                Log.w("ExportViewModel", "No clips selected for export.")
-                return
-            }
-
-            val clipsForExport = uiState.value.clips.filter { it.guid in selectedIds }
-            exportPayload = buildExportPayload(clipsForExport)
-
-            if (exportPayload.isEmpty()) {
-                Log.w("ExportViewModel", "Failed to build export payload.")
-                return
-            }
-        }
-
-        // Launch export with payload (either cached or rebuilt)
-        launchExport(context, exportPayload, outputDirectory)
-        resetPendingExportData()
-    }
-
-    private fun buildExportPayload(clips: List<ClipPreview>): List<ExportClipPayload> = buildList {
-        // Get all grading data for export
-        val allGrading = gradingViewModel.getAllGradingForExport()
-
-        for (clip in clips) {
-            val pairs = if (clip.fileNames.size == clip.uris.size && clip.fileNames.isNotEmpty()) {
-                clip.uris.zip(clip.fileNames)
-            } else {
-                clip.uris.map { uri -> uri to (uri.lastPathSegment ?: "") }
-            }
-
-            val sortedPairs = pairs.sortedByMlvFileRole { (_, fileName) -> fileName }
-
-            val uris = sortedPairs.map { it.first }
-            if (uris.isEmpty()) continue
-
-            val primaryFileName = sortedPairs.firstOrNull()?.second
-                ?: clip.fileNames.firstOrNull()
-                ?: continue
-
-            // Look up grading for this clip
-            val grading = allGrading[clip.guid]
-            val rawCorrection = grading?.rawCorrection ?: RawCorrectionSettings()
-            val colorGrading = grading?.colorGrading ?: fm.magiclantern.forum.domain.model.ColorGradingSettings()
-            // Use clip's debayer mode from grading, or default to AMAZE
-            val debayerMode = grading?.debayerMode ?: fm.magiclantern.forum.domain.model.DebayerAlgorithm.AMAZE
-
-            add(
-                ExportClipPayload(
-                    displayName = clipDisplayName(clip),
-                    primaryFileName = primaryFileName,
-                    uris = uris,
-                    stretchFactorX = clip.stretchFactorX,
-                    stretchFactorY = clip.stretchFactorY,
-                    debayerMode = debayerMode,
-                    rawCorrection = rawCorrection,
-                    colorGrading = colorGrading,
-                    cutIn = grading?.cutIn ?: 1,
-                    cutOut = grading?.cutOut ?: 0
-                )
+            applyFocusPixelPreflightResult(
+                draft = draft,
+                result = result
             )
         }
     }
 
-    private fun launchExport(
-        context: Context,
-        payload: List<ExportClipPayload>,
-        outputDirectory: Uri
+    private fun selectedClipsForExport(): List<ClipPreview> {
+        val selectedIds = uiState.value.selectedClips
+        if (selectedIds.isEmpty()) return emptyList()
+        return uiState.value.clips.filter { it.guid in selectedIds }
+    }
+
+    private fun applyFocusPixelPreflightResult(
+        draft: ExportDraft,
+        result: FocusPixelPreflightResult
     ) {
-        if (payload.isEmpty()) {
-            Log.w("ExportViewModel", "launchExport: payload is empty, aborting")
+        if (currentDraft !== draft) return
+        val updatedDraft = draft.copy(fpmPreflight = result)
+        currentDraft = updatedDraft
+
+        when (result) {
+            FocusPixelPreflightResult.Ready,
+            is FocusPixelPreflightResult.Skipped -> {
+                _uiState.update {
+                    it.withFocusPixelStateFrom(updatedDraft).copy(
+                        isFocusPixelCheckInProgress = false,
+                        isFocusPixelDownloadInProgress = false,
+                        focusPixelPreflightError = null,
+                        navigateToExportSettings = true
+                    )
+                }
+            }
+
+            is FocusPixelPreflightResult.Missing -> {
+                _uiState.update {
+                    it.withFocusPixelStateFrom(updatedDraft).copy(
+                        isFocusPixelCheckInProgress = false,
+                        isFocusPixelDownloadInProgress = false,
+                        focusPixelPreflightError = null,
+                        navigateToExportSettings = false
+                    )
+                }
+            }
+
+            FocusPixelPreflightResult.Unchecked -> {
+                _uiState.update {
+                    it.withFocusPixelStateFrom(updatedDraft).copy(
+                        isFocusPixelCheckInProgress = false,
+                        isFocusPixelDownloadInProgress = false,
+                        focusPixelPreflightError = null,
+                        navigateToExportSettings = false
+                    )
+                }
+            }
+        }
+    }
+
+    fun onSettingsNextRequested(): Boolean {
+        val draft = currentDraft
+        if (draft == null || !draft.canConfigureSettings) {
+            Log.w(TAG, "Cannot continue to location without a prepared export draft.")
+            return false
+        }
+
+        currentDraft = draft.copy(
+            settings = uiState.value.settings,
+            gradingSnapshot = gradingViewModel.getAllGradingForExport()
+        )
+        return true
+    }
+
+    fun startExport(context: Context) {
+        if (uiState.value.isExporting) {
+            Log.w(TAG, "Export is already running.")
+            return
+        }
+        val draft = currentDraft
+        val outputDirectory = draft?.outputDirectory ?: uiState.value.outputDirectory ?: return
+        if (uiState.value.outputDirectoryError != null) {
+            Log.w(TAG, "Cannot start export while output directory has an unresolved error.")
+            return
+        }
+        OutputDirectoryValidator.validationError(context, outputDirectory)?.let { message ->
+            _uiState.update { it.copy(outputDirectoryError = message) }
+            return
+        }
+        val readyDraft = draft?.copy(outputDirectory = outputDirectory)
+        if (readyDraft == null || !readyDraft.canStartExport) {
+            Log.w(TAG, "No prepared export draft is ready to start.")
+            return
+        }
+
+        val request = ExportRequestBuilder.build(
+            draft = readyDraft,
+            cacheSizeMiB = cacheSizeMiB,
+            cpuCores = cpuCores
+        )
+        if (request == null) {
+            Log.w(TAG, "Failed to build export request.")
+            return
+        }
+
+        // Failed and cancelled attempts reuse this immutable snapshot when the user retries.
+        currentDraft = readyDraft
+        launchExport(
+            context = context,
+            request = request
+        )
+    }
+
+    fun validateCurrentOutputDirectory(context: Context) {
+        val outputDirectory = uiState.value.outputDirectory ?: return
+        val validationError = OutputDirectoryValidator.validationError(context, outputDirectory)
+        _uiState.update { current ->
+            if (current.outputDirectory == outputDirectory) {
+                current.copy(outputDirectoryError = validationError)
+            } else {
+                current
+            }
+        }
+    }
+
+    private fun launchExport(context: Context, request: ExportRequest) {
+        if (request.clips.isEmpty()) {
+            Log.w(TAG, "launchExport: request has no clips, aborting")
             return
         }
 
         val appContext = context.applicationContext
         val intent = Intent(appContext, ExportService::class.java).apply {
-            putParcelableArrayListExtra(
-                ExportService.EXTRA_EXPORT_CLIPS,
-                ArrayList(payload)
-            )
-            putExtra(ExportService.EXTRA_OUTPUT_DIRECTORY_URI, outputDirectory)
-            putExtra(ExportService.EXTRA_CACHE_SIZE_MIB, cacheSizeMiB)
-            putExtra(ExportService.EXTRA_CPU_CORES, cpuCores)
-            putExtra(ExportService.EXTRA_EXPORT_SETTINGS, uiState.value.settings)
+            putExtra(ExportService.EXTRA_EXPORT_REQUEST, request)
 
-            // Grant read permission for clip URIs
+            // Keep the read grant on the service start intent as a fallback.
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
 
-        // Grant URI permissions for each clip URI
-        payload.flatMap { it.uris }.forEach { uri ->
-            context.grantUriPermission(
-                appContext.packageName,
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
+        _uiState.update {
+            it.copy(
+                isExporting = true,
+                exportProgress = 0f,
+                outputDirectoryError = null,
+                exportStartError = null
             )
         }
+        _serviceStatusFallback.value = ExportService.ExportStatus.Idle
 
-        ContextCompat.startForegroundService(appContext, intent)
+        try {
+            request.clips
+                .flatMap { it.uris }
+                .distinct()
+                .forEach { uri ->
+                    context.grantUriPermission(
+                        appContext.packageName,
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+            ContextCompat.startForegroundService(appContext, intent)
+        } catch (throwable: RuntimeException) {
+            recordExportStartFailure(throwable)
+            return
+        }
 
         currentServiceConnection?.let { connection ->
             boundContext?.let { bound ->
                 runCatching { bound.unbindService(connection) }
             }
         }
+        currentServiceConnection = null
+        boundContext = null
 
         val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
                 val binder = service as? ExportService.LocalBinder
                 _serviceConnection.value = binder
                 if (binder == null) {
+                    _serviceStatusFallback.value = ExportService.ExportStatus.Failed(
+                        "Unable to connect to the export service."
+                    )
                     _uiState.update {
                         it.copy(
                             isExporting = false,
                             exportProgress = 0f,
-                            navigateToProgress = false
+                            navigateToProgress = false,
+                            exportStartError = "Unable to connect to the export service."
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.withFocusPixelStateFrom(null).copy(
+                            isExporting = true,
+                            exportProgress = 0f,
+                            navigateToProgress = true,
+                            isFocusPixelDownloadInProgress = false,
+                            exportStartError = null
                         )
                     }
                 }
@@ -356,89 +449,103 @@ class ExportViewModel(
 
             override fun onServiceDisconnected(name: ComponentName?) {
                 _serviceConnection.value = null
+                _serviceStatusFallback.value = ExportService.ExportStatus.Failed(
+                    "Export service disconnected before completion."
+                )
                 _uiState.update { it.copy(isExporting = false, navigateToProgress = false) }
             }
 
             override fun onBindingDied(name: ComponentName?) {
                 _serviceConnection.value = null
+                _serviceStatusFallback.value = ExportService.ExportStatus.Failed(
+                    "Export service connection was lost."
+                )
                 _uiState.update { it.copy(isExporting = false, navigateToProgress = false) }
             }
 
             override fun onNullBinding(name: ComponentName?) {
                 _serviceConnection.value = null
+                _serviceStatusFallback.value = ExportService.ExportStatus.Failed(
+                    "Unable to connect to the export service."
+                )
                 _uiState.update {
                     it.copy(
                         isExporting = false,
                         exportProgress = 0f,
-                        navigateToProgress = false
+                        navigateToProgress = false,
+                        exportStartError = "Unable to connect to the export service."
                     )
                 }
             }
         }
 
         boundContext = appContext
-        val bound = appContext.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        val bound = try {
+            appContext.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        } catch (throwable: RuntimeException) {
+            appContext.stopService(intent)
+            recordExportStartFailure(throwable)
+            false
+        }
         if (bound) {
             currentServiceConnection = connection
-            _uiState.update {
-                it.copy(
-                    isExporting = true,
-                    exportProgress = 0f,
-                    navigateToProgress = true,
-                    focusPixelRequirements = emptyList(),
-                    isFocusPixelDownloadInProgress = false
-                )
-            }
         } else {
+            appContext.stopService(intent)
             boundContext = null
             _serviceConnection.value = null
-            _uiState.update { it.copy(isExporting = false, navigateToProgress = false) }
+            _serviceStatusFallback.value = ExportService.ExportStatus.Failed(
+                "Unable to connect to the export service."
+            )
+            _uiState.update {
+                it.copy(
+                    isExporting = false,
+                    navigateToProgress = false,
+                    exportStartError = it.exportStartError
+                        ?: "Unable to connect to the export service."
+                )
+            }
         }
     }
 
-    fun downloadMissingFocusPixelMaps(context: Context) {
-        when (uiState.value.focusPixelPromptStage) {
-            FocusPixelPromptStage.SELECTION -> {
-                val clipsSnapshot = pendingExportClips
-                if (clipsSnapshot.isEmpty()) return
-                val requirementsSnapshot = uiState.value.focusPixelRequirements
-                viewModelScope.launch {
-                    downloadFocusPixelMapsForSelection(requirementsSnapshot, clipsSnapshot)
-                }
-            }
+    private fun recordExportStartFailure(throwable: Throwable) {
+        val detail = throwable.exportFailureMessage(default = throwable::class.java.simpleName)
+        Log.e(TAG, "Unable to start export: $detail", throwable)
+        _uiState.update {
+            it.copy(
+                isExporting = false,
+                exportProgress = 0f,
+                navigateToProgress = false,
+                exportStartError = "Unable to start export: $detail"
+            )
+        }
+        _serviceStatusFallback.value = ExportService.ExportStatus.Failed(
+            "Unable to start export: $detail"
+        )
+    }
 
-            FocusPixelPromptStage.EXPORT -> {
-                val payloadSnapshot = pendingExportPayload
-                val outputDirectorySnapshot = pendingOutputDirectory
-                val clipsSnapshot = pendingExportClips
-                if (payloadSnapshot.isEmpty() || outputDirectorySnapshot == null || clipsSnapshot.isEmpty()) {
-                    return
-                }
-                viewModelScope.launch {
-                    downloadFocusPixelMapsForExport(
-                        context = context,
-                        requirementsSnapshot = uiState.value.focusPixelRequirements,
-                        payloadSnapshot = payloadSnapshot,
-                        outputDirectorySnapshot = outputDirectorySnapshot,
-                        clipsSnapshot = clipsSnapshot
-                    )
-                }
-            }
+    fun downloadMissingFocusPixelMaps() {
+        val draft = currentDraft ?: return
+        val requirements = (draft.fpmPreflight as? FocusPixelPreflightResult.Missing)
+            ?.requirements
+            .orEmpty()
+        if (requirements.isEmpty()) return
 
-            null -> Unit
+        viewModelScope.launch {
+            downloadFocusPixelMapsForSelection(requirements, draft)
         }
     }
 
     private suspend fun downloadFocusPixelMapsForSelection(
         requirementsSnapshot: List<FocusPixelExportRequirement>,
-        clipsSnapshot: List<ClipPreview>
+        draft: ExportDraft
     ) {
         if (requirementsSnapshot.isEmpty()) {
+            val updatedDraft = draft.copy(fpmPreflight = FocusPixelPreflightResult.Ready)
+            currentDraft = updatedDraft
             _uiState.update {
-                it.copy(
-                    focusPixelRequirements = emptyList(),
+                it.withFocusPixelStateFrom(updatedDraft).copy(
                     isFocusPixelDownloadInProgress = false,
-                    focusPixelPromptStage = null,
+                    focusPixelPreflightError = null,
                     navigateToExportSettings = true
                 )
             }
@@ -448,182 +555,69 @@ class ExportViewModel(
         _uiState.update {
             it.copy(
                 isFocusPixelDownloadInProgress = true,
+                focusPixelPreflightError = null,
                 navigateToExportSettings = false
             )
         }
 
-        val grouped = requirementsSnapshot.groupBy { it.requiredFile }
-        for ((fileName, _) in grouped) {
-            clipListViewModel.downloadFocusPixelMapForExport(fileName)
-            // Note: focus pixel refresh will happen when clip is loaded for export
-        }
-
-        val remaining = clipListViewModel.findMissingFocusPixelMapsForExport(clipsSnapshot)
-        if (remaining.isEmpty()) {
-            _uiState.update {
-                it.copy(
-                    focusPixelRequirements = emptyList(),
-                    isFocusPixelDownloadInProgress = false,
-                    focusPixelPromptStage = null,
-                    navigateToExportSettings = true
-                )
-            }
-        } else {
-            val updatedRequirements = remaining.mapNotNull { requirement: FocusPixelRequirement ->
-                val clip = clipsSnapshot.firstOrNull { it.guid == requirement.clipGuid }
-                    ?: return@mapNotNull null
-                FocusPixelExportRequirement(
-                    clipGuid = clip.guid,
-                    clipName = clipDisplayName(clip),
-                    requiredFile = requirement.requiredFile
-                )
-            }
-            _uiState.update {
-                it.copy(
-                    focusPixelRequirements = updatedRequirements,
-                    isFocusPixelDownloadInProgress = false,
-                    focusPixelPromptStage = FocusPixelPromptStage.SELECTION,
-                    navigateToExportSettings = false
-                )
-            }
-        }
-    }
-
-    private suspend fun downloadFocusPixelMapsForExport(
-        context: Context,
-        requirementsSnapshot: List<FocusPixelExportRequirement>,
-        payloadSnapshot: List<ExportClipPayload>,
-        outputDirectorySnapshot: Uri,
-        clipsSnapshot: List<ClipPreview>
-    ) {
-        if (requirementsSnapshot.isEmpty()) {
-            _uiState.update {
-                it.copy(
-                    focusPixelRequirements = emptyList(),
-                    isFocusPixelDownloadInProgress = false,
-                    focusPixelPromptStage = null,
-                    navigateToProgress = false
-                )
-            }
-            launchExport(context, payloadSnapshot, outputDirectorySnapshot)
-            resetPendingExportData()
+        val result = try {
+            focusPixelPreflightCoordinator.downloadMissing(
+                clips = draft.selectedClips,
+                requirements = requirementsSnapshot
+            )
+        } catch (throwable: Throwable) {
+            handleFocusPixelPreflightFailure(draft, throwable)
             return
         }
+        applyFocusPixelPreflightResult(
+            draft = draft,
+            result = result
+        )
+    }
 
+    private fun handleFocusPixelPreflightFailure(draft: ExportDraft, throwable: Throwable) {
+        if (currentDraft !== draft) return
+        Log.e(TAG, "Unable to check focus pixel maps", throwable)
         _uiState.update {
             it.copy(
-                isFocusPixelDownloadInProgress = true,
-                navigateToProgress = false
+                isFocusPixelCheckInProgress = false,
+                isFocusPixelDownloadInProgress = false,
+                navigateToExportSettings = false,
+                focusPixelPreflightError =
+                    "Unable to check focus pixel maps. Check storage access and try again."
             )
-        }
-
-        val grouped = requirementsSnapshot.groupBy { it.requiredFile }
-        for ((fileName, _) in grouped) {
-            clipListViewModel.downloadFocusPixelMapForExport(fileName)
-            // Note: focus pixel refresh will happen when clip is loaded for export
-        }
-
-        val remaining = clipListViewModel.findMissingFocusPixelMapsForExport(clipsSnapshot)
-        if (remaining.isEmpty()) {
-            _uiState.update {
-                it.copy(
-                    focusPixelRequirements = emptyList(),
-                    isFocusPixelDownloadInProgress = false,
-                    focusPixelPromptStage = null,
-                    navigateToProgress = false
-                )
-            }
-            launchExport(context, payloadSnapshot, outputDirectorySnapshot)
-            resetPendingExportData()
-        } else {
-            val updatedRequirements = remaining.mapNotNull { requirement: FocusPixelRequirement ->
-                val clip = clipsSnapshot.firstOrNull { it.guid == requirement.clipGuid }
-                    ?: return@mapNotNull null
-                FocusPixelExportRequirement(
-                    clipGuid = clip.guid,
-                    clipName = clipDisplayName(clip),
-                    requiredFile = requirement.requiredFile
-                )
-            }
-            _uiState.update {
-                it.copy(
-                    focusPixelRequirements = updatedRequirements,
-                    isFocusPixelDownloadInProgress = false,
-                    focusPixelPromptStage = FocusPixelPromptStage.EXPORT,
-                    navigateToProgress = false
-                )
-            }
         }
     }
 
-    fun skipFocusPixelDownload(context: Context) {
-        when (uiState.value.focusPixelPromptStage) {
-            FocusPixelPromptStage.SELECTION -> {
-                val clipsSnapshot = pendingExportClips
-                if (clipsSnapshot.isEmpty()) return
-                _uiState.update {
-                    it.copy(
-                        focusPixelRequirements = emptyList(),
-                        isFocusPixelDownloadInProgress = false,
-                        isFocusPixelCheckInProgress = false,
-                        focusPixelPromptStage = null,
-                        navigateToExportSettings = true
-                    )
-                }
-            }
-
-            FocusPixelPromptStage.EXPORT -> {
-                val payloadSnapshot = pendingExportPayload
-                val outputDirectorySnapshot = pendingOutputDirectory
-                val clipsSnapshot = pendingExportClips
-                if (payloadSnapshot.isEmpty() || outputDirectorySnapshot == null || clipsSnapshot.isEmpty()) {
-                    return
-                }
-                _uiState.update {
-                    it.copy(
-                        focusPixelRequirements = emptyList(),
-                        isFocusPixelDownloadInProgress = false,
-                        isFocusPixelCheckInProgress = false,
-                        focusPixelPromptStage = null,
-                        navigateToProgress = false
-                    )
-                }
-                launchExport(context, payloadSnapshot, outputDirectorySnapshot)
-                resetPendingExportData()
-            }
-
-            null -> Unit
+    fun skipFocusPixelDownload() {
+        val draft = currentDraft ?: return
+        val requirements = (draft.fpmPreflight as? FocusPixelPreflightResult.Missing)
+            ?.requirements
+            .orEmpty()
+        val updatedDraft = draft.copy(
+            fpmPreflight = FocusPixelPreflightResult.Skipped(requirements)
+        )
+        currentDraft = updatedDraft
+        _uiState.update {
+            it.withFocusPixelStateFrom(updatedDraft).copy(
+                isFocusPixelDownloadInProgress = false,
+                isFocusPixelCheckInProgress = false,
+                focusPixelPreflightError = null,
+                navigateToExportSettings = true
+            )
         }
     }
 
     fun cancelFocusPixelPrompt() {
-        when (uiState.value.focusPixelPromptStage) {
-            FocusPixelPromptStage.SELECTION -> {
-                _uiState.update {
-                    it.copy(
-                        focusPixelRequirements = emptyList(),
-                        isFocusPixelDownloadInProgress = false,
-                        isFocusPixelCheckInProgress = false,
-                        focusPixelPromptStage = null,
-                        navigateToExportSettings = false
-                    )
-                }
-            }
-
-            FocusPixelPromptStage.EXPORT -> {
-                _uiState.update {
-                    it.copy(
-                        focusPixelRequirements = emptyList(),
-                        isFocusPixelDownloadInProgress = false,
-                        isFocusPixelCheckInProgress = false,
-                        focusPixelPromptStage = null,
-                        navigateToProgress = false
-                    )
-                }
-                resetPendingExportData()
-            }
-
-            null -> Unit
+        resetExportDraft()
+        _uiState.update {
+            it.withFocusPixelStateFrom(null).copy(
+                isFocusPixelDownloadInProgress = false,
+                isFocusPixelCheckInProgress = false,
+                focusPixelPreflightError = null,
+                navigateToExportSettings = false,
+                navigateToProgress = false
+            )
         }
     }
 
@@ -640,6 +634,7 @@ class ExportViewModel(
     }
 
     fun toggleClipSelection(clip: ClipPreview) {
+        resetExportDraft()
         _uiState.update { currentState ->
             val selectedClips = currentState.selectedClips.toMutableSet()
             if (selectedClips.contains(clip.guid)) {
@@ -647,19 +642,48 @@ class ExportViewModel(
             } else {
                 selectedClips.add(clip.guid)
             }
-            currentState.copy(selectedClips = selectedClips)
+            currentState.copy(
+                selectedClips = selectedClips,
+                focusPixelRequirements = focusPixelRequirementsFor(null),
+                focusPixelDownloadFailures = focusPixelDownloadFailuresFor(null),
+                focusPixelPromptStage = focusPixelPromptStageFor(null),
+                isFocusPixelCheckInProgress = false,
+                isFocusPixelDownloadInProgress = false,
+                focusPixelPreflightError = null,
+                navigateToExportSettings = false
+            )
         }
     }
 
     fun selectAllClips() {
+        resetExportDraft()
         _uiState.update { currentState ->
-            currentState.copy(selectedClips = currentState.clips.map { it.guid }.toSet())
+            currentState.copy(
+                selectedClips = currentState.clips.map { it.guid }.toSet(),
+                focusPixelRequirements = focusPixelRequirementsFor(null),
+                focusPixelDownloadFailures = focusPixelDownloadFailuresFor(null),
+                focusPixelPromptStage = focusPixelPromptStageFor(null),
+                isFocusPixelCheckInProgress = false,
+                isFocusPixelDownloadInProgress = false,
+                focusPixelPreflightError = null,
+                navigateToExportSettings = false
+            )
         }
     }
 
     fun deselectAllClips() {
+        resetExportDraft()
         _uiState.update { currentState ->
-            currentState.copy(selectedClips = emptySet())
+            currentState.copy(
+                selectedClips = emptySet(),
+                focusPixelRequirements = focusPixelRequirementsFor(null),
+                focusPixelDownloadFailures = focusPixelDownloadFailuresFor(null),
+                focusPixelPromptStage = focusPixelPromptStageFor(null),
+                isFocusPixelCheckInProgress = false,
+                isFocusPixelDownloadInProgress = false,
+                focusPixelPreflightError = null,
+                navigateToExportSettings = false
+            )
         }
     }
 
@@ -780,69 +804,30 @@ class ExportViewModel(
 
     fun onOutputDirectorySelected(uri: Uri) {
         exportPreferences.setLastOutputDirectory(uri)
-        _uiState.update { it.copy(outputDirectory = uri) }
+        currentDraft = currentDraft?.copy(outputDirectory = uri)
+        _uiState.update {
+            it.copy(
+                outputDirectory = uri,
+                outputDirectoryError = null,
+                exportStartError = null
+            )
+        }
+    }
+
+    fun onOutputDirectorySelectionFailed(uri: Uri, reason: Throwable) {
+        Log.e(TAG, "Unable to persist access to output directory: $uri", reason)
+        _uiState.update {
+            it.copy(
+                outputDirectoryError = "Unable to keep access to that folder. Choose another folder."
+            )
+        }
     }
 
     private fun updateSettings(transform: (ExportSettings) -> ExportSettings) {
         _uiState.update { current ->
-            val updated = sanitizeSettings(transform(current.settings))
+            val updated = transform(current.settings).sanitized()
             current.copy(settings = updated)
         }
-    }
-
-    private fun sanitizeSettings(settings: ExportSettings): ExportSettings {
-    var sanitized = settings
-
-    // FPS override disables audio
-    if (sanitized.frameRate.enabled) {
-        sanitized = sanitized.copy(includeAudio = false)
-    }
-
-    // Audio-only forces audio on
-    if (sanitized.codec == ExportCodec.AUDIO_ONLY) {
-        sanitized = sanitized.copy(includeAudio = true)
-    }
-
-    // Smoothing disabled for codecs that don't support it
-    if (!sanitized.allowsSmoothing) {
-        sanitized = sanitized.copy(smoothing = SmoothingOption.OFF)
-    }
-
-    // HDR blending disabled for codecs that don't support it
-    if (!sanitized.allowsHdrBlending) {
-        sanitized = sanitized.copy(hdrBlending = false)
-    }
-
-    // Resize disabled for codecs that don't support it
-    if (!sanitized.allowsResize) {
-        sanitized = sanitized.copy(
-            resize = sanitized.resize.copy(enabled = false)
-        )
-    }
-
-    // Audio toggle not allowed forces audio on
-    if (!sanitized.allowsAudioToggle) {
-        sanitized = sanitized.copy(includeAudio = true)
-    }
-
-    // FPS override disabled for codecs that don't support it
-    if (!sanitized.allowsFrameRateOverride) {
-        sanitized = sanitized.copy(
-            frameRate = sanitized.frameRate.copy(enabled = false)
-        )
-    }
-
-    // Validate resize dimensions
-    if (sanitized.resize.width <= 0 || sanitized.resize.height <= 0) {
-        sanitized = sanitized.copy(
-            resize = sanitized.resize.copy(
-                width = sanitized.resize.width.coerceAtLeast(1),
-                height = sanitized.resize.height.coerceAtLeast(1)
-            )
-        )
-    }
-
-    return sanitized
     }
 
     override fun onCleared() {
@@ -856,6 +841,10 @@ class ExportViewModel(
         _serviceConnection.value = null
         super.onCleared()
     }
+
+    private companion object {
+        private const val TAG = "fm.forum.mlv.ExportViewModel"
+    }
 }
 
 data class ExportUiState(
@@ -865,23 +854,24 @@ data class ExportUiState(
     val exportProgress: Float = 0f,
     val settings: ExportSettings = ExportSettings(),
     val outputDirectory: Uri? = null,
+    val outputDirectoryError: String? = null,
+    val exportStartError: String? = null,
     val availableCodecs: List<ExportCodec> = ExportCodec.defaultOrder,
     val frameRatePresets: List<FrameRatePreset> = FrameRatePreset.values().toList(),
     val isFocusPixelCheckInProgress: Boolean = false,
     val focusPixelRequirements: List<FocusPixelExportRequirement> = emptyList(),
+    val focusPixelDownloadFailures: List<String> = emptyList(),
+    val focusPixelPreflightError: String? = null,
     val isFocusPixelDownloadInProgress: Boolean = false,
     val navigateToExportSettings: Boolean = false,
     val navigateToProgress: Boolean = false,
     val focusPixelPromptStage: FocusPixelPromptStage? = null
 )
 
-data class FocusPixelExportRequirement(
-    val clipGuid: Long,
-    val clipName: String,
-    val requiredFile: String
-)
-
 enum class FocusPixelPromptStage {
-    SELECTION,
-    EXPORT
+    SELECTION
+}
+
+internal fun shouldClearExportDraft(status: ExportService.ExportStatus): Boolean {
+    return status is ExportService.ExportStatus.Completed
 }

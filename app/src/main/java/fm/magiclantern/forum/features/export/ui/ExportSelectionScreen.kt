@@ -32,7 +32,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import fm.magiclantern.forum.features.clips.ui.SelectableClipListItem
@@ -47,7 +46,6 @@ fun ExportSelectionScreen(
     navController: NavHostController
 ) {
     val uiState by exportViewModel.uiState.collectAsState()
-    val context = LocalContext.current
 
     LaunchedEffect(uiState.navigateToExportSettings) {
         if (uiState.navigateToExportSettings) {
@@ -61,8 +59,8 @@ fun ExportSelectionScreen(
     if (showPrompt) {
         FocusPixelPromptDialog(
             uiState = uiState,
-            onDownload = { exportViewModel.downloadMissingFocusPixelMaps(context) },
-            onSkip = { exportViewModel.skipFocusPixelDownload(context) },
+            onDownload = exportViewModel::downloadMissingFocusPixelMaps,
+            onSkip = exportViewModel::skipFocusPixelDownload,
             onCancel = exportViewModel::cancelFocusPixelPrompt,
             disableInteractions = uiState.isFocusPixelDownloadInProgress
         )
@@ -140,6 +138,23 @@ fun ExportSelectionScreen(
                 }
             }
 
+            uiState.focusPixelPreflightError?.let { message ->
+                item {
+                    Surface(
+                        tonalElevation = 4.dp,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = message,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
+            }
+
             items(uiState.clips) { clip ->
                 SelectableClipListItem(
                     clip = clip,
@@ -170,6 +185,17 @@ private fun FocusPixelPromptDialog(
                 Spacer(modifier = Modifier.height(12.dp))
                 uiState.focusPixelRequirements.forEach { requirement ->
                     Text("${requirement.clipName}: ${requirement.requiredFile}")
+                }
+                if (uiState.focusPixelDownloadFailures.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("Unable to download:")
+                    uiState.focusPixelDownloadFailures.forEach { fileName ->
+                        Text(fileName)
+                    }
+                }
+                uiState.focusPixelPreflightError?.let { message ->
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(message)
                 }
                 if (disableInteractions) {
                     Spacer(modifier = Modifier.height(16.dp))

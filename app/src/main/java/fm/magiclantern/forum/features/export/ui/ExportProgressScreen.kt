@@ -28,68 +28,7 @@ fun ExportProgressScreen(
     val progress by exportViewModel.exportProgress.collectAsState()
     val status by exportViewModel.exportStatus.collectAsState()
 
-    val uiModel = when (val current = status) {
-        is ExportService.ExportStatus.Running -> {
-            val clipLabel =
-                current.clipName?.takeIf { it.isNotBlank() } ?: "Clip ${current.clipIndex + 1}"
-            val msg = buildString {
-                append("Exporting ")
-                append(clipLabel)
-                append(" (")
-                append(current.clipIndex + 1)
-                append('/')
-                append(current.totalClips.coerceAtLeast(1))
-                append(')')
-            }
-            ProgressUiModel(
-                message = msg,
-                showProgressBar = true,
-                primaryButtonLabel = "Cancel",
-                onPrimaryAction = {
-                    exportViewModel.cancelExport()
-                    navController.popBackStack()
-                }
-            )
-        }
-
-        is ExportService.ExportStatus.Completed -> ProgressUiModel(
-            message = "Export completed successfully.",
-            showProgressBar = false,
-            primaryButtonLabel = "Close",
-            onPrimaryAction = {
-                navController.navigate("home") {
-                    popUpTo(navController.graph.startDestinationId) {
-                        inclusive = true
-                    }
-                    launchSingleTop = true
-                }
-            }
-        )
-
-        is ExportService.ExportStatus.Failed -> ProgressUiModel(
-            message = "Export failed: ${current.reason}",
-            showProgressBar = false,
-            primaryButtonLabel = "Close",
-            onPrimaryAction = { navController.popBackStack() }
-        )
-
-        is ExportService.ExportStatus.Cancelled -> ProgressUiModel(
-            message = "Export cancelled.",
-            showProgressBar = false,
-            primaryButtonLabel = "Close",
-            onPrimaryAction = { navController.popBackStack() }
-        )
-
-        ExportService.ExportStatus.Idle -> ProgressUiModel(
-            message = "Preparing export…",
-            showProgressBar = true,
-            primaryButtonLabel = "Cancel",
-            onPrimaryAction = {
-                exportViewModel.cancelExport()
-                navController.popBackStack()
-            }
-        )
-    }
+    val uiModel = exportProgressUiModel(status)
 
     Scaffold { paddingValues ->
         Column(
@@ -107,16 +46,81 @@ fun ExportProgressScreen(
             }
             Text(text = uiModel.message)
             Spacer(modifier = Modifier.height(16.dp))
-            Button(onClick = uiModel.onPrimaryAction) {
+            Button(
+                onClick = {
+                    when (uiModel.action) {
+                        ExportProgressAction.CANCEL -> exportViewModel.cancelExport()
+                        ExportProgressAction.CLOSE_TO_LOCATION -> navController.popBackStack()
+                        ExportProgressAction.CLOSE_TO_HOME -> {
+                            navController.navigate("home") {
+                                popUpTo(navController.graph.startDestinationId) {
+                                    inclusive = true
+                                }
+                                launchSingleTop = true
+                            }
+                        }
+                    }
+                }
+            ) {
                 Text(uiModel.primaryButtonLabel)
             }
         }
     }
 }
 
-private data class ProgressUiModel(
+internal data class ExportProgressUiModel(
     val message: String,
     val showProgressBar: Boolean,
     val primaryButtonLabel: String,
-    val onPrimaryAction: () -> Unit
+    val action: ExportProgressAction
 )
+
+internal enum class ExportProgressAction {
+    CANCEL,
+    CLOSE_TO_LOCATION,
+    CLOSE_TO_HOME
+}
+
+internal fun exportProgressUiModel(
+    status: ExportService.ExportStatus
+): ExportProgressUiModel = when (status) {
+    is ExportService.ExportStatus.Running -> {
+        val clipLabel = status.clipName?.takeIf { it.isNotBlank() }
+            ?: "Clip ${status.clipIndex + 1}"
+        ExportProgressUiModel(
+            message = "Exporting $clipLabel " +
+                "(${status.clipIndex + 1}/${status.totalClips.coerceAtLeast(1)})",
+            showProgressBar = true,
+            primaryButtonLabel = "Cancel",
+            action = ExportProgressAction.CANCEL
+        )
+    }
+
+    is ExportService.ExportStatus.Completed -> ExportProgressUiModel(
+        message = "Export completed successfully.",
+        showProgressBar = false,
+        primaryButtonLabel = "Close",
+        action = ExportProgressAction.CLOSE_TO_HOME
+    )
+
+    is ExportService.ExportStatus.Failed -> ExportProgressUiModel(
+        message = "Export failed: ${status.reason}",
+        showProgressBar = false,
+        primaryButtonLabel = "Close",
+        action = ExportProgressAction.CLOSE_TO_LOCATION
+    )
+
+    is ExportService.ExportStatus.Cancelled -> ExportProgressUiModel(
+        message = "Export cancelled.",
+        showProgressBar = false,
+        primaryButtonLabel = "Close",
+        action = ExportProgressAction.CLOSE_TO_LOCATION
+    )
+
+    ExportService.ExportStatus.Idle -> ExportProgressUiModel(
+        message = "Preparing export…",
+        showProgressBar = true,
+        primaryButtonLabel = "Cancel",
+        action = ExportProgressAction.CANCEL
+    )
+}

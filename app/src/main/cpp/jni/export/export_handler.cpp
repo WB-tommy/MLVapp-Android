@@ -406,9 +406,15 @@ int startExportCdng(mlvObject_t *video, const export_options_t &options,
   return 0; // Success
 }
 
+static bool has_exportable_audio(mlvObject_t *video) {
+  return doesMlvHaveAudio(video) && getMlvAudioData(video) != nullptr &&
+         getMlvAudioSize(video) > 0;
+}
+
 static std::string write_export_audio(mlvObject_t *video,
                                       const export_options_t &options) {
-  if (!options.include_audio || options.audio_temp_dir.empty()) {
+  if (!options.include_audio || options.audio_temp_dir.empty() ||
+      !has_exportable_audio(video)) {
     return {};
   }
 
@@ -428,6 +434,9 @@ static std::string write_export_audio(mlvObject_t *video,
     wavPath.append(".wav");
   }
 
+  // Never treat a stale artifact from an earlier attempt as this export's audio.
+  unlink(wavPath.c_str());
+
   // Normalize cut markers using the same logic as video export
   uint32_t startFrame, endFrame;
   resolve_cut_range(options, getMlvFrames(video), startFrame, endFrame);
@@ -438,6 +447,12 @@ static std::string write_export_audio(mlvObject_t *video,
                            startFrame + 1, endFrame);
   } else {
     writeMlvAudioToWave(video, const_cast<char *>(wavPath.c_str()));
+  }
+
+  struct stat audioStat = {};
+  if (stat(wavPath.c_str(), &audioStat) != 0 || audioStat.st_size <= 0) {
+    unlink(wavPath.c_str());
+    return {};
   }
   return wavPath;
 }
@@ -509,6 +524,9 @@ int startExportJob(mlvObject_t *video, const export_options_t &options,
   export_options_t effectiveOptions = options;
   if (options.include_audio && options.codec != EXPORT_CODEC_AUDIO_ONLY) {
     effectiveOptions.audio_path = write_export_audio(video, options);
+    if (doesMlvHaveAudio(video) && effectiveOptions.audio_path.empty()) {
+      return EXPORT_ERROR_IO;
+    }
   } else if (options.codec == EXPORT_CODEC_AUDIO_ONLY) {
     // Audio-only exports write WAV directly to the provided temp directory
     const std::string audioPath = write_export_audio(video, options);
@@ -619,6 +637,9 @@ int startBatchExportJob(BatchExportContext &batch_ctx, mlvObject_t *video,
   export_options_t effectiveOptions = options;
   if (options.include_audio && options.codec != EXPORT_CODEC_AUDIO_ONLY) {
     effectiveOptions.audio_path = write_export_audio(video, options);
+    if (doesMlvHaveAudio(video) && effectiveOptions.audio_path.empty()) {
+      return EXPORT_ERROR_IO;
+    }
   } else if (options.codec == EXPORT_CODEC_AUDIO_ONLY) {
     const std::string audioPath = write_export_audio(video, options);
     if (audioPath.empty()) {

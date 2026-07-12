@@ -17,6 +17,14 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportHandler(
     JNIEnv *env, jobject thiz, jlong cacheSize, jint cores, jintArray clipFds,
     jobject exportOptions, jobject progressListener, jobject fileProvider);
 
+JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_prepareExport(
+    JNIEnv *env, jobject thiz);
+
+JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_cancelExport(
+    JNIEnv *env, jobject thiz);
+
 #ifdef __cplusplus
 }
 #endif

@@ -10,18 +10,14 @@ import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.documentfile.provider.DocumentFile
-import fm.magiclantern.forum.domain.model.RawCorrectionSettings
-import fm.magiclantern.forum.features.export.model.CdngNaming
 import fm.magiclantern.forum.features.export.model.ExportClipPayload
-import fm.magiclantern.forum.features.export.model.ExportCodec
-import fm.magiclantern.forum.features.export.model.ExportOptions
+import fm.magiclantern.forum.features.export.model.ExportRequest
 import fm.magiclantern.forum.features.export.model.ExportSettings
-import fm.magiclantern.forum.features.export.model.ProgressListener
-import fm.magiclantern.forum.nativeInterface.NativeLib
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,16 +28,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.io.File
-import java.util.Collections
 import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
 
 class ExportService : Service() {
 
     private val binder = LocalBinder()
-
-    private val tempAudioArtifacts = Collections.synchronizedList(mutableListOf<java.io.File>())
 
     private val _progress = MutableStateFlow(0f)
     val progress: StateFlow<Float> = _progress.asStateFlow()
@@ -52,28 +44,18 @@ class ExportService : Service() {
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
-    private var currentExportJob: Job? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    @Volatile
+    private var activeAttempt: ExportAttempt? = null
 
     @Volatile
     private var totalClips: Int = 0
 
     @Volatile
-    private var activeClipIndex: Int = 0
-
-    @Volatile
     private var completedClips: Int = 0
 
-    @Volatile
-    private var cacheSizeMiB: Long = 0L
-
-    @Volatile
-    private var cpuCores: Int = 1
-
-    @Volatile
-    private var exportSettings: ExportSettings = ExportSettings()
-
-    @Volatile
-    private var foregroundServiceTimedOut: Boolean = false
+    private val nativeExportEngine: NativeExportEngine = NativeLibExportEngine
 
     private val notificationManager: NotificationManager by lazy {
         getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -92,339 +74,240 @@ class ExportService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val safeIntent = intent ?: run {
+            _status.value = ExportStatus.Failed("Export request is missing.")
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+
+        activeAttempt?.let { attempt ->
+            attempt.latestStartId = startId
+            Log.w(TAG, "Ignoring export start while another export is still finishing.")
+            return START_REDELIVER_INTENT
+        }
+
+        @Suppress("DEPRECATION")
+        val exportRequest = safeIntent.getParcelableExtra<ExportRequest>(EXTRA_EXPORT_REQUEST)
+        @Suppress("DEPRECATION")
+        val legacyClipPayloads =
+            safeIntent.getParcelableArrayListExtra<ExportClipPayload>(EXTRA_EXPORT_CLIPS)
+        @Suppress("DEPRECATION")
+        val legacyOutputDirectoryUri =
+            safeIntent.getParcelableExtra<Uri>(EXTRA_OUTPUT_DIRECTORY_URI)
+
+        val clipPayloads = exportRequest?.clips ?: legacyClipPayloads.orEmpty()
+        val outputDirectoryUri = exportRequest?.outputDirectory ?: legacyOutputDirectoryUri
+
+        if (clipPayloads.isEmpty() || outputDirectoryUri == null) {
+            _status.value = ExportStatus.Failed("Export request is incomplete.")
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
 
         @Suppress("DEPRECATION")
-        val clipPayloads =
-            safeIntent.getParcelableArrayListExtra<ExportClipPayload>(EXTRA_EXPORT_CLIPS)
-        val outputDirectoryUri = safeIntent.getParcelableExtra<Uri>(EXTRA_OUTPUT_DIRECTORY_URI)
+        val requestSettings = exportRequest?.settings
+            ?: safeIntent.getParcelableExtra(EXTRA_EXPORT_SETTINGS)
+            ?: ExportSettings()
 
-        if (clipPayloads.isNullOrEmpty() || outputDirectoryUri == null) {
-            stopSelfResult(startId)
-            return START_NOT_STICKY
-        }
-
-        exportSettings = safeIntent.getParcelableExtra(EXTRA_EXPORT_SETTINGS) ?: ExportSettings()
-
-        cacheSizeMiB = safeIntent.getLongExtra(EXTRA_CACHE_SIZE_MIB, cacheSizeMiB).coerceAtLeast(0L)
-        cpuCores = safeIntent.getIntExtra(EXTRA_CPU_CORES, cpuCores).coerceAtLeast(1)
+        val requestCacheSizeMiB = (exportRequest?.cacheSizeMiB
+            ?: safeIntent.getLongExtra(EXTRA_CACHE_SIZE_MIB, 0L)).coerceAtLeast(0L)
+        val requestCpuCores = (exportRequest?.cpuCores
+            ?: safeIntent.getIntExtra(EXTRA_CPU_CORES, 1)).coerceAtLeast(1)
 
         totalClips = clipPayloads.size
-        activeClipIndex = 0
         completedClips = 0
-        foregroundServiceTimedOut = false
         _progress.value = 0f
         _status.value =
             ExportStatus.Running(clipIndex = 0, totalClips = totalClips, clipName = null)
 
-        startExportForeground(
-            buildProgressNotification(
-                title = "Exporting clips",
-                text = "Preparing export...",
-                progressPercent = 0,
-                indeterminate = true
+        try {
+            startExportForeground(
+                buildProgressNotification(
+                    title = "Exporting clips",
+                    text = "Preparing export...",
+                    progressPercent = 0,
+                    indeterminate = true
+                )
             )
-        )
+        } catch (throwable: RuntimeException) {
+            val message = "Unable to start export in the foreground: " +
+                throwable.exportFailureMessage(default = throwable::class.java.simpleName)
+            Log.e(TAG, message, throwable)
+            _status.value = ExportStatus.Failed(message)
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
 
-        currentExportJob?.cancel()
-        currentExportJob = serviceScope.launch {
+        val attempt = ExportAttempt(startId)
+        activeAttempt = attempt
+        val job = serviceScope.launch {
+            val executor = createExportExecutor(
+                attempt = attempt,
+                cacheSizeMiB = requestCacheSizeMiB,
+                cpuCores = requestCpuCores,
+                settings = requestSettings
+            )
+            attempt.executor = executor
             try {
-                runExport(clipPayloads, outputDirectoryUri)
-                _progress.value = 1f
-                _status.value = ExportStatus.Completed(totalClips)
-                updateNotificationCompleted()
+                executor.run(clipPayloads, outputDirectoryUri)
+                coroutineContext.ensureActive()
+                attempt.terminalStatus = ExportStatus.Completed(clipPayloads.size)
             } catch (ex: CancellationException) {
-                if (foregroundServiceTimedOut) {
-                    _status.value = ExportStatus.Failed(FOREGROUND_TIMEOUT_MESSAGE)
-                    updateNotificationFailed(FOREGROUND_TIMEOUT_MESSAGE)
+                attempt.terminalStatus = if (attempt.timedOut) {
+                    ExportStatus.Failed(FOREGROUND_TIMEOUT_MESSAGE)
                 } else {
-                    _status.value = ExportStatus.Cancelled(completedClips)
-                    updateNotificationCancelled()
-                    throw ex
+                    ExportStatus.Cancelled(completedClips)
                 }
             } catch (throwable: Throwable) {
-                val message = throwable.message ?: "Export failed"
-                _status.value = ExportStatus.Failed(message)
-                updateNotificationFailed(message)
+                val cancellation = throwable.exportCancellationCause()
+                if (cancellation != null) {
+                    attempt.terminalStatus = if (attempt.timedOut) {
+                        ExportStatus.Failed(FOREGROUND_TIMEOUT_MESSAGE)
+                    } else {
+                        ExportStatus.Cancelled(completedClips)
+                    }
+                } else {
+                    val message = if (attempt.timedOut) {
+                        FOREGROUND_TIMEOUT_MESSAGE
+                    } else {
+                        throwable.exportFailureMessage(default = "Export failed")
+                    }
+                    attempt.terminalStatus = ExportStatus.Failed(message)
+                }
             } finally {
-                stopForegroundCompat(detachNotification = true)
-                stopSelfResult(startId)
+                executor.cleanup()
+                attempt.executor = null
+            }
+        }
+        attempt.job = job
+        job.invokeOnCompletion { cause ->
+            val terminalStatus = attempt.terminalStatus ?: when {
+                attempt.timedOut -> ExportStatus.Failed(FOREGROUND_TIMEOUT_MESSAGE)
+                cause is CancellationException -> ExportStatus.Cancelled(completedClips)
+                cause != null -> ExportStatus.Failed(
+                    cause.exportFailureMessage(default = "Export failed")
+                )
+                else -> ExportStatus.Failed("Export stopped before producing a result.")
+            }
+            mainHandler.post {
+                finishAttempt(attempt, terminalStatus)
             }
         }
 
         return START_REDELIVER_INTENT
     }
 
-    override fun onTimeout(type: Int, startId: Int) {
-        Log.w(TAG, "Foreground service timeout reached: type=$type, startId=$startId")
-        foregroundServiceTimedOut = true
-        _status.value = ExportStatus.Failed(FOREGROUND_TIMEOUT_MESSAGE)
-        NativeLib.cancelExport()
-        currentExportJob?.cancel(CancellationException(FOREGROUND_TIMEOUT_MESSAGE))
-        cleanupTempAudioArtifacts()
-        updateNotificationFailed(FOREGROUND_TIMEOUT_MESSAGE)
-        stopSelfResult(startId)
+    private fun createExportExecutor(
+        attempt: ExportAttempt,
+        cacheSizeMiB: Long,
+        cpuCores: Int,
+        settings: ExportSettings
+    ): ExportExecutor {
+        return ExportExecutor(
+            context = applicationContext,
+            contentResolver = contentResolver,
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            cacheSizeMiB = cacheSizeMiB,
+            cpuCores = cpuCores,
+            exportSettings = settings,
+            nativeExportEngine = nativeExportEngine,
+            callbacks = object : ExportExecutor.Callbacks {
+                override fun onClipStarted(index: Int, totalClips: Int, clipName: String) {
+                    if (activeAttempt !== attempt) return
+                    _status.value = ExportStatus.Running(index, totalClips, clipName)
+                    updateNotificationProgress(index, clipName, clipProgress = 0)
+                }
+
+                override fun onClipProgress(
+                    index: Int,
+                    totalClips: Int,
+                    clipName: String,
+                    clipProgress: Int,
+                    overallProgress: Float
+                ) {
+                    if (activeAttempt !== attempt) return
+                    _progress.value = overallProgress
+                    updateNotificationProgress(index, clipName, clipProgress)
+                }
+
+                override fun onClipCompleted(
+                    index: Int,
+                    totalClips: Int,
+                    clipName: String,
+                    overallProgress: Float
+                ) {
+                    if (activeAttempt !== attempt) return
+                    updateNotificationProgress(index, clipName, clipProgress = 100)
+                    _progress.value = overallProgress
+                    completedClips = index + 1
+                }
+            }
+        )
+    }
+
+    private fun finishAttempt(attempt: ExportAttempt, terminalStatus: ExportStatus) {
+        if (activeAttempt !== attempt) return
+
+        // Terminal means cleanup and foreground teardown are complete, so a retry is safe.
+        stopForegroundCompat(detachNotification = true)
+        activeAttempt = null
+
+        when (terminalStatus) {
+            is ExportStatus.Completed -> {
+                _progress.value = 1f
+                _status.value = terminalStatus
+                updateNotificationCompleted()
+            }
+
+            is ExportStatus.Cancelled -> {
+                _status.value = terminalStatus
+                updateNotificationCancelled()
+            }
+
+            is ExportStatus.Failed -> {
+                _status.value = terminalStatus
+                updateNotificationFailed(terminalStatus.reason)
+            }
+
+            is ExportStatus.Running,
+            ExportStatus.Idle -> {
+                _status.value = ExportStatus.Failed("Export stopped without a terminal result.")
+                updateNotificationFailed("Export stopped without a terminal result.")
+            }
+        }
+
+        stopSelfResult(attempt.latestStartId)
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(TAG, "Foreground service timeout reached: type=$fgsType, startId=$startId")
+        val attempt = activeAttempt
+        if (attempt != null) {
+            attempt.timedOut = true
+            attempt.executor?.cancel() ?: nativeExportEngine.cancel()
+            attempt.job?.cancel(CancellationException(FOREGROUND_TIMEOUT_MESSAGE))
+        }
+        // Android only grants a short grace period after this callback.
+        stopForegroundCompat(detachNotification = false)
+        stopSelf()
     }
 
     fun cancelExport() {
-        NativeLib.cancelExport()
-        currentExportJob?.cancel()
-        cleanupTempAudioArtifacts()
+        val attempt = activeAttempt ?: return
+        attempt.executor?.cancel() ?: nativeExportEngine.cancel()
+        attempt.job?.cancel()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        NativeLib.cancelExport()
-        currentExportJob?.cancel()
+        val attempt = activeAttempt
+        attempt?.executor?.cancel() ?: nativeExportEngine.cancel()
+        attempt?.job?.cancel()
+        activeAttempt = null
         serviceJob.cancel()
         _status.value = ExportStatus.Idle
         _progress.value = 0f
         completedClips = 0
-        cleanupTempAudioArtifacts()
-    }
-
-    private suspend fun runExport(clips: List<ExportClipPayload>, outputDirectoryUri: Uri) {
-        val outputDir = DocumentFile.fromTreeUri(applicationContext, outputDirectoryUri)
-            ?: throw IllegalStateException("Output directory is unavailable")
-
-        if (!outputDir.exists()) {
-            throw IllegalStateException("Output directory does not exist")
-        }
-
-        try {
-            clips.forEachIndexed { index, clip ->
-                coroutineContext.ensureActive()
-                activeClipIndex = index
-                val clipName = clip.displayName.ifBlank {
-                    clip.uris.firstOrNull()?.let { resolveClipName(it) } ?: "Clip ${index + 1}"
-                }
-                _status.value = ExportStatus.Running(index, totalClips, clipName)
-                updateNotificationProgress(index, clipName, clipProgress = 0)
-
-                exportClip(clip, outputDir, index, clipName)
-
-                updateNotificationProgress(index, clipName, clipProgress = 100)
-                val overall = (index + 1f) / totalClips.coerceAtLeast(1)
-                _progress.value = overall
-                completedClips = index + 1
-            }
-        } finally {
-            cleanupTempAudioArtifacts()
-        }
-    }
-
-    private fun exportClip(
-        clip: ExportClipPayload,
-        outputDir: DocumentFile,
-        index: Int,
-        clipName: String
-    ) {
-        val clipFds = openClipDescriptors(clip)
-        if (clipFds.isEmpty()) {
-            throw IllegalStateException("No data to export for $clipName")
-        }
-
-        if (exportSettings.codec == ExportCodec.AUDIO_ONLY) {
-            val tempDir = filesDir.absolutePath
-            val exportOptions = exportSettings.toExportOptions(
-                sourceFileName = clip.primaryFileName,
-                clipUriPath = "",
-                audioTempDir = tempDir,
-                stretchFactorX = clip.stretchFactorX,
-                stretchFactorY = clip.stretchFactorY
-            )
-            try {
-                NativeLib.exportHandler(
-                    memSize = cacheSizeMiB,
-                    cpuCores = cpuCores,
-                    clipFds = clipFds,
-                    options = exportOptions,
-                    progressListener = ProgressListener { progress ->
-                        val bounded = progress.coerceIn(0, 100)
-                        val perClipFraction = bounded / 100f
-                        _progress.value = ((index + perClipFraction) / totalClips.coerceAtLeast(1))
-                        updateNotificationProgress(index, clipName, bounded)
-                    },
-                    fileProvider = null
-                )
-            } catch (throwable: Throwable) {
-                throw IllegalStateException("Failed to export audio for $clipName", throwable)
-            }
-            moveTempAudioToOutput(tempDir, clipName, outputDir)
-            return
-        }
-
-        // Only create a subdirectory for multi-file exports (image sequences)
-        // Single-file video exports go directly in the output directory
-        val needsSubdirectory = exportSettings.codec in listOf(
-            ExportCodec.CINEMA_DNG,
-            ExportCodec.TIFF,
-            ExportCodec.PNG,
-            ExportCodec.JPEG2000
-        )
-        
-        val clipOutputDir = if (needsSubdirectory) {
-            createClipOutputDirectory(outputDir, clipName, exportSettings)
-        } else {
-            outputDir
-        }
-        
-        val clipUriPath = clipOutputDir.uri.toString()
-        val audioTempDir = filesDir.absolutePath
-        val sourceFileName = clip.primaryFileName
-        val baseName = sourceFileName.substringBeforeLast('.', sourceFileName)
-        val exportOptions = exportSettings.toExportOptions(
-            sourceFileName = sourceFileName,
-            clipUriPath = clipUriPath,
-            audioTempDir = audioTempDir,
-            stretchFactorX = clip.stretchFactorX,
-            stretchFactorY = clip.stretchFactorY,
-            clipDebayerMode = clip.debayerMode.nativeId,
-            rawCorrection = clip.rawCorrection,
-            colorGrading = clip.colorGrading,
-            cutIn = clip.cutIn,
-            cutOut = clip.cutOut
-        )
-
-        val provider = ExportFdProvider(contentResolver, clipOutputDir)
-
-        val total = totalClips.coerceAtLeast(1)
-
-        try {
-            NativeLib.exportHandler(
-                memSize = cacheSizeMiB,
-                cpuCores = cpuCores,
-                clipFds = clipFds,
-                options = exportOptions,
-                progressListener = ProgressListener { progress ->
-                    val boundedProgress = progress.coerceIn(0, 100)
-                    val perClipFraction = boundedProgress / 100f
-                    _progress.value = ((index + perClipFraction) / total)
-                    updateNotificationProgress(index, clipName, boundedProgress)
-                },
-                fileProvider = provider
-            )
-        } catch (throwable: Throwable) {
-            throw IllegalStateException("Failed to export $clipName", throwable)
-        }
-
-        handleAudioArtifact(baseName, clipOutputDir)
-    }
-
-    private fun resolveClipName(uri: Uri): String? =
-        DocumentFile.fromSingleUri(applicationContext, uri)?.name
-
-    private fun openClipDescriptors(clip: ExportClipPayload): IntArray {
-        return clip.uris.mapNotNull { uri ->
-            runCatching {
-                val pfd = contentResolver.openFileDescriptor(uri, "r")
-                    ?: throw IllegalStateException("Failed to obtain descriptor for $uri")
-                pfd.use { it.detachFd() }
-            }.getOrElse { throwable ->
-                Log.e(TAG, "Unable to open SAF descriptor for $uri", throwable)
-                null
-            }
-        }.toIntArray()
-    }
-
-    private fun ExportSettings.toExportOptions(
-        sourceFileName: String,
-        clipUriPath: String,
-        audioTempDir: String,
-        stretchFactorX: Float,
-        stretchFactorY: Float,
-        clipDebayerMode: Int = fm.magiclantern.forum.domain.model.DebayerAlgorithm.AMAZE.nativeId,
-        rawCorrection: RawCorrectionSettings = RawCorrectionSettings(),
-        colorGrading: fm.magiclantern.forum.domain.model.ColorGradingSettings = fm.magiclantern.forum.domain.model.ColorGradingSettings(),
-        cutIn: Int = 1,
-        cutOut: Int = 0
-    ): ExportOptions {
-        val codecOption = when (codec) {
-            ExportCodec.CINEMA_DNG -> cdngVariant.nativeId
-            else -> 0 // TODO: populate once additional codecs are supported
-        }
-
-        return ExportOptions(
-            codec = codec,
-            codecOption = codecOption,
-            cdngVariant = cdngVariant,
-            cdngNaming = cdngNaming,
-            includeAudio = includeAudio,
-            enableRawFixes = true,
-            frameRateOverrideEnabled = frameRate.enabled,
-            frameRateValue = frameRate.value,
-            sourceFileName = sourceFileName,
-            clipUriPath = clipUriPath,
-            audioTempDir = audioTempDir,
-            stretchFactorX = stretchFactorX,
-            stretchFactorY = stretchFactorY,
-            proResProfile = proResProfile,
-            proResEncoder = proResEncoder,
-            h264Quality = h264Quality,
-            h264Container = h264Container,
-            h265BitDepth = h265BitDepth,
-            h265Quality = h265Quality,
-            h265Container = h265Container,
-            pngBitDepth = pngBitDepth,
-            dnxhrProfile = dnxhrProfile,
-            dnxhdProfile = dnxhdProfile,
-            vp9Quality = vp9Quality,
-            debayerQuality = debayerQuality,
-            clipDebayerMode = clipDebayerMode,
-            smoothing = smoothing,
-            resize = resize,
-            hdrBlending = hdrBlending,
-            antiAliasing = antiAliasing,
-            rawCorrection = rawCorrection,
-            colorGrading = colorGrading,
-            cutIn = cutIn,
-            cutOut = cutOut
-        )
-    }
-
-    private fun moveTempAudioToOutput(
-        tempDirPath: String,
-        clipName: String,
-        destinationDir: DocumentFile
-    ) {
-        val baseName = clipName.substringBefore('.')
-        val tempDir = File(tempDirPath)
-        val audioFile = tempDir.listFiles()?.firstOrNull { file ->
-            file.isFile && file.name?.endsWith(".wav") == true &&
-                    (file.name?.startsWith(baseName) == true || file.name?.startsWith("${baseName}_") == true)
-        } ?: return
-
-        val targetName = audioFile.name ?: "$baseName.wav"
-        val targetDocument = destinationDir.createFile("audio/wav", targetName) ?: return
-
-        contentResolver.openOutputStream(targetDocument.uri)?.use { output ->
-            audioFile.inputStream().use { input -> input.copyTo(output) }
-        }
-        audioFile.delete()
-    }
-
-    private fun createClipOutputDirectory(
-        parent: DocumentFile,
-        clipName: String,
-        settings: ExportSettings
-    ): DocumentFile {
-        val baseName = clipName.split('.').first()
-        val folderName: String = when (settings.cdngNaming) {
-            CdngNaming.DEFAULT -> baseName
-            CdngNaming.DAVINCI_RESOLVE -> {
-                // Placeholder until we propagate recording date from native metadata.
-                baseName
-            }
-        }
-        parent.findFile(folderName)?.let { existing ->
-            if (existing.isDirectory) {
-                return existing
-            }
-        }
-        return parent.createDirectory(folderName)
-            ?: throw IllegalStateException("Failed to create directory for $folderName")
     }
 
     private fun buildProgressNotification(
@@ -542,11 +425,7 @@ class ExportService : Service() {
     }
 
     private fun exportForegroundServiceType(): Int {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
-        } else {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-        }
+        return exportForegroundServiceTypeForSdk(Build.VERSION.SDK_INT)
     }
 
     private fun createNotificationChannel() {
@@ -571,6 +450,7 @@ class ExportService : Service() {
         const val EXTRA_CACHE_SIZE_MIB = "cache_size_mib"
         const val EXTRA_CPU_CORES = "cpu_cores"
         const val EXTRA_EXPORT_SETTINGS = "export_settings"
+        const val EXTRA_EXPORT_REQUEST = "export_request"
     }
 
     sealed interface ExportStatus {
@@ -583,92 +463,28 @@ class ExportService : Service() {
         data class Cancelled(val completedClips: Int) : ExportStatus
     }
 
-    private fun handleAudioArtifact(
-        baseClipName: String,
-        clipOutputDir: DocumentFile
-    ) {
-        val tempAudio = locateTempAudioFile(baseClipName) ?: return
-        if (!tempAudio.exists()) {
-            return
-        }
-        if (!exportSettings.includeAudio) {
-            deleteQuietly(tempAudio)
-            return
-        }
-        // Move audio to subdirectory for multi-file exports (image sequences)
-        val hasSubdirectory = exportSettings.codec in listOf(
-            ExportCodec.CINEMA_DNG,
-            ExportCodec.TIFF,
-            ExportCodec.PNG,
-            ExportCodec.JPEG2000,
-            ExportCodec.AUDIO_ONLY
-        )
-        if (hasSubdirectory) {
-            val targetName = tempAudio.name ?: "$baseClipName.wav"
-            val moved = moveAudioToTarget(tempAudio, clipOutputDir, targetName)
-            if (!moved) {
-                tempAudioArtifacts += tempAudio
-            }
-        } else {
-            tempAudioArtifacts += tempAudio
-        }
-    }
+    private class ExportAttempt(startId: Int) {
+        @Volatile
+        var latestStartId: Int = startId
 
-    private fun locateTempAudioFile(baseClipName: String): java.io.File? {
-        val searchDirs = listOfNotNull(filesDir, cacheDir)
-        searchDirs.forEach { dir ->
-            dir.listFiles()?.firstOrNull { file ->
-                file.isFile &&
-                        file.name.lowercase().endsWith(".wav") &&
-                        (file.name.startsWith(baseClipName) || file.name.startsWith("${baseClipName}_"))
-            }?.let { return it }
-        }
-        return null
-    }
+        @Volatile
+        var executor: ExportExecutor? = null
 
-    private fun moveAudioToTarget(
-        tempAudio: java.io.File,
-        destinationDir: DocumentFile,
-        targetFileName: String
-    ): Boolean {
-        return try {
-            destinationDir.findFile(targetFileName)?.delete()
-            val targetDocument = destinationDir.createFile("audio/wav", targetFileName)
-                ?: run {
-                    Log.e(TAG, "Failed to create audio DocumentFile for $targetFileName")
-                    return false
-                }
-            contentResolver.openOutputStream(targetDocument.uri, "w")?.use { output ->
-                tempAudio.inputStream().use { input ->
-                    input.copyTo(output)
-                }
-            } ?: run {
-                Log.e(TAG, "Failed to open output stream for ${targetDocument.uri}")
-                return false
-            }
-            deleteQuietly(tempAudio)
-            true
-        } catch (throwable: Throwable) {
-            Log.e(TAG, "Failed to move audio file into SAF directory", throwable)
-            false
-        }
-    }
+        @Volatile
+        var job: Job? = null
 
-    private fun cleanupTempAudioArtifacts() {
-        val snapshot = synchronized(tempAudioArtifacts) {
-            val copy = tempAudioArtifacts.toList()
-            tempAudioArtifacts.clear()
-            copy
-        }
-        snapshot.forEach { file ->
-            deleteQuietly(file)
-        }
-    }
+        @Volatile
+        var terminalStatus: ExportStatus? = null
 
-    private fun deleteQuietly(file: java.io.File) {
-        if (!file.exists()) return
-        if (!file.delete()) {
-            Log.w(TAG, "Unable to delete temporary audio file: ${file.absolutePath}")
-        }
+        @Volatile
+        var timedOut: Boolean = false
+    }
+}
+
+internal fun exportForegroundServiceTypeForSdk(sdkInt: Int): Int {
+    return if (sdkInt >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
+    } else {
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
     }
 }
