@@ -76,10 +76,10 @@ add_library(mcraw STATIC
         ${MLV_SRC_DIR}/mlv/mcraw/cJSON.c
 )
 
-# Temporary A/B backend for the opt-in MCRAW GPU preview. Compile the type-7
-# MotionCam payload decoder a second time under unique symbols so the normal
-# preview/export selection stays on the baseline. The alternate uses the same
-# unpack code and changes only the outer four-row scheduling.
+# Temporary MCRAW-only A/B backend used by the opt-in RAW GPU preview. Compile
+# the type-7 MotionCam payload decoder a second time under unique symbols so the
+# normal preview/export selection stays on the baseline. The alternate uses the
+# same unpack code and changes only the outer four-row scheduling.
 add_library(mcraw_parallel STATIC
         ${MLV_SRC_DIR}/mlv/mcraw/RawData.cpp
 )

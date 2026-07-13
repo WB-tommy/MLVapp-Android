@@ -40,6 +40,9 @@ class PlayerViewModel @Inject constructor(
 
     private val tag = "PlayerViewModel"
 
+    private data class RawGpuFailureKey(val guid: Long, val handle: Long)
+    private val rawGpuFailure = MutableStateFlow<RawGpuFailureKey?>(null)
+
     // Playback state
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -57,11 +60,11 @@ class PlayerViewModel @Inject constructor(
     private val _isDropFrameMode = MutableStateFlow(true)
     val isDropFrameMode: StateFlow<Boolean> = _isDropFrameMode
 
-    /** Opt-in MCRAW-only GPU preview experiment. */
-    val experimentalMcrawGpuPreview: StateFlow<Boolean> =
-        settingsRepository.experimentalMcrawGpuPreview
+    /** Opt-in RAW GPU preview experiment for MCRAW and classic MLV. */
+    val experimentalRawGpuPreview: StateFlow<Boolean> =
+        settingsRepository.experimentalRawGpuPreview
 
-    /** Decoder A/B choice for the opt-in MCRAW GPU preview experiment. */
+    /** MCRAW-only decoder A/B choice inside the opt-in RAW GPU experiment. */
     val experimentalMcrawParallelDecoder: StateFlow<Boolean> =
         settingsRepository.experimentalMcrawParallelDecoder
 
@@ -188,20 +191,38 @@ class PlayerViewModel @Inject constructor(
             }
         }
         viewModelScope.launch(nativeDispatcher) {
-            combine(activeClip, experimentalMcrawGpuPreview) { details, gpuEnabled ->
-                details to gpuEnabled
-            }.collectLatest { (details, gpuEnabled) ->
-                val nativeMcraw = details?.metadata?.isMcraw ?: details?.isMcraw ?: false
-                if (details != null && details.nativeHandle != 0L && nativeMcraw) {
+            combine(
+                activeClip,
+                experimentalRawGpuPreview,
+                rawGpuFailure
+            ) { details, gpuEnabled, failure ->
+                Triple(details, gpuEnabled, failure)
+            }.collectLatest { (details, gpuEnabled, failure) ->
+                if (details != null && details.nativeHandle != 0L) {
+                    val failureMatches = gpuEnabled && failure != null &&
+                        failure.guid == details.guid &&
+                        failure.handle == details.nativeHandle
                     // Background RGB caching performs CPU RAW fixes and demosaic. Keep it
-                    // out of GPU benchmark measurements, then restore it for CPU preview.
-                    val configured = NativeLib.setMcrawGpuPreviewCaching(
+                    // out of GPU benchmark measurements, then restore it for a
+                    // disabled or hard-failed GPU path.
+                    val configured = NativeLib.setRawGpuPreviewCaching(
                         details.nativeHandle,
-                        !gpuEnabled
+                        !gpuEnabled || failureMatches
                     )
                     if (!configured) {
-                        Log.w(tag, "Could not configure MCRAW cache mode")
+                        Log.w(tag, "Could not configure RAW GPU preview cache mode")
+                    } else if (failureMatches) {
+                        // A paused renderer may have missed its immediate CPU
+                        // fallback while the cache transition held render_mutex.
+                        activeClipHolder.notifyProcessingChanged()
                     }
+                }
+                if (!gpuEnabled || details == null ||
+                    (failure != null &&
+                        (failure.guid != details.guid ||
+                            failure.handle != details.nativeHandle))
+                ) {
+                    rawGpuFailure.compareAndSet(failure, null)
                 }
             }
         }
@@ -340,11 +361,21 @@ class PlayerViewModel @Inject constructor(
         _isLoading.value = status
     }
 
-    /** Restore normal CPU caching when a renderer cannot use the experimental path. */
-    fun restoreMcrawCpuCachingAfterGpuFailure(handle: Long) {
-        if (handle == 0L) return
-        viewModelScope.launch(nativeDispatcher) {
-            NativeLib.setMcrawGpuPreviewCaching(handle, true)
+    /** Report a hard renderer/decode failure for the currently active RAW clip. */
+    fun reportRawGpuHardFailure(handle: Long) {
+        val details = activeClip.value ?: return
+        if (handle == 0L || details.nativeHandle != handle) return
+        rawGpuFailure.value = RawGpuFailureKey(details.guid, handle)
+    }
+
+    /** Clear an older context's hard failure once this clip produces a fresh GPU frame. */
+    fun reportRawGpuSuccess(handle: Long) {
+        val failure = rawGpuFailure.value ?: return
+        val details = activeClip.value ?: return
+        if (handle == details.nativeHandle && failure.handle == handle &&
+            failure.guid == details.guid
+        ) {
+            rawGpuFailure.compareAndSet(failure, null)
         }
     }
 

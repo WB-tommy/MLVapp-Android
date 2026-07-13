@@ -16,11 +16,12 @@ import kotlin.math.abs
  * Preview renderer with two deliberately separate paths:
  *
  *  * Standard: native code returns fully processed RGB16 and GLES presents it.
- *  * Experimental MCRAW: native code only decodes Bayer uint16. GLES applies
+ *  * Experimental RAW: native code only decodes Bayer uint16. GLES applies
  *    levels, Bayer-domain WB, bilinear demosaic, the colour matrix, and tone LUT.
  *
  * The experimental path never affects export and falls back to the standard path
- * for non-MCRAW clips or when any required GLES resource cannot be created.
+ * when native decode or any required GLES resource is unavailable. For classic
+ * MLV it deliberately bypasses low-level RAW corrections such as Dual ISO.
  */
 class MlvRenderer(
     private val cpuCores: Int,
@@ -264,10 +265,13 @@ class MlvRenderer(
     private val gpuState = FloatArray(GPU_STATE_FLOATS)
     private var loadedGpuStateVersion = Long.MIN_VALUE
     private var loadedGpuStateHandle = 0L
+    private var gpuStateFailureVersion = Long.MIN_VALUE
+    private var gpuStateFailureHandle = 0L
     private var gpuHardFailure = false
     private var gpuFailureLogged = false
     private var gpuPathLoggedBackend = DECODER_BACKEND_UNSET
-    private var fallbackCacheRestored = false
+    private var processedGpuFrameHandle = 0L
+    private var cacheRestoreRequestedHandle = 0L
     private var gpuStateFailureCount = 0
     private var gpuTimingFrames = 0
     private var gpuTimingDecodeNs = 0L
@@ -341,34 +345,34 @@ class MlvRenderer(
         var rendered = false
         var usedGpu = false
         var gpuDecoderBackend = DECODER_BACKEND_UNSET
-        val wantsGpu = viewModel.experimentalMcrawGpuPreview.value && viewModel.isMcraw.value
+        val wantsGpu = viewModel.experimentalRawGpuPreview.value
         if (!wantsGpu) {
             // The ViewModel restores normal caching when the experiment is
-            // disabled. Allow a later re-enable to restore it again if this
-            // same GLES context has already latched a hard GPU failure.
-            fallbackCacheRestored = false
+            // disabled. Clear the per-handle notification marker so a later
+            // context/clip attempt can report its own hard failure.
+            cacheRestoreRequestedHandle = 0L
         }
 
         if (wantsGpu && !gpuHardFailure) {
             val gpuResult = drawGpuFrame(clipHandle, videoWidth, videoHeight)
             decodeNs += gpuResult.decodeNs
             rendered = gpuResult.rendered
-            usedGpu = rendered
+            usedGpu = rendered && gpuResult.freshFrame
             gpuDecoderBackend = gpuResult.decoderBackend
-        }
-
-        if (wantsGpu && gpuHardFailure && !fallbackCacheRestored) {
-            // A hard GLES failure turns this context into a permanent CPU
-            // fallback. Restore its normal RGB cache instead of silently making
-            // that fallback much slower.
-            fallbackCacheRestored = true
-            viewModel.restoreMcrawCpuCachingAfterGpuFailure(clipHandle)
         }
 
         if (!rendered) {
             val standardResult = drawStandardFrame(clipHandle, videoWidth, videoHeight)
             decodeNs += standardResult.decodeNs
             rendered = standardResult.rendered
+        }
+
+        if (wantsGpu && gpuHardFailure && cacheRestoreRequestedHandle != clipHandle) {
+            // Request restoration only after the same-frame CPU draw. Otherwise
+            // the async cache transition can win render_mutex and make that
+            // immediate fallback miss its frame.
+            cacheRestoreRequestedHandle = clipHandle
+            viewModel.reportRawGpuHardFailure(clipHandle)
         }
 
         if (!rendered) {
@@ -397,6 +401,7 @@ class MlvRenderer(
         bayerBuffer = null
         loadedGpuStateVersion = Long.MIN_VALUE
         loadedGpuStateHandle = 0L
+        processedGpuFrameHandle = 0L
     }
 
     private fun drawStandardFrame(handle: Long, width: Int, height: Int): DrawResult {
@@ -460,13 +465,15 @@ class MlvRenderer(
 
         val buffer = getOrAllocateBayerBuffer(width, height) ?: return DrawResult(false, 0L)
         buffer.position(0)
-        val requestedDecoderBackend = if (viewModel.experimentalMcrawParallelDecoder.value) {
+        val requestedDecoderBackend = if (
+            viewModel.isMcraw.value && viewModel.experimentalMcrawParallelDecoder.value
+        ) {
             DECODER_BACKEND_ROW_PARALLEL
         } else {
             DECODER_BACKEND_CURRENT
         }
         val decodeStart = System.nanoTime()
-        val decoderBackend = NativeLib.fillMcrawBayer16(
+        val decoderBackend = NativeLib.fillRawBayer16(
             handle,
             viewModel.currentFrame.value,
             buffer,
@@ -474,8 +481,15 @@ class MlvRenderer(
             cpuCores
         )
         val decodeNs = System.nanoTime() - decodeStart
-        if (decoderBackend < 0) {
-            return DrawResult(drawProcessedTexture(width, height), decodeNs)
+        if (decoderBackend == RAW_GPU_DECODE_TRANSIENT) {
+            if (processedGpuFrameHandle != handle) return DrawResult(false, decodeNs)
+            val preserved = drawProcessedTexture(width, height)
+            if (!preserved) latchGpuFailure("preserved RAW frame display failed")
+            return DrawResult(preserved, decodeNs)
+        }
+        if (decoderBackend < RAW_GPU_DECODE_TRANSIENT) {
+            latchGpuFailure("native RAW Bayer decode failed ($decoderBackend)")
+            return DrawResult(false, decodeNs)
         }
 
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
@@ -493,7 +507,7 @@ class MlvRenderer(
             GLES30.GL_UNSIGNED_SHORT,
             buffer
         )
-        if (!checkGlError("MCRAW Bayer upload")) {
+        if (!checkGlError("RAW Bayer upload")) {
             latchGpuFailure("Bayer texture upload failed")
             return DrawResult(false, decodeNs, decoderBackend)
         }
@@ -531,22 +545,33 @@ class MlvRenderer(
         )
         drawQuad()
 
-        if (!checkGlError("MCRAW process pass")) {
+        if (!checkGlError("RAW process pass")) {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             latchGpuFailure("Bayer processing pass failed")
             return DrawResult(false, decodeNs, decoderBackend)
         }
 
         val displayed = drawProcessedTexture(width, height)
+        if (!displayed) {
+            latchGpuFailure("processed RAW frame display failed")
+            return DrawResult(false, decodeNs, decoderBackend)
+        }
+        processedGpuFrameHandle = handle
+        viewModel.reportRawGpuSuccess(handle)
         if (displayed && gpuPathLoggedBackend != decoderBackend) {
             gpuPathLoggedBackend = decoderBackend
+            val format = if (viewModel.isMcraw.value) {
+                "MCRAW"
+            } else {
+                "MLV (RAW corrections bypassed)"
+            }
             Log.i(
                 tag,
-                "Experimental MCRAW GPU preview active (${width}x$height, " +
+                "Experimental RAW GPU preview active for $format (${width}x$height, " +
                     "decoder=${decoderBackendName(decoderBackend)})"
             )
         }
-        return DrawResult(displayed, decodeNs, decoderBackend)
+        return DrawResult(displayed, decodeNs, decoderBackend, freshFrame = displayed)
     }
 
     private fun drawProcessedTexture(width: Int, height: Int): Boolean {
@@ -562,23 +587,23 @@ class MlvRenderer(
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, processedTexture)
         GLES30.glUniform1i(displayTextureUniform, 0)
         drawQuad()
-        return checkGlError("MCRAW display pass")
+        return checkGlError("RAW display pass")
     }
 
     private fun refreshGpuStateIfNeeded(handle: Long): Boolean {
         val version = viewModel.processingVersion.value
         if (loadedGpuStateHandle == handle && loadedGpuStateVersion == version) return true
 
+        if (gpuStateFailureHandle != handle || gpuStateFailureVersion != version) {
+            gpuStateFailureHandle = handle
+            gpuStateFailureVersion = version
+            gpuStateFailureCount = 0
+        }
+
         gpuStateBuffer.position(0)
         toneLutBuffer.position(0)
-        if (!NativeLib.fillMcrawGpuPreviewState(handle, gpuStateBuffer, toneLutBuffer)) {
-            gpuStateFailureCount++
-            if (gpuStateFailureCount == 1) {
-                Log.w(tag, "Unable to snapshot MCRAW GPU processing state; will retry")
-            }
-            if (gpuStateFailureCount >= GPU_STATE_FAILURE_LIMIT) {
-                latchGpuFailure("native GPU state remained unavailable")
-            }
+        if (!NativeLib.fillRawGpuPreviewState(handle, gpuStateBuffer, toneLutBuffer)) {
+            recordGpuStateFailure("Unable to snapshot RAW GPU processing state; will retry")
             return false
         }
 
@@ -588,7 +613,7 @@ class MlvRenderer(
             get(gpuState)
         }
         if (!validateGpuState()) {
-            Log.e(tag, "Native MCRAW GPU state contains invalid values")
+            recordGpuStateFailure("Native RAW GPU state contains invalid values; will retry")
             return false
         }
 
@@ -617,6 +642,14 @@ class MlvRenderer(
         loadedGpuStateVersion = version
         gpuStateFailureCount = 0
         return true
+    }
+
+    private fun recordGpuStateFailure(message: String) {
+        gpuStateFailureCount++
+        if (gpuStateFailureCount == 1) Log.w(tag, message)
+        if (gpuStateFailureCount >= GPU_STATE_FAILURE_LIMIT) {
+            latchGpuFailure("native RAW GPU state remained unavailable or invalid")
+        }
     }
 
     private fun validateGpuState(): Boolean {
@@ -679,6 +712,8 @@ class MlvRenderer(
 
     private fun ensureGpuTextures(width: Int, height: Int): Boolean {
         if (gpuTextureWidth == width && gpuTextureHeight == height) return true
+
+        processedGpuFrameHandle = 0L
 
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, rawTexture)
@@ -756,7 +791,7 @@ class MlvRenderer(
             bayerBuffer = try {
                 ByteBuffer.allocateDirect(bytes.toInt()).order(ByteOrder.nativeOrder())
             } catch (oom: OutOfMemoryError) {
-                Log.e(tag, "Unable to allocate MCRAW Bayer staging buffer", oom)
+                Log.e(tag, "Unable to allocate RAW Bayer staging buffer", oom)
                 latchGpuFailure("Bayer staging allocation failed")
                 null
             }
@@ -939,7 +974,7 @@ class MlvRenderer(
         gpuHardFailure = true
         if (!gpuFailureLogged) {
             gpuFailureLogged = true
-            Log.e(tag, "Experimental MCRAW GPU preview disabled for this EGL context: $reason")
+            Log.e(tag, "Experimental RAW GPU preview disabled for this EGL context: $reason")
         }
     }
 
@@ -962,7 +997,7 @@ class MlvRenderer(
             val submissionUs = gpuTimingSubmissionNs / gpuTimingFrames / 1_000L
             Log.i(
                 tag,
-                "MCRAW GPU preview averages: decoder=${decoderBackendName(decoderBackend)}, " +
+                "RAW GPU preview averages: decoder=${decoderBackendName(decoderBackend)}, " +
                     "decode=${decodeUs}us, " +
                     "upload/GL-submit=${submissionUs}us (GPU execution is asynchronous)"
             )
@@ -987,10 +1022,13 @@ class MlvRenderer(
         gpuTextureHeight = 0
         loadedGpuStateVersion = Long.MIN_VALUE
         loadedGpuStateHandle = 0L
+        gpuStateFailureVersion = Long.MIN_VALUE
+        gpuStateFailureHandle = 0L
         gpuHardFailure = false
         gpuFailureLogged = false
         gpuPathLoggedBackend = DECODER_BACKEND_UNSET
-        fallbackCacheRestored = false
+        processedGpuFrameHandle = 0L
+        cacheRestoreRequestedHandle = 0L
         gpuStateFailureCount = 0
         gpuTimingFrames = 0
         gpuTimingDecodeNs = 0L
@@ -1001,13 +1039,15 @@ class MlvRenderer(
     private fun decoderBackendName(backend: Int): String = when (backend) {
         DECODER_BACKEND_CURRENT -> "current"
         DECODER_BACKEND_ROW_PARALLEL -> "MotionCam row-parallel"
+        DECODER_BACKEND_CLASSIC_MLV -> "classic MLV built-in"
         else -> "unknown($backend)"
     }
 
     private data class DrawResult(
         val rendered: Boolean,
         val decodeNs: Long,
-        val decoderBackend: Int = DECODER_BACKEND_UNSET
+        val decoderBackend: Int = DECODER_BACKEND_UNSET,
+        val freshFrame: Boolean = false
     )
 
     private companion object {
@@ -1024,6 +1064,8 @@ class MlvRenderer(
         const val DECODER_BACKEND_UNSET = -1
         const val DECODER_BACKEND_CURRENT = 0
         const val DECODER_BACKEND_ROW_PARALLEL = 1
+        const val DECODER_BACKEND_CLASSIC_MLV = 2
+        const val RAW_GPU_DECODE_TRANSIENT = -1
 
         const val PARAM_BLACK = 0
         const val PARAM_WHITE = 1

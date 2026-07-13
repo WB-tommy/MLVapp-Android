@@ -33,11 +33,11 @@ class SettingsRepository @Inject constructor(
     private val dropFrameFlow = MutableStateFlow(prefs.getBoolean(KEY_DROP_FRAME_MODE, true))
     val dropFrameMode: StateFlow<Boolean> = dropFrameFlow.asStateFlow()
 
-    private val experimentalMcrawGpuPreviewFlow = MutableStateFlow(
-        prefs.getBoolean(KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW, false)
+    private val experimentalRawGpuPreviewFlow = MutableStateFlow(
+        prefs.getBoolean(KEY_EXPERIMENTAL_RAW_GPU_PREVIEW, false)
     )
-    val experimentalMcrawGpuPreview: StateFlow<Boolean> =
-        experimentalMcrawGpuPreviewFlow.asStateFlow()
+    val experimentalRawGpuPreview: StateFlow<Boolean> =
+        experimentalRawGpuPreviewFlow.asStateFlow()
 
     private val experimentalMcrawParallelDecoderFlow = MutableStateFlow(
         prefs.getBoolean(KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER, false)
@@ -61,10 +61,10 @@ class SettingsRepository @Inject constructor(
         }
     }
 
-    suspend fun setExperimentalMcrawGpuPreview(enabled: Boolean) {
+    suspend fun setExperimentalRawGpuPreview(enabled: Boolean) {
         mutex.withLock {
-            prefs.edit().putBoolean(KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW, enabled).apply()
-            experimentalMcrawGpuPreviewFlow.value = enabled
+            prefs.edit().putBoolean(KEY_EXPERIMENTAL_RAW_GPU_PREVIEW, enabled).apply()
+            experimentalRawGpuPreviewFlow.value = enabled
         }
     }
 
@@ -85,7 +85,9 @@ class SettingsRepository @Inject constructor(
     companion object {
         private const val PREFS_NAME = "mlvapp_settings"
         private const val KEY_DROP_FRAME_MODE = "drop_frame_mode"
-        private const val KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW =
+        // Preserve the prototype's original key so installed test builds keep
+        // the user's opt-in choice while the experiment expands to classic MLV.
+        private const val KEY_EXPERIMENTAL_RAW_GPU_PREVIEW =
             "experimental_mcraw_gpu_preview"
         private const val KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER =
             "experimental_mcraw_parallel_decoder"

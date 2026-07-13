@@ -72,7 +72,7 @@ fun SettingsScreen(
 @Composable
 fun SettingsContent(viewModel: SettingsViewModel, modifier: Modifier = Modifier) {
     val isDropFrameMode by viewModel.isDropFrameMode.collectAsState()
-    val experimentalMcrawGpuPreview by viewModel.experimentalMcrawGpuPreview.collectAsState()
+    val experimentalRawGpuPreview by viewModel.experimentalRawGpuPreview.collectAsState()
     val experimentalMcrawParallelDecoder by
         viewModel.experimentalMcrawParallelDecoder.collectAsState()
     val debayerMode by viewModel.debayerMode.collectAsState()
@@ -93,18 +93,19 @@ fun SettingsContent(viewModel: SettingsViewModel, modifier: Modifier = Modifier)
         )
 
         SwitchSettingItem(
-            title = "Experimental MCRAW GPU Playback",
-            summary = "MCRAW only: levels, WB, bilinear demosaic and tone; other formats use standard playback",
-            checked = experimentalMcrawGpuPreview,
-            onCheckedChange = viewModel::setExperimentalMcrawGpuPreview
+            title = "Experimental RAW GPU Playback",
+            summary = "MCRAW + uncompressed/LJ92 MLV: levels, WB, bilinear " +
+                "demosaic and tone; MLV bypasses Dual ISO and other RAW corrections",
+            checked = experimentalRawGpuPreview,
+            onCheckedChange = viewModel::setExperimentalRawGpuPreview
         )
 
         SwitchSettingItem(
             title = "MotionCam Parallel Decoder (Test)",
-            summary = "GPU MCRAW only: four-row-group decode with up to 4 CPU workers",
+            summary = "MCRAW type-7 only: four-row-group decode with up to 4 CPU workers",
             checked = experimentalMcrawParallelDecoder,
             onCheckedChange = viewModel::setExperimentalMcrawParallelDecoder,
-            enabled = experimentalMcrawGpuPreview
+            enabled = experimentalRawGpuPreview
         )
 
         HorizontalDivider(

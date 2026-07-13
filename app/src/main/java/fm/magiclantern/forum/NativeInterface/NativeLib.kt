@@ -38,10 +38,16 @@ object NativeLib {
     ): Boolean
 
     /**
-     * Decodes one MCRAW frame into its native-scale, original-CFA Bayer plane.
+     * Decodes one classic MLV or MCRAW frame into its native-scale,
+     * original-CFA Bayer plane. Classic MLV decode intentionally bypasses
+     * low-level RAW corrections in this experimental path.
+     *
      * [dst] must be a direct buffer with at least width * height * 2 bytes.
+     * Returns -1 for transient lock contention, -2 for an unsupported or hard
+     * decode failure, or the backend used: 0=current MCRAW, 1=row-parallel
+     * MCRAW, 2=classic MLV built-in decode.
      */
-    external fun fillMcrawBayer16(
+    external fun fillRawBayer16(
         handle: Long,
         frameIndex: Int,
         dst: ByteBuffer,
@@ -58,14 +64,14 @@ object NativeLib {
      * = 0/1/2/3), row-major 3x3 color matrix at 6..14, and flags at 15
      * (bit 0 enables the AgX matrix sandwich).
      */
-    external fun fillMcrawGpuPreviewState(
+    external fun fillRawGpuPreviewState(
         handle: Long,
         params: ByteBuffer,
         toneLut: ByteBuffer
     ): Boolean
 
-    /** Enables or disables the CPU RGB frame cache for MCRAW benchmarking. */
-    external fun setMcrawGpuPreviewCaching(
+    /** Enables or disables the CPU RGB frame cache for RAW GPU benchmarking. */
+    external fun setRawGpuPreviewCaching(
         handle: Long,
         enabled: Boolean
     ): Boolean

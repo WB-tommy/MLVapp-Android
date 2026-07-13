@@ -166,18 +166,26 @@ static void frame_index_sort(frame_index_t *frame_index, uint32_t entries)
 
 /* Unpack or decompress original raw data.
  *
- * The legacy CPU debayer path assumes RGGB input, so MCRAW frames with a
- * different CFA are phase-shifted below when normalize_mcraw_cfa is true.
- * The experimental GPU path understands the original CFA and asks us to
- * preserve the decoder output instead. */
+ * The legacy CPU path requests its shared VIDF metadata and assumes RGGB
+ * input, so MCRAW frames with a different CFA are phase-shifted below when
+ * prepare_cpu_raw is true. The experimental GPU path bypasses corrections,
+ * understands the original CFA, and asks us to preserve decoder output. */
 static int get_mlv_raw_frame_uint16(mlvObject_t * video,
                                     uint64_t frameIndex,
                                     uint16_t * unpackedFrame,
-                                    int normalize_mcraw_cfa,
+                                    int prepare_cpu_raw,
                                     int requested_mcraw_backend,
                                     int requested_mcraw_threads,
                                     mcraw_decode_metrics_t * mcraw_metrics)
 {
+    if (video == NULL || unpackedFrame == NULL || !isMlvActive(video) ||
+        frameIndex >= video->frames || video->video_index == NULL ||
+        video->file == NULL || video->main_file_mutex == NULL ||
+        video->filenum <= 0)
+    {
+        return 1;
+    }
+
     int bitdepth = video->RAWI.raw_info.bits_per_pixel;
     int width = video->RAWI.xRes;
     int height = video->RAWI.yRes;
@@ -188,29 +196,57 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
     }
     int pixels_count = width * height;
     size_t pixels_size = (size_t)pixels_count;
-    if (pixels_size > SIZE_MAX / (size_t)bitdepth)
+    if (pixels_size > (SIZE_MAX - 7u) / (size_t)bitdepth)
     {
         return 1;
     }
 
     int chunk = video->video_index[frameIndex].chunk_num;
+    if (chunk < 0 || chunk >= video->filenum || video->file[chunk] == NULL)
+    {
+        return 1;
+    }
     uint32_t frame_size = video->video_index[frameIndex].frame_size;
     uint64_t frame_offset = video->video_index[frameIndex].frame_offset;
     uint64_t frame_header_offset = video->video_index[frameIndex].block_offset;
 
     /* How many bytes is an uncompressed packed RAW frame. */
-    size_t raw_frame_size = (pixels_size * (size_t)bitdepth) / 8;
+    const size_t raw_frame_bits = pixels_size * (size_t)bitdepth;
+    size_t raw_frame_size = (raw_frame_bits + 7u) / 8u;
     const int mcraw_loaded = isMcrawLoaded(video);
+    const int classic_lj92 = video->MLVI.videoClass ==
+        (MLV_VIDEO_CLASS_RAW | MLV_VIDEO_CLASS_FLAG_LJ92);
+    const int classic_supported =
+        video->MLVI.videoClass == MLV_VIDEO_CLASS_RAW ||
+        classic_lj92;
+    if (!mcraw_loaded && !classic_supported)
+    {
+        return 1;
+    }
+    if (!mcraw_loaded &&
+        ((classic_lj92 && (frame_size == 0 || frame_size > INT_MAX)) ||
+         (!classic_lj92 && (size_t)frame_size < raw_frame_size)))
+    {
+        return 1;
+    }
     /* MCRAW payload size is stored in its item header, so allocate it only
      * after validating that header. Other formats use the packed RAW size. */
     uint8_t * raw_frame = NULL;
     if (!mcraw_loaded)
     {
-        if (raw_frame_size > SIZE_MAX - 4)
+        size_t allocation_size = raw_frame_size;
+        if (classic_lj92 && (size_t)frame_size > allocation_size)
+        {
+            allocation_size = (size_t)frame_size;
+        }
+        const size_t classic_slack = 1024u * 1024u;
+        if (allocation_size == 0 || allocation_size > SIZE_MAX - 4u ||
+            pixels_size > (SIZE_MAX - classic_slack) / 4u ||
+            allocation_size > pixels_size * 4u + classic_slack)
         {
             return 1;
         }
-        raw_frame = (uint8_t *)malloc(raw_frame_size + 4); // safety padding
+        raw_frame = (uint8_t *)calloc(allocation_size + 4u, 1u);
         if (raw_frame == NULL)
         {
             return 1;
@@ -343,7 +379,7 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
             return 1;
         }
 
-        if (normalize_mcraw_cfa &&
+        if (prepare_cpu_raw &&
             video->RAWI.raw_info.cfa_pattern == 0x01000201)   // gbrg
         {
             // gb  ->  rg
@@ -355,7 +391,7 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
             // copy row n-2 to row n
             memcpy(&unpackedFrame[width * (height - 1)], &unpackedFrame[width * (height - 3)], width * 2);
         }
-        else if (normalize_mcraw_cfa &&
+        else if (prepare_cpu_raw &&
                  video->RAWI.raw_info.cfa_pattern == 0x00010102)   // bggr
         {
             // bg  ->  rg
@@ -376,7 +412,7 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
                 unpackedFrame[pos] = unpackedFrame[pos - 2];
             }
         }
-        else if (normalize_mcraw_cfa &&
+        else if (prepare_cpu_raw &&
                  video->RAWI.raw_info.cfa_pattern == 0x01020001)   // grbg
         {
             // gr  ->  rg
@@ -397,7 +433,14 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
     }
     else
     {
-        if (fread(&video->VIDF, sizeof(mlv_vidf_hdr_t), 1, file) != 1)
+        /* The GPU path bypasses llrawproc and therefore does not need the
+         * shared VIDF pan metadata. Keep its header local so an in-flight
+         * cache worker on another chunk cannot race this decode. */
+        mlv_vidf_hdr_t local_vidf = {0};
+        mlv_vidf_hdr_t * vidf = prepare_cpu_raw
+            ? &video->VIDF
+            : &local_vidf;
+        if (fread(vidf, sizeof(mlv_vidf_hdr_t), 1, file) != 1)
         {
             DEBUG( printf("Frame header read error\n"); )
             free(raw_frame);
@@ -419,21 +462,58 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
 
             pthread_mutex_unlock(video->main_file_mutex + chunk);
 
+            const int expected_width = width;
+            const int expected_height = height;
+            const int expected_bitdepth = bitdepth;
+            int decoded_width = width;
+            int decoded_height = height;
+            int decoded_bitdepth = bitdepth;
             int components = 1;
             lj92 decoder_object;
-            int ret = lj92_open(&decoder_object, raw_frame, frame_size, &width, &height, &bitdepth, &components);
+            int ret = lj92_open(&decoder_object, raw_frame, frame_size,
+                                &decoded_width, &decoded_height,
+                                &decoded_bitdepth, &components);
             if(ret != LJ92_ERROR_NONE)
             {
                 DEBUG( printf("LJ92 decoder: Failed with error code (%d)\n", ret); )
                 free(raw_frame);
                 return 1;
             }
+            /* Lossless Bayer containers reshape RAWI while preserving linear
+             * sample order: MLV-App uses one component at 2x width / 1/2
+             * height, while camera-recorded JPCORE may use two components and
+             * different JPEG geometry. Validate the complete sample count
+             * rather than requiring JPEG geometry to equal RAWI. */
+            const int decoded_dimensions_valid =
+                decoded_width > 0 && decoded_height > 0 &&
+                decoded_width <= INT_MAX / decoded_height;
+            const int decoded_pixels = decoded_dimensions_valid
+                ? decoded_width * decoded_height
+                : 0;
+            const int decoded_components_valid =
+                (components == 1 || components == 2) &&
+                decoded_pixels <= INT_MAX / components;
+            const int decoded_samples = decoded_components_valid
+                ? decoded_pixels * components
+                : 0;
+            if (decoded_samples != expected_width * expected_height ||
+                decoded_bitdepth != expected_bitdepth)
+            {
+                DEBUG( printf("LJ92 decoder: Unexpected frame format %dx%d %dbit %d component(s)\n",
+                              decoded_width, decoded_height,
+                              decoded_bitdepth, components); )
+                lj92_close(decoder_object);
+                free(raw_frame);
+                return 1;
+            }
             else
             {
-                ret = lj92_decode(decoder_object, unpackedFrame, width * height * components, 0, NULL, 0);
+                ret = lj92_decode(decoder_object, unpackedFrame,
+                                  decoded_samples, 0, NULL, 0);
                 if(ret != LJ92_ERROR_NONE)
                 {
                     DEBUG( printf("LJ92 decoder: Failed with error code (%d)\n", ret); )
+                    lj92_close(decoder_object);
                     free(raw_frame);
                     return 1;
                 }
@@ -477,16 +557,27 @@ int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * un
                                     MCRAW_DECODER_BASELINE, 1, NULL);
 }
 
-int getMcrawRawFrameUint16(mlvObject_t * video, uint64_t frameIndex,
-                           uint16_t * unpackedFrame, int requested_backend,
-                           int decoder_threads, mcraw_decode_metrics_t * metrics)
+int getRawGpuFrameUint16(mlvObject_t * video, uint64_t frameIndex,
+                         uint16_t * unpackedFrame, int requested_backend,
+                         int decoder_threads, mcraw_decode_metrics_t * metrics)
 {
+    const int mcraw_loaded = video != NULL &&
+        (video->MLVI.videoClass & MLV_VIDEO_CLASS_FLAG_MCRAW) != 0;
     if (video == NULL || unpackedFrame == NULL ||
-        !(video->MLVI.videoClass & MLV_VIDEO_CLASS_FLAG_MCRAW) ||
         frameIndex >= video->frames || video->video_index == NULL ||
-        video->file == NULL || video->main_file_mutex == NULL)
+        video->file == NULL || video->main_file_mutex == NULL ||
+        (!mcraw_loaded &&
+         video->MLVI.videoClass != MLV_VIDEO_CLASS_RAW &&
+         video->MLVI.videoClass !=
+             (MLV_VIDEO_CLASS_RAW | MLV_VIDEO_CLASS_FLAG_LJ92)))
     {
         return 1;
+    }
+
+    if (!mcraw_loaded)
+    {
+        requested_backend = MCRAW_DECODER_BASELINE;
+        decoder_threads = 1;
     }
 
     return get_mlv_raw_frame_uint16(video, frameIndex, unpackedFrame, 0,
@@ -1757,6 +1848,7 @@ int openMcrawClip(mlvObject_t * video, int fd, char * mcrawPath, int open_mode, 
     FILE **files = malloc(sizeof(FILE*));
     files[0] = mr_get_file_handle(ctx);
     video->file = files;
+    video->filenum = 1;
 
 
     /* Mutexes for every file */

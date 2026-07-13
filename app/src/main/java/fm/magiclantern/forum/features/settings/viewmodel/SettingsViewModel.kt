@@ -13,8 +13,8 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     val isDropFrameMode: StateFlow<Boolean> = settingsRepository.dropFrameMode
-    val experimentalMcrawGpuPreview: StateFlow<Boolean> =
-        settingsRepository.experimentalMcrawGpuPreview
+    val experimentalRawGpuPreview: StateFlow<Boolean> =
+        settingsRepository.experimentalRawGpuPreview
     val experimentalMcrawParallelDecoder: StateFlow<Boolean> =
         settingsRepository.experimentalMcrawParallelDecoder
     val debayerMode: StateFlow<DebayerMode> = settingsRepository.debayerMode
@@ -25,9 +25,9 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun setExperimentalMcrawGpuPreview(enabled: Boolean) {
+    fun setExperimentalRawGpuPreview(enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setExperimentalMcrawGpuPreview(enabled)
+            settingsRepository.setExperimentalRawGpuPreview(enabled)
         }
     }
 

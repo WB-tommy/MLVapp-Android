@@ -67,7 +67,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
         jint height);
 
 JNIEXPORT jint JNICALL
-Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawBayer16(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawBayer16(
         JNIEnv *env, jclass /*clazz*/,
         jlong handle,
         jint frameIndex,
@@ -76,14 +76,14 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawBayer16(
         jint decoderThreads);
 
 JNIEXPORT jboolean JNICALL
-Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawGpuPreviewState(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawGpuPreviewState(
         JNIEnv *env, jclass /*clazz*/,
         jlong handle,
         jobject paramsByteBuffer,
         jobject toneLutByteBuffer);
 
 JNIEXPORT jboolean JNICALL
-Java_fm_magiclantern_forum_nativeInterface_NativeLib_setMcrawGpuPreviewCaching(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setRawGpuPreviewCaching(
         JNIEnv *env, jclass /*clazz*/,
         jlong handle,
         jboolean enabled);

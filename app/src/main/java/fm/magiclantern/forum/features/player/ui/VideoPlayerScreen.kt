@@ -37,7 +37,7 @@ fun VideoPlayerScreen(
     val clipHandle by viewModel.clipHandle.collectAsState()
     val currentFrame by viewModel.currentFrame.collectAsState()
     val processingVersion by viewModel.processingVersion.collectAsState()
-    val experimentalMcrawGpuPreview by viewModel.experimentalMcrawGpuPreview.collectAsState()
+    val experimentalRawGpuPreview by viewModel.experimentalRawGpuPreview.collectAsState()
     val experimentalMcrawParallelDecoder by viewModel.experimentalMcrawParallelDecoder.collectAsState()
     
     // Debounce for fullscreen navigation to prevent crashes from rapid toggling
@@ -66,7 +66,7 @@ fun VideoPlayerScreen(
                         // Read both to trigger recomposition on either change
                         currentFrame.let { _ -> }
                         processingVersion.let { _ -> }
-                        experimentalMcrawGpuPreview.let { _ -> }
+                        experimentalRawGpuPreview.let { _ -> }
                         experimentalMcrawParallelDecoder.let { _ -> }
                         glSurfaceView.requestRender()
                     },

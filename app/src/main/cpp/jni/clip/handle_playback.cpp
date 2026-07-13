@@ -20,16 +20,20 @@ constexpr size_t kGpuPreviewToneLutEntries = 65536;
 constexpr size_t kGpuPreviewToneLutBytes =
     kGpuPreviewToneLutEntries * sizeof(uint16_t);
 constexpr uint64_t kMcrawDecoderBenchmarkWindow = 120;
+constexpr jint kRawGpuDecodeTransient = -1;
+constexpr jint kRawGpuDecodeHardFailure = -2;
+constexpr jint kRawGpuBackendClassicMlv = 2;
 
-enum McrawCfa : int {
+enum RawCfa : int {
   kCfaRggb = 0,
   kCfaGbrg = 1,
   kCfaBggr = 2,
   kCfaGrbg = 3,
 };
 
-int mcrawCfaToGpuEnum(uint32_t cfaPattern) {
+int rawCfaToGpuEnum(uint32_t cfaPattern) {
   switch (cfaPattern) {
+  case 0u: // Legacy MLV files may omit the canonical RGGB value.
   case 0x02010100u:
     return kCfaRggb;
   case 0x01000201u:
@@ -43,9 +47,17 @@ int mcrawCfaToGpuEnum(uint32_t cfaPattern) {
   }
 }
 
-bool isUsableMcrawClip(const mlvObject_t *clip) {
-  return clip != nullptr && isMlvActive(clip) &&
-         (clip->MLVI.videoClass & MLV_VIDEO_CLASS_FLAG_MCRAW) != 0 &&
+bool isUsableRawClip(const mlvObject_t *clip) {
+  if (clip == nullptr || !isMlvActive(clip)) {
+    return false;
+  }
+  const bool isMcraw =
+      (clip->MLVI.videoClass & MLV_VIDEO_CLASS_FLAG_MCRAW) != 0;
+  const bool isClassicRaw =
+      clip->MLVI.videoClass == MLV_VIDEO_CLASS_RAW ||
+      clip->MLVI.videoClass ==
+          (MLV_VIDEO_CLASS_RAW | MLV_VIDEO_CLASS_FLAG_LJ92);
+  return (isMcraw || isClassicRaw) && clip->filenum > 0 &&
          clip->frames > 0 && clip->video_index != nullptr &&
          clip->file != nullptr && clip->main_file_mutex != nullptr;
 }
@@ -181,38 +193,38 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawBayer16(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawBayer16(
     JNIEnv *env, jclass /*clazz*/, jlong handle, jint frameIndex,
     jobject dstByteBuffer, jint decoderBackend, jint decoderThreads) {
   if (handle == 0 || dstByteBuffer == nullptr || frameIndex < 0 ||
       (decoderBackend != MCRAW_DECODER_BASELINE &&
        decoderBackend != MCRAW_DECODER_ROW_PARALLEL) ||
       decoderThreads <= 0) {
-    return -1;
+    return kRawGpuDecodeHardFailure;
   }
 
   auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
   std::unique_lock<std::mutex> lock(wrapper->render_mutex, std::try_to_lock);
   if (!lock.owns_lock()) {
-    return -1;
+    return kRawGpuDecodeTransient;
   }
 
   mlvObject_t *nativeClip = wrapper->mlv_object;
-  if (!isUsableMcrawClip(nativeClip) ||
+  if (!isUsableRawClip(nativeClip) ||
       static_cast<uint32_t>(frameIndex) >= getMlvFrames(nativeClip)) {
-    return -1;
+    return kRawGpuDecodeHardFailure;
   }
 
   const size_t width = static_cast<size_t>(getMlvWidth(nativeClip));
   const size_t height = static_cast<size_t>(getMlvHeight(nativeClip));
   if (width == 0 || height == 0 ||
       width > std::numeric_limits<size_t>::max() / height) {
-    return -1;
+    return kRawGpuDecodeHardFailure;
   }
 
   const size_t pixels = width * height;
   if (pixels > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) {
-    return -1;
+    return kRawGpuDecodeHardFailure;
   }
   const size_t needed = pixels * sizeof(uint16_t);
 
@@ -221,22 +233,25 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawBayer16(
       reinterpret_cast<uint16_t *>(env->GetDirectBufferAddress(dstByteBuffer));
   if (dst == nullptr || capacity < 0 ||
       static_cast<uint64_t>(capacity) < static_cast<uint64_t>(needed)) {
-    return -1;
+    return kRawGpuDecodeHardFailure;
   }
 
+  const bool isMcraw =
+      (nativeClip->MLVI.videoClass & MLV_VIDEO_CLASS_FLAG_MCRAW) != 0;
+
   const int effectiveDecoderBackend =
-      decoderBackend == MCRAW_DECODER_ROW_PARALLEL &&
+      isMcraw && decoderBackend == MCRAW_DECODER_ROW_PARALLEL &&
               wrapper->mcraw_parallel_validation_state < 0
           ? MCRAW_DECODER_BASELINE
-          : decoderBackend;
+          : (isMcraw ? decoderBackend : MCRAW_DECODER_BASELINE);
   const int effectiveDecoderThreads =
-      decoderBackend == MCRAW_DECODER_ROW_PARALLEL
+      isMcraw && decoderBackend == MCRAW_DECODER_ROW_PARALLEL
           ? std::min<int>(decoderThreads, MCRAW_PARALLEL_MAX_THREADS)
           : 1;
 
   mcraw_decode_metrics_t metrics = {};
   const auto totalStart = std::chrono::steady_clock::now();
-  const int result = getMcrawRawFrameUint16(
+  const int result = getRawGpuFrameUint16(
       nativeClip, static_cast<uint64_t>(frameIndex), dst,
       effectiveDecoderBackend, effectiveDecoderThreads, &metrics);
   const uint64_t totalNs = static_cast<uint64_t>(
@@ -244,7 +259,17 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawBayer16(
           std::chrono::steady_clock::now() - totalStart)
           .count());
   if (result != 0) {
-    return -1;
+    if (!isMcraw) {
+      __android_log_print(
+          ANDROID_LOG_ERROR, "RawGpuDecode",
+          "Classic MLV decode failed: frame=%d, class=0x%x, payload=%u, RAWI=%zux%zu",
+          frameIndex, nativeClip->MLVI.videoClass,
+          nativeClip->video_index[frameIndex].frame_size, width, height);
+    }
+    return kRawGpuDecodeHardFailure;
+  }
+  if (!isMcraw) {
+    return kRawGpuBackendClassicMlv;
   }
   if (effectiveDecoderBackend != decoderBackend) {
     metrics.requested_backend = decoderBackend;
@@ -276,17 +301,18 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawBayer16(
         new (std::nothrow) uint16_t[pixels]);
     if (!baseline) {
       mcraw_decode_metrics_t baselineMetrics = {};
-      const int baselineResult = getMcrawRawFrameUint16(
+      const int baselineResult = getRawGpuFrameUint16(
           nativeClip, static_cast<uint64_t>(frameIndex), dst,
           MCRAW_DECODER_BASELINE, 1, &baselineMetrics);
       wrapper->mcraw_parallel_validation_state = -1;
       __android_log_print(
           ANDROID_LOG_ERROR, "MCRAWDecoder",
           "Could not allocate parity buffer; alternate decoder disabled");
-      return baselineResult == 0 ? MCRAW_DECODER_BASELINE : -1;
+      return baselineResult == 0 ? MCRAW_DECODER_BASELINE
+                                 : kRawGpuDecodeHardFailure;
     } else {
       mcraw_decode_metrics_t baselineMetrics = {};
-      const int baselineResult = getMcrawRawFrameUint16(
+      const int baselineResult = getRawGpuFrameUint16(
           nativeClip, static_cast<uint64_t>(frameIndex), baseline.get(),
           MCRAW_DECODER_BASELINE, 1, &baselineMetrics);
       if (baselineResult != 0) {
@@ -294,7 +320,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawBayer16(
         __android_log_print(
             ANDROID_LOG_ERROR, "MCRAWDecoder",
             "Could not validate alternate decoder; disabled for clip");
-        return -1;
+        return kRawGpuDecodeHardFailure;
       } else {
         size_t mismatch = 0;
         while (mismatch < pixels && dst[mismatch] == baseline[mismatch]) {
@@ -327,7 +353,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawBayer16(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawGpuPreviewState(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawGpuPreviewState(
     JNIEnv *env, jclass /*clazz*/, jlong handle, jobject paramsByteBuffer,
     jobject toneLutByteBuffer) {
   if (handle == 0 || paramsByteBuffer == nullptr ||
@@ -342,7 +368,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawGpuPreviewState(
   std::lock_guard<std::mutex> lock(wrapper->render_mutex);
 
   mlvObject_t *nativeClip = wrapper->mlv_object;
-  if (!isUsableMcrawClip(nativeClip) || nativeClip->processing == nullptr) {
+  if (!isUsableRawClip(nativeClip) || nativeClip->processing == nullptr) {
     return JNI_FALSE;
   }
 
@@ -376,7 +402,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawGpuPreviewState(
   params[2] = static_cast<float>(processing->final_matrix[0]);
   params[3] = static_cast<float>(processing->final_matrix[4]);
   params[4] = static_cast<float>(processing->final_matrix[8]);
-  const int gpuCfa = mcrawCfaToGpuEnum(nativeClip->RAWI.raw_info.cfa_pattern);
+  const int gpuCfa = rawCfaToGpuEnum(nativeClip->RAWI.raw_info.cfa_pattern);
   if (gpuCfa < 0) {
     pthread_mutex_unlock(&nativeClip->processing_mutex);
     return JNI_FALSE;
@@ -403,7 +429,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillMcrawGpuPreviewState(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_fm_magiclantern_forum_nativeInterface_NativeLib_setMcrawGpuPreviewCaching(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setRawGpuPreviewCaching(
     JNIEnv * /*env*/, jclass /*clazz*/, jlong handle, jboolean enabled) {
   if (handle == 0) {
     return JNI_FALSE;
@@ -416,7 +442,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_setMcrawGpuPreviewCaching(
   std::lock_guard<std::mutex> lock(wrapper->render_mutex);
 
   mlvObject_t *nativeClip = wrapper->mlv_object;
-  if (!isUsableMcrawClip(nativeClip)) {
+  if (!isUsableRawClip(nativeClip)) {
     return JNI_FALSE;
   }
 

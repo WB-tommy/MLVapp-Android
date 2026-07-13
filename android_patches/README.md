@@ -26,7 +26,7 @@ bash android_patches/apply_all.sh
 | `03_save_dng_fd.patch` | `dng.c`, `dng.h` | Adds `saveDngFrameFd(int fd, ...)` — saves a DNG frame to a pre-opened file descriptor. Required for Android scoped storage during DNG export. |
 | `04_cmake_fixes.patch` | `librtprocess/src/CMakeLists.txt` | Restores `librtprocesswrapper.cpp` to the rtprocess source list and `librtprocesswrapper.h` to `PUBLIC_HEADER`. Upstream drops these Android-specific wrapper files on every sync. |
 | `05_header_fixes.patch` | `image_profile.h`, `processing.c` | Adds missing `#include <stdint.h>` to `image_profile.h` (fixes `uint8_t` unknown type on Android NDK), and adds `#include <math.h>` + macros to `processing.c`. |
-| `06_mcraw_gpu_decode.patch` | `video_mlv.c/h`, `mcraw/RawData.cpp`, `mcraw/mcraw.h` | Preserves the original-CFA Bayer entry point plus an isolated four-row-group OpenMP decoder using the original unpack code for the experimental GLES A/B test, while leaving the normal CPU/export decoder selected by default. |
+| `06_raw_gpu_decode.patch` | `video_mlv.c/h`, `mcraw/RawData.cpp`, `mcraw/mcraw.h` | Adds a native-scale original-CFA Bayer entry point for classic uncompressed/LJ92 MLV and MCRAW. Classic MLV deliberately bypasses low-level RAW corrections for this GLES prototype; the isolated four-row-group OpenMP A/B decoder remains MCRAW type-7 only. Normal CPU/export decoding is unchanged. |
 
 ---
 

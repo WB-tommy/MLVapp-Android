@@ -23,12 +23,12 @@ class SettingsRepositoryTest {
     fun removeExperimentalSetting() {
         context = InstrumentationRegistry.getInstrumentation().targetContext
         val preferences = settingsPreferences()
-        hadOriginalGpuValue = preferences.contains(KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW)
-        originalGpuValue = preferences.getBoolean(KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW, false)
+        hadOriginalGpuValue = preferences.contains(KEY_EXPERIMENTAL_RAW_GPU_PREVIEW)
+        originalGpuValue = preferences.getBoolean(KEY_EXPERIMENTAL_RAW_GPU_PREVIEW, false)
         hadOriginalParallelValue = preferences.contains(KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER)
         originalParallelValue = preferences.getBoolean(KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER, false)
         preferences.edit()
-            .remove(KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW)
+            .remove(KEY_EXPERIMENTAL_RAW_GPU_PREVIEW)
             .remove(KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER)
             .commit()
     }
@@ -37,9 +37,9 @@ class SettingsRepositoryTest {
     fun restoreExperimentalSetting() {
         settingsPreferences().edit().apply {
             if (hadOriginalGpuValue) {
-                putBoolean(KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW, originalGpuValue)
+                putBoolean(KEY_EXPERIMENTAL_RAW_GPU_PREVIEW, originalGpuValue)
             } else {
-                remove(KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW)
+                remove(KEY_EXPERIMENTAL_RAW_GPU_PREVIEW)
             }
             if (hadOriginalParallelValue) {
                 putBoolean(KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER, originalParallelValue)
@@ -50,15 +50,15 @@ class SettingsRepositoryTest {
     }
 
     @Test
-    fun experimentalMcrawGpuPreviewDefaultsOffAndPersistsChanges() = runBlocking {
+    fun experimentalRawGpuPreviewDefaultsOffAndPersistsChanges() = runBlocking {
         val repository = SettingsRepository(context)
-        assertFalse(repository.experimentalMcrawGpuPreview.value)
+        assertFalse(repository.experimentalRawGpuPreview.value)
 
-        repository.setExperimentalMcrawGpuPreview(true)
-        assertTrue(repository.experimentalMcrawGpuPreview.value)
+        repository.setExperimentalRawGpuPreview(true)
+        assertTrue(repository.experimentalRawGpuPreview.value)
 
         val restoredRepository = SettingsRepository(context)
-        assertTrue(restoredRepository.experimentalMcrawGpuPreview.value)
+        assertTrue(restoredRepository.experimentalRawGpuPreview.value)
     }
 
     @Test
@@ -66,15 +66,15 @@ class SettingsRepositoryTest {
         val repository = SettingsRepository(context)
         assertFalse(repository.experimentalMcrawParallelDecoder.value)
 
-        repository.setExperimentalMcrawGpuPreview(true)
+        repository.setExperimentalRawGpuPreview(true)
         assertFalse(repository.experimentalMcrawParallelDecoder.value)
 
         repository.setExperimentalMcrawParallelDecoder(true)
-        repository.setExperimentalMcrawGpuPreview(false)
+        repository.setExperimentalRawGpuPreview(false)
 
         val restoredRepository = SettingsRepository(context)
         assertTrue(restoredRepository.experimentalMcrawParallelDecoder.value)
-        assertFalse(restoredRepository.experimentalMcrawGpuPreview.value)
+        assertFalse(restoredRepository.experimentalRawGpuPreview.value)
     }
 
     private fun settingsPreferences() =
@@ -82,7 +82,7 @@ class SettingsRepositoryTest {
 
     private companion object {
         const val PREFS_NAME = "mlvapp_settings"
-        const val KEY_EXPERIMENTAL_MCRAW_GPU_PREVIEW = "experimental_mcraw_gpu_preview"
+        const val KEY_EXPERIMENTAL_RAW_GPU_PREVIEW = "experimental_mcraw_gpu_preview"
         const val KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER =
             "experimental_mcraw_parallel_decoder"
     }
