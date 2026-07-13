@@ -210,7 +210,9 @@ private fun MobileLayout(
         }
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding)) {
-            VideoPlayerScreen(navController, 16f, playerViewModel, cpuCores)
+            VideoPlayerScreen(
+                navController, 16f, playerViewModel, cpuCores, gradingViewModel
+            )
             NavigationBar(
                 Modifier
                     .fillMaxWidth()
@@ -292,7 +294,9 @@ private fun TabletLayout(
         ) {
             // Left Panel (Player and File List)
             Column(modifier = Modifier.weight(2f)) {
-                VideoPlayerScreen(navController, 21f, playerViewModel, cpuCores)
+                VideoPlayerScreen(
+                    navController, 21f, playerViewModel, cpuCores, gradingViewModel
+                )
                 NavigationBar(
                     Modifier
                         .fillMaxWidth()

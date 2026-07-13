@@ -123,12 +123,78 @@ object RawCorrectionNative {
      */
     external fun setWhiteBalanceTint(mlvObjectPtr: Long, tint: Float)
 
+    external fun setWhiteBalance(mlvObjectPtr: Long, kelvin: Int, tint: Int)
+
+    /** Finds and returns [temperatureKelvin, tint] for the sampled source area. */
+    external fun pickWhiteBalance(
+        mlvObjectPtr: Long,
+        frameIndex: Int,
+        x: Int,
+        y: Int,
+        mode: Int
+    ): IntArray?
+
     /**
      * Set exposure stops
      * @param mlvObjectPtr Native pointer to MLV object
      * @param exposure Exposure in stops
      */
     external fun setExposureStops(mlvObjectPtr: Long, exposure: Float)
+
+    /** Apply the complete desktop Processing-panel state in one native update. */
+    external fun applyProcessingSettings(
+        mlvObjectPtr: Long,
+        exposure: Float,
+        contrast: Int,
+        pivot: Int,
+        temperature: Int,
+        tint: Int,
+        clarity: Int,
+        vibrance: Int,
+        saturation: Int,
+        darkStrength: Int,
+        darkRange: Int,
+        lightStrength: Int,
+        lightRange: Int,
+        lightening: Int,
+        shadows: Int,
+        highlights: Int,
+        highlightReconstruction: Boolean,
+        allowCreativeAdjustments: Boolean,
+        profileIndex: Int,
+        tonemap: Int,
+        transferFunction: String,
+        gamut: Int,
+        camMatrixUsed: Int,
+        exrMode: Boolean,
+        agx: Boolean
+    )
+
+    external fun setContrast(mlvObjectPtr: Long, contrast: Int)
+
+    external fun setPivot(mlvObjectPtr: Long, pivot: Int)
+
+    external fun setClarity(mlvObjectPtr: Long, clarity: Int)
+
+    external fun setVibrance(mlvObjectPtr: Long, vibrance: Int)
+
+    external fun setSaturation(mlvObjectPtr: Long, saturation: Int)
+
+    external fun setDarkStrength(mlvObjectPtr: Long, strength: Int)
+
+    external fun setDarkRange(mlvObjectPtr: Long, range: Int)
+
+    external fun setLightStrength(mlvObjectPtr: Long, strength: Int)
+
+    external fun setLightRange(mlvObjectPtr: Long, range: Int)
+
+    external fun setLightening(mlvObjectPtr: Long, lightening: Int)
+
+    external fun setShadows(mlvObjectPtr: Long, shadows: Int)
+
+    external fun setHighlights(mlvObjectPtr: Long, highlights: Int)
+
+    external fun setHighlightReconstruction(mlvObjectPtr: Long, enabled: Boolean)
 
     /**
      * Set Tonemapping Function

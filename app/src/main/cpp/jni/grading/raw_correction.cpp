@@ -1,6 +1,9 @@
 #include "../mlv_jni_wrapper.h"
 #include "../utils.h"
+#include "desktop_processing_mapping.h"
+#include "../../src/mlv/video_mlv.h"
 #include <jni.h>
+#include <mutex>
 
 extern "C" {
 #include "../../src/mlv/llrawproc/darkframe.h"
@@ -20,6 +23,23 @@ static mlvObject_t *getMlvObjectFromHandle(jlong handle) {
     }
     auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
     return wrapper ? wrapper->mlv_object : nullptr;
+}
+
+static JniClipWrapper *getWrapperFromHandle(jlong handle) {
+    return handle == 0 ? nullptr : reinterpret_cast<JniClipWrapper *>(handle);
+}
+
+template <typename Update>
+static void updateProcessing(jlong handle, const char *action, Update update) {
+    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    if (!video || !video->processing) {
+        LOGE(RAW_TAG, "%s: Invalid MLV object or processing", action);
+        return;
+    }
+
+    // These parameters are applied after the cached RAW/debayer stage. The
+    // ViewModel advances processingVersion to redraw the current frame.
+    update(video->processing);
 }
 
 /**
@@ -355,16 +375,12 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setRawWhiteLevel(
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setWhiteBalanceTemperature(
         JNIEnv *env, jobject /* this */, jlong handle, jint kelvin) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
-    if (!video || !video->processing) {
-        LOGE(RAW_TAG, "setWhiteBalanceTemperature: Invalid MLV object or processing");
-        return;
-    }
-
-    processingSetWhiteBalanceKelvin(video->processing, kelvin);
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
+    updateProcessing(handle, "setWhiteBalanceTemperature",
+                     [kelvin](processingObject_t *processing) {
+        processingSetWhiteBalanceKelvin(
+                processing,
+                desktop_processing::clampSlider(kelvin, 2000.0, 10000.0));
+    });
 }
 
 /**
@@ -374,16 +390,66 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setWhiteBalanceTe
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setWhiteBalanceTint(
         JNIEnv *env, jobject /* this */, jlong handle, jfloat tint) {
+    updateProcessing(handle, "setWhiteBalanceTint",
+                     [tint](processingObject_t *processing) {
+        processingSetWhiteBalanceTint(
+                processing,
+                desktop_processing::clampSlider(tint, -100.0, 100.0) / 10.0);
+    });
+}
 
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
-    if (!video || !video->processing) {
-        LOGE(RAW_TAG, "setWhiteBalanceTint: Invalid MLV object or processing");
-        return;
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setWhiteBalance(
+        JNIEnv *env, jobject /* this */, jlong handle, jint kelvin, jint tint) {
+    updateProcessing(handle, "setWhiteBalance",
+                     [kelvin, tint](processingObject_t *processing) {
+        desktop_processing::setWhiteBalance(processing, kelvin, tint);
+    });
+}
+
+/** Pick neutral-grey or skin white balance from one source-frame coordinate. */
+extern "C" JNIEXPORT jintArray JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_pickWhiteBalance(
+        JNIEnv *env, jobject /* this */, jlong handle, jint frameIndex,
+        jint posX, jint posY, jint mode) {
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    mlvObject_t *video = wrapper ? wrapper->mlv_object : nullptr;
+    if (!video || !video->processing || !wrapper->processing_buffer_16bit) {
+        LOGE(RAW_TAG, "pickWhiteBalance: Invalid clip or processing buffer");
+        return nullptr;
     }
 
-    processingSetWhiteBalanceTint(video->processing, tint / 10.0f);
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
+    const int width = getMlvWidth(video);
+    const int height = getMlvHeight(video);
+    const uint32_t frameCount = getMlvFrames(video);
+    if (frameIndex < 0 || static_cast<uint32_t>(frameIndex) >= frameCount ||
+        posX < 0 || posX >= width || posY < 0 || posY >= height) {
+        LOGE(RAW_TAG, "pickWhiteBalance: Coordinate or frame is out of range");
+        return nullptr;
+    }
+
+    int temperature = 0;
+    int tint = 0;
+    {
+        // The picker temporarily changes WB matrices while searching. Serialize
+        // it with rendering and reuse the clip's RGB16 work buffer.
+        std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+        getMlvRawFrameDebayered(
+                video, static_cast<uint64_t>(frameIndex),
+                wrapper->processing_buffer_16bit);
+        pthread_mutex_lock(&video->processing_mutex);
+        processingFindWhiteBalance(
+                video->processing, width, height,
+                wrapper->processing_buffer_16bit, posX, posY,
+                &temperature, &tint, mode == 1 ? 1 : 0);
+        pthread_mutex_unlock(&video->processing_mutex);
+    }
+
+    jintArray result = env->NewIntArray(2);
+    if (result == nullptr) return nullptr;
+    const jint values[2] = {temperature, tint};
+    env->SetIntArrayRegion(result, 0, 2, values);
+    return result;
 }
 
 /**
@@ -393,31 +459,184 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setWhiteBalanceTi
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setExposureStops(
         JNIEnv *env, jobject /* this */, jlong handle, jfloat exposure) {
+    updateProcessing(handle, "setExposureStops", [exposure](processingObject_t *processing) {
+        desktop_processing::setExposure(processing, exposure);
+    });
+}
 
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+/** Apply all controls in the desktop Processing group, excluding curves. */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_applyProcessingSettings(
+        JNIEnv *env, jobject /* this */, jlong handle, jfloat exposure,
+        jint contrast, jint pivot, jint temperature, jint tint, jint clarity,
+        jint vibrance, jint saturation, jint darkStrength, jint darkRange,
+        jint lightStrength, jint lightRange, jint lightening, jint shadows,
+        jint highlights, jboolean highlightReconstruction,
+        jboolean allowCreativeAdjustments, jint profileIndex, jint tonemap,
+        jstring transferFunction, jint gamut, jint camMatrixUsed,
+        jboolean exrMode, jboolean agx) {
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    mlvObject_t *video = wrapper ? wrapper->mlv_object : nullptr;
     if (!video || !video->processing) {
-        LOGE(RAW_TAG, "setExposureStops: Invalid MLV object or processing");
+        LOGE(RAW_TAG, "applyProcessingSettings: Invalid MLV object or processing");
         return;
     }
 
-    processingSetExposureStops(video->processing, (double)exposure);
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
+    const char *transfer = jstring_to_cstr(env, transferFunction);
+
+    // Keep a renderer from observing only part of a restored per-clip receipt.
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    processingObject_t *processing = video->processing;
+
+    // Restore the profile bundle first, then its independently editable
+    // overrides. White balance is applied after gamut and matrix selection.
+    if (profileIndex >= 1 && profileIndex <= 13) {
+        processingSetImageProfile(processing, profileIndex - 1);
+    }
+    processingSetTonemappingFunction(processing, tonemap);
+    if (transfer != nullptr) {
+        processingSetTransferFunction(processing, const_cast<char *>(transfer));
+    }
+    processingSetGamut(processing, gamut);
+    desktop_processing::setCameraMatrix(processing, camMatrixUsed);
+    desktop_processing::setCreativeAdjustments(
+            processing, allowCreativeAdjustments == JNI_TRUE);
+    desktop_processing::setExr(processing, exrMode == JNI_TRUE);
+    desktop_processing::setAgx(processing, agx == JNI_TRUE);
+
+    desktop_processing::setWhiteBalance(processing, temperature, tint);
+    desktop_processing::setExposure(processing, exposure);
+    desktop_processing::setContrast(processing, contrast);
+    desktop_processing::setPivot(processing, pivot);
+    desktop_processing::setClarity(processing, clarity);
+    desktop_processing::setVibrance(processing, vibrance);
+    desktop_processing::setSaturation(processing, saturation);
+    desktop_processing::setDarkStrength(processing, darkStrength);
+    desktop_processing::setDarkRange(processing, darkRange);
+    desktop_processing::setLightStrength(processing, lightStrength);
+    desktop_processing::setLightRange(processing, lightRange);
+    desktop_processing::setLightening(processing, lightening);
+    desktop_processing::setShadows(processing, shadows);
+    desktop_processing::setHighlights(processing, highlights);
+    desktop_processing::setHighlightReconstruction(
+            processing, highlightReconstruction == JNI_TRUE);
+
+    release_cstr(env, transferFunction, transfer);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setContrast(
+        JNIEnv *env, jobject /* this */, jlong handle, jint contrast) {
+    updateProcessing(handle, "setContrast", [contrast](processingObject_t *processing) {
+        desktop_processing::setContrast(processing, contrast);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setPivot(
+        JNIEnv *env, jobject /* this */, jlong handle, jint pivot) {
+    updateProcessing(handle, "setPivot", [pivot](processingObject_t *processing) {
+        desktop_processing::setPivot(processing, pivot);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setClarity(
+        JNIEnv *env, jobject /* this */, jlong handle, jint clarity) {
+    updateProcessing(handle, "setClarity", [clarity](processingObject_t *processing) {
+        desktop_processing::setClarity(processing, clarity);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setVibrance(
+        JNIEnv *env, jobject /* this */, jlong handle, jint vibrance) {
+    updateProcessing(handle, "setVibrance", [vibrance](processingObject_t *processing) {
+        desktop_processing::setVibrance(processing, vibrance);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setSaturation(
+        JNIEnv *env, jobject /* this */, jlong handle, jint saturation) {
+    updateProcessing(handle, "setSaturation", [saturation](processingObject_t *processing) {
+        desktop_processing::setSaturation(processing, saturation);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDarkStrength(
+        JNIEnv *env, jobject /* this */, jlong handle, jint strength) {
+    updateProcessing(handle, "setDarkStrength", [strength](processingObject_t *processing) {
+        desktop_processing::setDarkStrength(processing, strength);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDarkRange(
+        JNIEnv *env, jobject /* this */, jlong handle, jint range) {
+    updateProcessing(handle, "setDarkRange", [range](processingObject_t *processing) {
+        desktop_processing::setDarkRange(processing, range);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setLightStrength(
+        JNIEnv *env, jobject /* this */, jlong handle, jint strength) {
+    updateProcessing(handle, "setLightStrength", [strength](processingObject_t *processing) {
+        desktop_processing::setLightStrength(processing, strength);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setLightRange(
+        JNIEnv *env, jobject /* this */, jlong handle, jint range) {
+    updateProcessing(handle, "setLightRange", [range](processingObject_t *processing) {
+        desktop_processing::setLightRange(processing, range);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setLightening(
+        JNIEnv *env, jobject /* this */, jlong handle, jint lightening) {
+    updateProcessing(handle, "setLightening", [lightening](processingObject_t *processing) {
+        desktop_processing::setLightening(processing, lightening);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setShadows(
+        JNIEnv *env, jobject /* this */, jlong handle, jint shadows) {
+    updateProcessing(handle, "setShadows", [shadows](processingObject_t *processing) {
+        desktop_processing::setShadows(processing, shadows);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setHighlights(
+        JNIEnv *env, jobject /* this */, jlong handle, jint highlights) {
+    updateProcessing(handle, "setHighlights", [highlights](processingObject_t *processing) {
+        desktop_processing::setHighlights(processing, highlights);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setHighlightReconstruction(
+        JNIEnv *env, jobject /* this */, jlong handle, jboolean enabled) {
+    updateProcessing(handle, "setHighlightReconstruction",
+                     [enabled](processingObject_t *processing) {
+        desktop_processing::setHighlightReconstruction(
+                processing, enabled == JNI_TRUE);
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setTonemappingFunction(
         JNIEnv *env, jobject /* this */, jlong handle, jint tonemap) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
-    if (!video || !video->processing) {
-        LOGE(RAW_TAG, "setTonemappingFunction: Invalid MLV object or processing");
-        return;
-    }
-
-    processingSetTonemappingFunction(video->processing, tonemap);
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
+    updateProcessing(handle, "setTonemappingFunction",
+                     [tonemap](processingObject_t *processing) {
+        processingSetTonemappingFunction(processing, tonemap);
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -438,23 +657,14 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setTransferFuncti
 
     processingSetTransferFunction(video->processing, function_c_str);
     release_cstr(env, transferFunction, function_c_str);
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setGamut(
         JNIEnv *env, jobject /* this */, jlong handle, jint gamut) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
-    if (!video || !video->processing) {
-        LOGE(RAW_TAG, "setGamut: Invalid MLV object or processing");
-        return;
-    }
-
-    processingSetGamut(video->processing, gamut);
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
+    updateProcessing(handle, "setGamut", [gamut](processingObject_t *processing) {
+        processingSetGamut(processing, gamut);
+    });
 }
 
 /**
@@ -474,12 +684,6 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setImageProfile(
     }
 
     processingSetImageProfile(video->processing, profileIndex);
-    // Re-apply white balance to sync matrices with new gamut
-    processingSetWhiteBalance(video->processing,
-                              processingGetWhiteBalanceKelvin(video->processing),
-                              processingGetWhiteBalanceTint(video->processing));
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
 }
 
 /**
@@ -491,35 +695,14 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setImageProfile(
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setCamMatrixMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
-    if (!video || !video->processing) {
-        LOGE(RAW_TAG, "setCamMatrixMode: Invalid MLV object or processing");
-        return;
-    }
-
-    switch (mode) {
-        case 0:
-            processingDontUseCamMatrix(video->processing);
-            break;
-        case 1:
-            processingUseCamMatrix(video->processing);
-            break;
-        case 2:
-            processingUseCamMatrixDanne(video->processing);
-            break;
-        default:
-            break;
-    }
-
-    // Desktop side-effect: re-apply white balance when matrix changes
-    if (mode != 0) {
-        processingSetWhiteBalanceKelvin(video->processing,
-                                        processingGetWhiteBalanceKelvin(video->processing));
-    }
-
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
+    updateProcessing(handle, "setCamMatrixMode", [mode](processingObject_t *processing) {
+        desktop_processing::setCameraMatrix(processing, mode);
+        // Matrix selection changes the WB-derived final/proper matrices.
+        processingSetWhiteBalance(
+                processing,
+                processingGetWhiteBalanceKelvin(processing),
+                processingGetWhiteBalanceTint(processing));
+    });
 }
 
 /**
@@ -530,21 +713,11 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setCamMatrixMode(
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setCreativeAdjustments(
         JNIEnv *env, jobject /* this */, jlong handle, jboolean allow) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
-    if (!video || !video->processing) {
-        LOGE(RAW_TAG, "setCreativeAdjustments: Invalid MLV object or processing");
-        return;
-    }
-
-    if (allow) {
-        processingAllowCreativeAdjustments(video->processing);
-    } else {
-        processingDontAllowCreativeAdjustments(video->processing);
-    }
-
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
+    updateProcessing(handle, "setCreativeAdjustments",
+                     [allow](processingObject_t *processing) {
+        desktop_processing::setCreativeAdjustments(
+                processing, allow == JNI_TRUE);
+    });
 }
 
 /**
@@ -556,21 +729,9 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setCreativeAdjust
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setExrMode(
         JNIEnv *env, jobject /* this */, jlong handle, jboolean enable) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
-    if (!video || !video->processing) {
-        LOGE(RAW_TAG, "setExrMode: Invalid MLV object or processing");
-        return;
-    }
-
-    if (enable) {
-        processingEnableExr(video->processing);
-    } else {
-        processingDisableExr(video->processing);
-    }
-
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
+    updateProcessing(handle, "setExrMode", [enable](processingObject_t *processing) {
+        desktop_processing::setExr(processing, enable == JNI_TRUE);
+    });
 }
 
 /**
@@ -581,19 +742,7 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setExrMode(
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setAgX(
         JNIEnv *env, jobject /* this */, jlong handle, jboolean enable) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
-    if (!video || !video->processing) {
-        LOGE(RAW_TAG, "setAgX: Invalid MLV object or processing");
-        return;
-    }
-
-    if (enable) {
-        processingEnableAgX(video->processing);
-    } else {
-        processingDisableAgX(video->processing);
-    }
-
-    resetMlvCache(video);
-    resetMlvCachedFrame(video);
+    updateProcessing(handle, "setAgX", [enable](processingObject_t *processing) {
+        desktop_processing::setAgx(processing, enable == JNI_TRUE);
+    });
 }

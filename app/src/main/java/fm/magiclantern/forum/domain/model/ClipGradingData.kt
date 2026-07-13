@@ -102,7 +102,7 @@ data class ColorGradingSettings(
     val dr: Int = 70,                         // Dark range (0-100)
     val ls: Int = 0,                          // Light strength (0-100)
     val lr: Int = 50,                         // Light range (0-100)
-    val lightening: Int = 0,                  // Lightening (0-60)
+    val lightening: Int = 0,                  // Lighten slider (0-100; native 0.0-0.6)
     
     // Processing options
     val sharpen: Int = 0,                     // Sharpen (0-100)
@@ -126,6 +126,28 @@ data class ColorGradingSettings(
     val exrMode: Int = 0,                     // EXR mode (0-1)
     val agx: Int = 1                          // AgX mode (0-1)
 ) : Parcelable
+
+/** Whether the experimental RAW GPU preview must yield to the complete CPU pipeline. */
+fun ColorGradingSettings.requiresCpuProcessingPreview(): Boolean {
+    if (highlightReconstruction != 0 ||
+        (camMatrixUsed > 0 && exrMode == 0) ||
+        (camMatrixUsed == 0 && agx != 0)
+    ) {
+        return true
+    }
+    if (allowCreativeAdjustments == 0) return false
+
+    return contrast != 0 ||
+        pivot != 75 ||
+        clarity != 0 ||
+        vibrance != 0 ||
+        saturation != 0 ||
+        shadows != 0 ||
+        highlights != 0 ||
+        ds != 0 ||
+        ls != 0 ||
+        lightening != 0
+}
 
 /**
  * Gradation curves settings (stub - complex data structure)

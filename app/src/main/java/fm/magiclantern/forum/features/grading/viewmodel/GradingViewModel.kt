@@ -9,8 +9,10 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import fm.magiclantern.forum.domain.model.ClipDetails
 import fm.magiclantern.forum.domain.model.ClipGradingData
+import fm.magiclantern.forum.domain.model.ColorGradingSettings
 import fm.magiclantern.forum.domain.model.DebayerAlgorithm
 import fm.magiclantern.forum.domain.model.ProfilePreset
+import fm.magiclantern.forum.domain.model.requiresCpuProcessingPreview
 import fm.magiclantern.forum.domain.session.ActiveClipHolder
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.nativeInterface.RawCorrectionNative
@@ -23,7 +25,13 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
+
+enum class WhiteBalancePickerMode(val nativeValue: Int, val displayName: String) {
+    GREY(0, "Grey"),
+    SKIN(1, "Skin")
+}
 
 /**
  * ViewModel for managing all color grading and processing states per clip.
@@ -44,6 +52,19 @@ class GradingViewModel @Inject constructor(
     // Current clip's grading (exposed to UI)
     private val _currentGrading = MutableStateFlow(ClipGradingData())
     val currentGrading: StateFlow<ClipGradingData> = _currentGrading
+    @Volatile
+    private var currentGradingGuid = 0L
+    @Volatile
+    private var gradingEpoch = 0L
+
+    private val _whiteBalancePickerActive = MutableStateFlow(false)
+    val whiteBalancePickerActive: StateFlow<Boolean> = _whiteBalancePickerActive
+
+    private val _whiteBalancePickerMode = MutableStateFlow(WhiteBalancePickerMode.GREY)
+    val whiteBalancePickerMode: StateFlow<WhiteBalancePickerMode> = _whiteBalancePickerMode
+
+    private val _whiteBalancePickInProgress = MutableStateFlow(false)
+    val whiteBalancePickInProgress: StateFlow<Boolean> = _whiteBalancePickInProgress
 
     // Expose active clip metadata for UI to access bitDepth, dualISO, etc.
     val activeClip: StateFlow<ClipDetails?> = activeClipHolder.activeClip
@@ -91,22 +112,35 @@ class GradingViewModel @Inject constructor(
         // Observe clip changes - update UI state when clip changes
         viewModelScope.launch {
             activeClipHolder.activeClip.collectLatest { details ->
+                _whiteBalancePickerActive.value = false
                 if (details != null) {
-                    loadClipGradingState(
+                    val grading = loadClipGradingState(
                         details.guid,
                         details.metadata.whiteBalanceKelvin,
                         details.metadata.whiteBalanceTint,
                         details.grading
                     )
+                    applyProcessingSettings(
+                        details.nativeHandle,
+                        details.guid,
+                        gradingEpoch,
+                        grading.colorGrading
+                    )
+                } else {
+                    currentGradingGuid = 0L
+                    gradingEpoch++
                 }
             }
         }
     }
 
-    /**
-     * Load grading state for UI display only
-     */
-    private fun loadClipGradingState(guid: Long, kelvin: Int, tint: Int, seededGrading: ClipGradingData) {
+    /** Load the per-clip receipt into UI state before restoring its native processing state. */
+    private fun loadClipGradingState(
+        guid: Long,
+        kelvin: Int,
+        tint: Int,
+        seededGrading: ClipGradingData
+    ): ClipGradingData {
         val grading = clipGradingStates.getOrPut(guid) {
             seededGrading.copy(
                 colorGrading = seededGrading.colorGrading.copy(
@@ -115,12 +149,73 @@ class GradingViewModel @Inject constructor(
                 )
             )
         }
+        currentGradingGuid = guid
+        gradingEpoch++
         _currentGrading.value = grading
         
         // Sync receipt debayer mode to ActiveClipHolder for PlayerViewModel
         activeClipHolder.setReceiptDebayerMode(grading.debayerMode)
         // Sync cut marks to ActiveClipHolder for PlayerViewModel playback bounds
         activeClipHolder.setCutMarks(grading.cutIn, grading.cutOut)
+        activeClipHolder.setRequiresCpuProcessingPreview(
+            grading.colorGrading.requiresCpuProcessingPreview()
+        )
+        return grading
+    }
+
+    private fun applyProcessingSettings(
+        handle: Long,
+        guid: Long,
+        expectedEpoch: Long,
+        settings: ColorGradingSettings
+    ) {
+        if (handle == 0L) return
+
+        viewModelScope.launch(nativeDispatcher) {
+            try {
+                val active = activeClipHolder.activeClip.value
+                if (active == null || active.nativeHandle != handle || active.guid != guid ||
+                    gradingEpoch != expectedEpoch
+                ) {
+                    return@launch
+                }
+                RawCorrectionNative.applyProcessingSettings(
+                    mlvObjectPtr = handle,
+                    exposure = settings.exposure,
+                    contrast = settings.contrast,
+                    pivot = settings.pivot,
+                    temperature = settings.temperature,
+                    tint = settings.tint,
+                    clarity = settings.clarity,
+                    vibrance = settings.vibrance,
+                    saturation = settings.saturation,
+                    darkStrength = settings.ds,
+                    darkRange = settings.dr,
+                    lightStrength = settings.ls,
+                    lightRange = settings.lr,
+                    lightening = settings.lightening,
+                    shadows = settings.shadows,
+                    highlights = settings.highlights,
+                    highlightReconstruction = settings.highlightReconstruction != 0,
+                    allowCreativeAdjustments = settings.allowCreativeAdjustments != 0,
+                    profileIndex = settings.profileIndex,
+                    tonemap = settings.tonemap,
+                    transferFunction = settings.transferFunction,
+                    gamut = settings.gamut,
+                    camMatrixUsed = settings.camMatrixUsed,
+                    exrMode = settings.exrMode != 0,
+                    agx = settings.agx != 0
+                )
+                val stillActive = activeClipHolder.activeClip.value
+                if (stillActive != null && stillActive.nativeHandle == handle &&
+                    stillActive.guid == guid && gradingEpoch == expectedEpoch
+                ) {
+                    activeClipHolder.notifyProcessingChanged()
+                }
+            } catch (e: Exception) {
+                Log.e("GradingViewModel", "Failed to restore processing settings: ${e.message}", e)
+            }
+        }
     }
 
     /**
@@ -128,11 +223,15 @@ class GradingViewModel @Inject constructor(
      */
     fun updateGrading(updater: (ClipGradingData) -> ClipGradingData) {
         val currentGuid = clipGUID
-        if (currentGuid == 0L) return
+        if (currentGuid == 0L || currentGradingGuid != currentGuid) return
 
-        val newGrading = updater(_currentGrading.value)
+        val current = clipGradingStates[currentGuid] ?: return
+        val newGrading = updater(current)
         clipGradingStates[currentGuid] = newGrading
         _currentGrading.value = newGrading
+        activeClipHolder.setRequiresCpuProcessingPreview(
+            newGrading.colorGrading.requiresCpuProcessingPreview()
+        )
 
         // Notify player to redraw with new settings
         activeClipHolder.notifyProcessingChanged()
@@ -375,12 +474,13 @@ class GradingViewModel @Inject constructor(
         val handle = clipHandle
         if (handle == 0L) return
 
+        val clampedExposure = exposure.coerceIn(-4f, 4f)
         updateGrading {
-            it.copy(colorGrading = it.colorGrading.copy(exposure = exposure))
+            it.copy(colorGrading = it.colorGrading.copy(exposure = clampedExposure))
         }
 
         launchNativeUpdate("set exposure") {
-            RawCorrectionNative.setExposureStops(handle, exposure)
+            RawCorrectionNative.setExposureStops(handle, clampedExposure)
         }
     }
 
@@ -403,12 +503,215 @@ class GradingViewModel @Inject constructor(
         val handle = clipHandle
         if (handle == 0L) return
 
+        val clampedTint = tint.coerceIn(-100, 100)
         updateGrading {
-            it.copy(colorGrading = it.colorGrading.copy(tint = tint))
+            it.copy(colorGrading = it.colorGrading.copy(tint = clampedTint))
         }
 
         launchNativeUpdate("set tint") {
-            RawCorrectionNative.setWhiteBalanceTint(handle, tint.toFloat())
+            RawCorrectionNative.setWhiteBalanceTint(handle, clampedTint.toFloat())
+        }
+    }
+
+    fun toggleWhiteBalancePicker() {
+        if (clipHandle == 0L || _whiteBalancePickInProgress.value) return
+        _whiteBalancePickerActive.value = !_whiteBalancePickerActive.value
+    }
+
+    fun setWhiteBalancePickerMode(mode: WhiteBalancePickerMode) {
+        _whiteBalancePickerMode.value = mode
+    }
+
+    fun pickWhiteBalance(
+        expectedHandle: Long,
+        expectedGuid: Long,
+        frameIndex: Int,
+        sourceX: Int,
+        sourceY: Int
+    ) {
+        val details = activeClipHolder.activeClip.value ?: return
+        if (!_whiteBalancePickerActive.value || _whiteBalancePickInProgress.value ||
+            details.nativeHandle == 0L || details.nativeHandle != expectedHandle ||
+            details.guid != expectedGuid
+        ) {
+            return
+        }
+
+        val handle = expectedHandle
+        val guid = expectedGuid
+        val expectedEpoch = gradingEpoch
+        val mode = _whiteBalancePickerMode.value
+        _whiteBalancePickInProgress.value = true
+
+        viewModelScope.launch(nativeDispatcher) {
+            try {
+                val activeBeforePick = activeClipHolder.activeClip.value
+                if (activeBeforePick == null || activeBeforePick.nativeHandle != handle ||
+                    activeBeforePick.guid != guid ||
+                    gradingEpoch != expectedEpoch
+                ) {
+                    return@launch
+                }
+                val picked = RawCorrectionNative.pickWhiteBalance(
+                    mlvObjectPtr = handle,
+                    frameIndex = frameIndex,
+                    x = sourceX,
+                    y = sourceY,
+                    mode = mode.nativeValue
+                )
+                if (picked == null || picked.size < 2) {
+                    Log.w("GradingViewModel", "White-balance picker returned no result")
+                    return@launch
+                }
+
+                var temperature = 0
+                var tint = 0
+                val receiptUpdated = withContext(Dispatchers.Main.immediate) {
+                    val active = activeClipHolder.activeClip.value
+                    if (active?.nativeHandle == handle && active.guid == guid &&
+                        gradingEpoch == expectedEpoch
+                    ) {
+                        temperature = picked[0].coerceIn(2000, 10000)
+                        tint = picked[1].coerceIn(-100, 100)
+                        updateGrading {
+                            it.copy(
+                                colorGrading = it.colorGrading.copy(
+                                    temperature = temperature,
+                                    tint = tint
+                                )
+                            )
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                val activeAfterReceipt = activeClipHolder.activeClip.value
+                if (receiptUpdated && activeAfterReceipt != null &&
+                    activeAfterReceipt.nativeHandle == handle &&
+                    activeAfterReceipt.guid == guid &&
+                    gradingEpoch == expectedEpoch
+                ) {
+                    // This continuation runs after any setter that was already
+                    // queued when picking began, keeping native state and receipt aligned.
+                    RawCorrectionNative.setWhiteBalance(handle, temperature, tint)
+                    activeClipHolder.notifyProcessingChanged()
+                }
+            } catch (e: Exception) {
+                Log.e("GradingViewModel", "Failed to pick white balance: ${e.message}", e)
+            } finally {
+                _whiteBalancePickInProgress.value = false
+            }
+        }
+    }
+
+    fun setContrast(contrast: Int) {
+        val value = contrast.coerceIn(-100, 100)
+        updateColorGrading("set contrast", { it.copy(contrast = value) }) { handle ->
+            RawCorrectionNative.setContrast(handle, value)
+        }
+    }
+
+    fun setPivot(pivot: Int) {
+        val value = pivot.coerceIn(0, 100)
+        updateColorGrading("set pivot", { it.copy(pivot = value) }) { handle ->
+            RawCorrectionNative.setPivot(handle, value)
+        }
+    }
+
+    fun setClarity(clarity: Int) {
+        val value = clarity.coerceIn(-100, 100)
+        updateColorGrading("set clarity", { it.copy(clarity = value) }) { handle ->
+            RawCorrectionNative.setClarity(handle, value)
+        }
+    }
+
+    fun setVibrance(vibrance: Int) {
+        val value = vibrance.coerceIn(-100, 100)
+        updateColorGrading("set vibrance", { it.copy(vibrance = value) }) { handle ->
+            RawCorrectionNative.setVibrance(handle, value)
+        }
+    }
+
+    fun setSaturation(saturation: Int) {
+        val value = saturation.coerceIn(-100, 100)
+        updateColorGrading("set saturation", { it.copy(saturation = value) }) { handle ->
+            RawCorrectionNative.setSaturation(handle, value)
+        }
+    }
+
+    fun setDarkStrength(strength: Int) {
+        val value = strength.coerceIn(0, 100)
+        updateColorGrading("set dark strength", { it.copy(ds = value) }) { handle ->
+            RawCorrectionNative.setDarkStrength(handle, value)
+        }
+    }
+
+    fun setDarkRange(range: Int) {
+        val value = range.coerceIn(0, 100)
+        updateColorGrading("set dark range", { it.copy(dr = value) }) { handle ->
+            RawCorrectionNative.setDarkRange(handle, value)
+        }
+    }
+
+    fun setLightStrength(strength: Int) {
+        val value = strength.coerceIn(0, 100)
+        updateColorGrading("set light strength", { it.copy(ls = value) }) { handle ->
+            RawCorrectionNative.setLightStrength(handle, value)
+        }
+    }
+
+    fun setLightRange(range: Int) {
+        val value = range.coerceIn(0, 100)
+        updateColorGrading("set light range", { it.copy(lr = value) }) { handle ->
+            RawCorrectionNative.setLightRange(handle, value)
+        }
+    }
+
+    fun setLightening(lightening: Int) {
+        val value = lightening.coerceIn(0, 100)
+        updateColorGrading("set lightening", { it.copy(lightening = value) }) { handle ->
+            RawCorrectionNative.setLightening(handle, value)
+        }
+    }
+
+    fun setShadows(shadows: Int) {
+        val value = shadows.coerceIn(-100, 100)
+        updateColorGrading("set shadows", { it.copy(shadows = value) }) { handle ->
+            RawCorrectionNative.setShadows(handle, value)
+        }
+    }
+
+    fun setHighlights(highlights: Int) {
+        val value = highlights.coerceIn(-100, 100)
+        updateColorGrading("set highlights", { it.copy(highlights = value) }) { handle ->
+            RawCorrectionNative.setHighlights(handle, value)
+        }
+    }
+
+    fun setHighlightReconstruction(enabled: Boolean) {
+        updateColorGrading(
+            action = "set highlight reconstruction",
+            update = { it.copy(highlightReconstruction = if (enabled) 1 else 0) }
+        ) { handle ->
+            RawCorrectionNative.setHighlightReconstruction(handle, enabled)
+        }
+    }
+
+    private fun updateColorGrading(
+        action: String,
+        update: (ColorGradingSettings) -> ColorGradingSettings,
+        nativeUpdate: (Long) -> Unit
+    ) {
+        val handle = clipHandle
+        if (handle == 0L) return
+
+        updateGrading {
+            it.copy(colorGrading = update(it.colorGrading))
+        }
+
+        launchNativeUpdate(action) {
+            nativeUpdate(handle)
         }
     }
 
@@ -629,16 +932,35 @@ class GradingViewModel @Inject constructor(
         clipGradingStates[guid] = grading
     }
 
-    private fun launchNativeUpdate(action: String, block: () -> Unit) {
+    private fun launchNativeUpdate(
+        action: String,
+        expectedHandle: Long = clipHandle,
+        expectedGuid: Long = currentGradingGuid,
+        expectedEpoch: Long = gradingEpoch,
+        block: () -> Unit
+    ) {
         viewModelScope.launch(nativeDispatcher) {
             try {
+                val active = activeClipHolder.activeClip.value
+                if (active == null || active.nativeHandle != expectedHandle ||
+                    active.guid != expectedGuid ||
+                    gradingEpoch != expectedEpoch
+                ) {
+                    return@launch
+                }
                 block()
                 // updateGrading() requests an immediate redraw for responsive UI,
                 // but native processing setters run on this dispatcher. Request a
                 // second redraw after the native state/LUT is actually committed so
                 // GPU preview never caches the pre-update snapshot under the new
                 // processing version.
-                activeClipHolder.notifyProcessingChanged()
+                val stillActive = activeClipHolder.activeClip.value
+                if (stillActive != null && stillActive.nativeHandle == expectedHandle &&
+                    stillActive.guid == expectedGuid &&
+                    gradingEpoch == expectedEpoch
+                ) {
+                    activeClipHolder.notifyProcessingChanged()
+                }
             } catch (e: Exception) {
                 Log.e("GradingViewModel", "Failed to $action: ${e.message}", e)
             }

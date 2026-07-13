@@ -10,6 +10,11 @@ import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 import javax.inject.Singleton
 
+data class CpuProcessingPreviewRequirement(
+    val required: Boolean = false,
+    val revision: Long = 0L
+)
+
 /**
  * Single source of truth for the currently active clip.
  * All ViewModels that need clip data should observe this.
@@ -47,6 +52,13 @@ class ActiveClipHolder @Inject constructor() {
      * Observers (like PlayerViewModel) should trigger a redraw when this changes.
      */
     val processingVersion: StateFlow<Long> = _processingVersion.asStateFlow()
+
+    private val _cpuProcessingPreviewRequirement =
+        MutableStateFlow(CpuProcessingPreviewRequirement())
+
+    /** True while active settings need processing stages absent from RAW GPU preview. */
+    val cpuProcessingPreviewRequirement: StateFlow<CpuProcessingPreviewRequirement> =
+        _cpuProcessingPreviewRequirement.asStateFlow()
     
     private val _currentReceiptDebayerMode = MutableStateFlow(DebayerAlgorithm.AMAZE)
     
@@ -95,6 +107,13 @@ class ActiveClipHolder @Inject constructor() {
         _processingVersion.update { version -> version + 1L }
     }
 
+    fun setRequiresCpuProcessingPreview(required: Boolean) {
+        _cpuProcessingPreviewRequirement.update { current ->
+            if (current.required == required) current
+            else CpuProcessingPreviewRequirement(required, current.revision + 1L)
+        }
+    }
+
     
     /**
      * Mark a clip as selected and start loading.
@@ -113,6 +132,7 @@ class ActiveClipHolder @Inject constructor() {
         // before GradingViewModel loads the new clip's grading data.
         _currentCutIn.value = 1
         _currentCutOut.value = 0
+        setRequiresCpuProcessingPreview(false)
         _activeClip.value = details
         _selectedPreview.value = details.preview
         _isLoading.value = false
@@ -123,6 +143,7 @@ class ActiveClipHolder @Inject constructor() {
      */
     fun clearActiveClip() {
         _activeClip.value = null
+        setRequiresCpuProcessingPreview(false)
         _selectedPreview.value = null
         _isLoading.value = false
     }

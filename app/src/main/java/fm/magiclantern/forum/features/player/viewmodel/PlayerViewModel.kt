@@ -7,6 +7,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import fm.magiclantern.forum.domain.model.ClipDetails
 import fm.magiclantern.forum.domain.model.DebayerAlgorithm
 import fm.magiclantern.forum.domain.session.ActiveClipHolder
+import fm.magiclantern.forum.domain.session.CpuProcessingPreviewRequirement
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.features.settings.viewmodel.DebayerMode
 import fm.magiclantern.forum.features.settings.viewmodel.SettingsRepository
@@ -41,7 +42,19 @@ class PlayerViewModel @Inject constructor(
     private val tag = "PlayerViewModel"
 
     private data class RawGpuFailureKey(val guid: Long, val handle: Long)
+    private data class RawGpuCachePolicy(
+        val details: ClipDetails?,
+        val gpuEnabled: Boolean,
+        val failure: RawGpuFailureKey?,
+        val requirement: CpuProcessingPreviewRequirement
+    )
+
+    private data class RawGpuReadyKey(val handle: Long, val requirementRevision: Long)
+    private data class PresentedFrame(val handle: Long, val frameIndex: Int)
+
     private val rawGpuFailure = MutableStateFlow<RawGpuFailureKey?>(null)
+    private val rawGpuReady = MutableStateFlow<RawGpuReadyKey?>(null)
+    private val lastPresentedFrame = MutableStateFlow<PresentedFrame?>(null)
 
     // Playback state
     private val _isPlaying = MutableStateFlow(false)
@@ -67,6 +80,9 @@ class PlayerViewModel @Inject constructor(
     /** Shared MCRAW type-7 decoder policy for CPU and GPU paths. */
     val experimentalMcrawParallelDecoder: StateFlow<Boolean> =
         settingsRepository.experimentalMcrawParallelDecoder
+
+    val cpuProcessingPreviewRequirement: StateFlow<CpuProcessingPreviewRequirement> =
+        activeClipHolder.cpuProcessingPreviewRequirement
 
     // Performance timing
     private val _averageDecodeUs = MutableStateFlow(0L)
@@ -194,28 +210,46 @@ class PlayerViewModel @Inject constructor(
             combine(
                 activeClip,
                 experimentalRawGpuPreview,
-                rawGpuFailure
-            ) { details, gpuEnabled, failure ->
-                Triple(details, gpuEnabled, failure)
-            }.collectLatest { (details, gpuEnabled, failure) ->
+                rawGpuFailure,
+                cpuProcessingPreviewRequirement
+            ) { details, gpuEnabled, failure, requirement ->
+                RawGpuCachePolicy(details, gpuEnabled, failure, requirement)
+            }.collectLatest { policy ->
+                val details = policy.details
+                val gpuEnabled = policy.gpuEnabled
+                val failure = policy.failure
                 if (details != null && details.nativeHandle != 0L) {
                     val failureMatches = gpuEnabled && failure != null &&
                         failure.guid == details.guid &&
                         failure.handle == details.nativeHandle
+                    val requiresCpu = gpuEnabled && policy.requirement.required
+                    rawGpuReady.value = null
                     // Background RGB caching performs CPU RAW fixes and demosaic. Keep it
                     // out of GPU benchmark measurements, then restore it for a
-                    // disabled or hard-failed GPU path.
+                    // disabled, hard-failed, or full-CPU processing path.
                     val configured = NativeLib.setRawGpuPreviewCaching(
                         details.nativeHandle,
-                        !gpuEnabled || failureMatches
+                        !gpuEnabled || failureMatches || requiresCpu
                     )
                     if (!configured) {
                         Log.w(tag, "Could not configure RAW GPU preview cache mode")
-                    } else if (failureMatches) {
-                        // A paused renderer may have missed its immediate CPU
-                        // fallback while the cache transition held render_mutex.
+                    } else {
+                        rawGpuReady.value = if (
+                            gpuEnabled && !failureMatches && !requiresCpu
+                        ) {
+                            RawGpuReadyKey(
+                                details.nativeHandle,
+                                policy.requirement.revision
+                            )
+                        } else {
+                            null
+                        }
+                        // A paused renderer may have missed the transition while
+                        // cache control held render_mutex.
                         activeClipHolder.notifyProcessingChanged()
                     }
+                } else {
+                    rawGpuReady.value = null
                 }
                 if (!gpuEnabled || details == null ||
                     (failure != null &&
@@ -282,6 +316,7 @@ class PlayerViewModel @Inject constructor(
 
     private fun onClipActivated(details: ClipDetails) {
         playbackEngine.stop()
+        lastPresentedFrame.value = null
         
         val metadata = details.metadata
         
@@ -327,6 +362,7 @@ class PlayerViewModel @Inject constructor(
 
     private fun onClipDeactivated() {
         playbackEngine.stop()
+        lastPresentedFrame.value = null
         _currentFrame.value = 0
         _isPlaying.value = false
         decodeEmaUs = 0.0
@@ -377,12 +413,43 @@ class PlayerViewModel @Inject constructor(
         _isLoading.value = status
     }
 
+    fun reportPresentedFrame(handle: Long, frameIndex: Int) {
+        if (handle != 0L && activeClip.value?.nativeHandle == handle) {
+            lastPresentedFrame.value = PresentedFrame(handle, frameIndex)
+        }
+    }
+
+    fun presentedFrameFor(handle: Long): Int? =
+        lastPresentedFrame.value?.takeIf { it.handle == handle }?.frameIndex
+
     /** Report a hard renderer/decode failure for the currently active RAW clip. */
     fun reportRawGpuHardFailure(handle: Long) {
         val details = activeClip.value ?: return
         if (handle == 0L || details.nativeHandle != handle) return
         rawGpuFailure.value = RawGpuFailureKey(details.guid, handle)
     }
+
+    /** A new EGL context may retry a failure latched by the previous renderer. */
+    fun prepareRawGpuRetry(handle: Long) {
+        if (!experimentalRawGpuPreview.value || handle == 0L) return
+        val failure = rawGpuFailure.value ?: return
+        val details = activeClip.value ?: return
+        if (handle == details.nativeHandle && failure.handle == handle &&
+            failure.guid == details.guid
+        ) {
+            rawGpuFailure.compareAndSet(failure, null)
+        }
+    }
+
+    fun isRawGpuReady(handle: Long): Boolean {
+        val requirement = cpuProcessingPreviewRequirement.value
+        val ready = rawGpuReady.value
+        return !requirement.required && ready?.handle == handle &&
+            ready.requirementRevision == requirement.revision
+    }
+
+    fun requiresCpuProcessingPreview(): Boolean =
+        cpuProcessingPreviewRequirement.value.required
 
     /** Clear an older context's hard failure once this clip produces a fresh GPU frame. */
     fun reportRawGpuSuccess(handle: Long) {

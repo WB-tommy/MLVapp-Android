@@ -15,6 +15,7 @@
 
 #include "../../src/mlv/macros.h"
 #include "../ffmpeg/ffmpeg_handler.h"
+#include "../grading/desktop_processing_mapping.h"
 
 extern "C" {
 #include "../../src/mlv/llrawproc/llrawproc.h"
@@ -159,29 +160,23 @@ void apply_raw_correction(mlvObject_t *video,
 }
 
 // Apply all color grading settings to the processing engine.
-// Order matches live preview: WB → exposure → profile → overrides → matrix →
+// Order matches live preview: exposure → profile → overrides → matrix/WB →
 // EXR/AgX → adjustments
 void apply_color_grading(mlvObject_t *video,
                          const color_grading_options_t &opts) {
   processingObject_t *processing = video->processing;
   if (!processing) return;
 
-  // 1. White balance (must precede matrix-dependent operations)
-  // Tint is pre-scaled by /10.0 to match preview path (raw_correction.cpp:380)
-  processingSetWhiteBalance(processing, (double)opts.temperature, (double)opts.tint / 10.0);
+  // 1. Exposure
+  desktop_processing::setExposure(processing, opts.exposure);
 
-  // 2. Exposure
-  processingSetExposureStops(processing, (double)opts.exposure);
-
-  // 3. Image profile (sets gamut, transfer function, tonemap, creative adj)
-  //    profile_index 0 = "Select Preset..." (no profile), 1-12 = actual profiles
+  // 2. Image profile (sets gamut, transfer function, tonemap, creative adj)
+  //    profile_index 0 = "Select Preset..." (no profile), 1-13 = actual profiles
   if (opts.profile_index > 0) {
     processingSetImageProfile(processing, opts.profile_index - 1);
-    // Re-apply white balance to sync matrices with new gamut
-    processingSetWhiteBalance(processing, (double)opts.temperature, (double)opts.tint / 10.0);
   }
 
-  // 4. Overrides (applied after profile, in case user changed them independently)
+  // 3. Overrides (applied after profile, in case user changed them independently)
   processingSetTonemappingFunction(processing, opts.tonemap);
   processingSetTransferFunction(processing, const_cast<char*>(opts.transfer_function.c_str()));
   processingSetGamut(processing, opts.gamut);
@@ -191,7 +186,7 @@ void apply_color_grading(mlvObject_t *video,
     processingDontAllowCreativeAdjustments(processing);
   }
 
-  // 5. Camera matrix
+  // 4. Camera matrix
   switch (opts.cam_matrix_used) {
   case 0:
     processingDontUseCamMatrix(processing);
@@ -206,60 +201,60 @@ void apply_color_grading(mlvObject_t *video,
     break;
   }
 
-  // 6. EXR mode (Cyan Highlight Fix)
+  // Gamut and camera-matrix mode both affect the WB-derived matrices.
+  desktop_processing::setWhiteBalance(processing, opts.temperature, opts.tint);
+
+  // 5. EXR mode (Cyan Highlight Fix)
   if (opts.exr_mode) {
     processingEnableExr(processing);
   } else {
     processingDisableExr(processing);
   }
 
-  // 7. AgX rendering transform
+  // 6. AgX rendering transform
   if (opts.agx) {
     processingEnableAgX(processing);
   } else {
     processingDisableAgX(processing);
   }
 
-  // 8. Contrast & pivot
-  processingSetSimpleContrast(processing, (double)opts.contrast / 100.0);
-  processingSetPivot(processing, (double)opts.pivot / 100.0);
+  // 7. Contrast & pivot
+  desktop_processing::setContrast(processing, opts.contrast);
+  desktop_processing::setPivot(processing, opts.pivot);
 
-  // 9. Saturation & vibrance
-  processingSetSaturation(processing, (double)opts.saturation / 100.0 + 1.0);
-  processingSetVibrance(processing, (double)opts.vibrance / 100.0 + 1.0);
+  // 8. Saturation & vibrance
+  desktop_processing::setSaturation(processing, opts.saturation);
+  desktop_processing::setVibrance(processing, opts.vibrance);
 
-  // 10. Clarity
-  processingSetClarity(processing, (double)opts.clarity / 100.0);
+  // 9. Clarity
+  desktop_processing::setClarity(processing, opts.clarity);
 
-  // 11. Shadows & highlights
-  processingSetShadows(processing, (double)opts.shadows / 100.0);
-  processingSetHighlights(processing, (double)opts.highlights / 100.0);
+  // 10. Shadows & highlights
+  desktop_processing::setShadows(processing, opts.shadows);
+  desktop_processing::setHighlights(processing, opts.highlights);
 
-  // 12. Contrast curve parameters (dark/light strength and range)
-  processingSetDCFactor(processing, (double)opts.ds / 10.0);
-  processingSetDCRange(processing, (double)opts.dr / 100.0);
-  processingSetLCFactor(processing, (double)opts.ls / 10.0);
-  processingSetLCRange(processing, (double)opts.lr / 100.0);
-  processingSetLightening(processing, (double)opts.lightening / 100.0);
+  // 11. Contrast curve parameters (dark/light strength and range)
+  desktop_processing::setDarkStrength(processing, opts.ds);
+  desktop_processing::setDarkRange(processing, opts.dr);
+  desktop_processing::setLightStrength(processing, opts.ls);
+  desktop_processing::setLightRange(processing, opts.lr);
+  desktop_processing::setLightening(processing, opts.lightening);
 
-  // 13. Sharpening
+  // 12. Sharpening
   processingSetSharpening(processing, (double)opts.sharpen / 100.0);
   processingSetSharpenMasking(processing, opts.sharpen_masking);
 
-  // 14. Chroma blur
+  // 13. Chroma blur
   if (opts.chroma_blur > 0) {
     processingEnableChromaSeparation(processing);
     processingSetChromaBlurRadius(processing, opts.chroma_blur);
   }
 
-  // 15. Highlight reconstruction
-  if (opts.highlight_reconstruction) {
-    processingEnableHighlightReconstruction(processing);
-  } else {
-    processingDisableHighlightReconstruction(processing);
-  }
+  // 14. Highlight reconstruction
+  desktop_processing::setHighlightReconstruction(
+      processing, opts.highlight_reconstruction != 0);
 
-  // 16. Chroma separation
+  // 15. Chroma separation
   if (opts.chroma_separation) {
     processingEnableChromaSeparation(processing);
   }

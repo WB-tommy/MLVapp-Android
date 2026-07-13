@@ -319,6 +319,7 @@ class MlvRenderer(
         ) {
             latchGpuFailure("required GLES program or object creation failed")
         }
+        viewModel.prepareRawGpuRetry(viewModel.clipHandle.value)
         checkGlError("onSurfaceCreated")
     }
 
@@ -332,6 +333,7 @@ class MlvRenderer(
         val clipHandle = viewModel.clipHandle.value
         val videoWidth = viewModel.width.value
         val videoHeight = viewModel.height.value
+        val frameIndex = viewModel.currentFrame.value
 
         if (clipHandle == 0L || videoWidth <= 0 || videoHeight <= 0) {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -344,8 +346,11 @@ class MlvRenderer(
         var decodeNs = 0L
         var rendered = false
         var usedGpu = false
+        var freshFrame = false
         var gpuDecoderBackend = DECODER_BACKEND_UNSET
-        val wantsGpu = viewModel.experimentalRawGpuPreview.value
+        val wantsGpu = viewModel.experimentalRawGpuPreview.value &&
+            viewModel.isRawGpuReady(clipHandle) &&
+            !viewModel.requiresCpuProcessingPreview()
         if (!wantsGpu) {
             // The ViewModel restores normal caching when the experiment is
             // disabled. Clear the per-handle notification marker so a later
@@ -354,17 +359,21 @@ class MlvRenderer(
         }
 
         if (wantsGpu && !gpuHardFailure) {
-            val gpuResult = drawGpuFrame(clipHandle, videoWidth, videoHeight)
+            val gpuResult = drawGpuFrame(clipHandle, frameIndex, videoWidth, videoHeight)
             decodeNs += gpuResult.decodeNs
             rendered = gpuResult.rendered
             usedGpu = rendered && gpuResult.freshFrame
+            freshFrame = rendered && gpuResult.freshFrame
             gpuDecoderBackend = gpuResult.decoderBackend
         }
 
         if (!rendered) {
-            val standardResult = drawStandardFrame(clipHandle, videoWidth, videoHeight)
+            val standardResult = drawStandardFrame(
+                clipHandle, frameIndex, videoWidth, videoHeight
+            )
             decodeNs += standardResult.decodeNs
             rendered = standardResult.rendered
+            freshFrame = rendered && standardResult.freshFrame
         }
 
         if (wantsGpu && gpuHardFailure && cacheRestoreRequestedHandle != clipHandle) {
@@ -383,6 +392,9 @@ class MlvRenderer(
 
         if (rendered && viewModel.isLoading.value) {
             viewModel.changeLoadingStatus(false)
+        }
+        if (freshFrame) {
+            viewModel.reportPresentedFrame(clipHandle, frameIndex)
         }
         // Sequential playback advances from this handshake. Always release it,
         // including transient JNI lock failures, so playback cannot deadlock.
@@ -404,7 +416,12 @@ class MlvRenderer(
         processedGpuFrameHandle = 0L
     }
 
-    private fun drawStandardFrame(handle: Long, width: Int, height: Int): DrawResult {
+    private fun drawStandardFrame(
+        handle: Long,
+        frameIndex: Int,
+        width: Int,
+        height: Int
+    ): DrawResult {
         if (standardProgram == 0 || standardTexture == 0) return DrawResult(false, 0L)
         if (!ensureStandardTexture(width, height)) return DrawResult(false, 0L)
 
@@ -414,7 +431,7 @@ class MlvRenderer(
         val decodeStart = System.nanoTime()
         val decoded = NativeLib.fillFrame16(
             handle,
-            viewModel.currentFrame.value,
+            frameIndex,
             cpuCores,
             buffer,
             width,
@@ -455,13 +472,22 @@ class MlvRenderer(
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, standardTexture)
         GLES30.glUniform1i(standardTextureUniform, 0)
         drawQuad()
-        return DrawResult(checkGlError("standard draw"), decodeNs)
+        val displayed = checkGlError("standard draw")
+        return DrawResult(displayed, decodeNs, freshFrame = displayed && decoded)
     }
 
-    private fun drawGpuFrame(handle: Long, width: Int, height: Int): DrawResult {
+    private fun drawGpuFrame(
+        handle: Long,
+        frameIndex: Int,
+        width: Int,
+        height: Int
+    ): DrawResult {
         if (!canAllocateGpuFrame(width, height)) return DrawResult(false, 0L)
         if (!ensureGpuTextures(width, height)) return DrawResult(false, 0L)
         if (!refreshGpuStateIfNeeded(handle)) return DrawResult(false, 0L)
+        if ((gpuState[PARAM_FLAGS].toInt() and FLAG_REQUIRES_CPU_PROCESSING) != 0) {
+            return DrawResult(false, 0L)
+        }
 
         val buffer = getOrAllocateBayerBuffer(width, height) ?: return DrawResult(false, 0L)
         buffer.position(0)
@@ -475,7 +501,7 @@ class MlvRenderer(
         val decodeStart = System.nanoTime()
         val decoderBackend = NativeLib.fillRawBayer16(
             handle,
-            viewModel.currentFrame.value,
+            frameIndex,
             buffer,
             requestedDecoderBackend,
             cpuCores
@@ -1077,6 +1103,7 @@ class MlvRenderer(
         const val PARAM_FLAGS = 15
 
         const val FLAG_AGX = 1
+        const val FLAG_REQUIRES_CPU_PROCESSING = 1 shl 1
 
         const val CFA_RGGB = 0
         const val CFA_GRBG = 3

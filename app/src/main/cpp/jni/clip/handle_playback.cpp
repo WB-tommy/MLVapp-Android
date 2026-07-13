@@ -6,6 +6,7 @@
 #include "mlv/mcraw/mcraw.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -22,6 +23,8 @@ constexpr uint64_t kMcrawDecoderBenchmarkWindow = 120;
 constexpr jint kRawGpuDecodeTransient = -1;
 constexpr jint kRawGpuDecodeHardFailure = -2;
 constexpr jint kRawGpuBackendClassicMlv = 2;
+constexpr int kGpuPreviewFlagAgx = 1;
+constexpr int kGpuPreviewFlagRequiresCpuProcessing = 1 << 1;
 
 enum RawCfa : int {
   kCfaRggb = 0,
@@ -59,6 +62,32 @@ bool isUsableRawClip(const mlvObject_t *clip) {
   return (isMcraw || isClassicRaw) && clip->filenum > 0 &&
          clip->frames > 0 && clip->video_index != nullptr &&
          clip->file != nullptr && clip->main_file_mutex != nullptr;
+}
+
+bool approximately(double value, double target, double epsilon = 1e-6) {
+  return std::fabs(value - target) < epsilon;
+}
+
+bool requiresCpuProcessing(const processingObject_t *processing) {
+  if (processing->highlight_reconstruction != 0 ||
+      (processing->use_cam_matrix > 0 && processing->exr_mode == 0) ||
+      (processing->use_cam_matrix == 0 && processing->AgX != 0)) {
+    return true;
+  }
+  if (processing->allow_creative_adjustments == 0) {
+    return false;
+  }
+
+  return !approximately(processing->contrast, 0.0) ||
+         !approximately(processing->pivot, 0.75) ||
+         !approximately(processing->clarity, 0.0) ||
+         !approximately(processing->vibrance, 1.0) ||
+         !approximately(processing->saturation, 1.0) ||
+         !approximately(processing->shadows_highlights.shadows, 0.0) ||
+         !approximately(processing->shadows_highlights.highlights, 0.0) ||
+         !approximately(processing->dark_contrast_factor, 0.0) ||
+         !approximately(processing->light_contrast_factor, 0.0) ||
+         !approximately(processing->lighten, 0.0);
 }
 
 const char *mcrawDecoderBackendName(int backend) {
@@ -368,8 +397,13 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawGpuPreviewState(
     params[14] = 1.0f;
   }
   // Bit 0 asks the GPU to reproduce the CPU AgX compression -> tone curve ->
-  // inverse-compression sandwich.
-  params[15] = processing->AgX != 0 ? 1.0f : 0.0f;
+  // inverse-compression sandwich. Bit 1 asks the renderer to use the full CPU
+  // path because this prototype does not implement the active adjustment.
+  int flags = processing->AgX != 0 ? kGpuPreviewFlagAgx : 0;
+  if (requiresCpuProcessing(processing)) {
+    flags |= kGpuPreviewFlagRequiresCpuProcessing;
+  }
+  params[15] = static_cast<float>(flags);
   memcpy(toneLutDst, processing->pre_calc_gamma, kGpuPreviewToneLutBytes);
   pthread_mutex_unlock(&nativeClip->processing_mutex);
 
