@@ -463,7 +463,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportHandler(
 
   jstring jFileName = env->NewStringUTF(options.source_file_name.c_str());
   mlvObject_t *video =
-      getMlvObject(env, clipFds, jFileName, cacheSize, cores, true);
+      getMlvObject(env, clipFds, jFileName, cacheSize, cores,
+                   /*useParallelMcrawDecoder=*/true, /*isFull=*/true);
   env->DeleteLocalRef(jFileName);
   if (!video) {
     env->DeleteGlobalRef(g_progress_listener);
@@ -672,7 +673,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportBatchHandler(
 
     // Open clip
     mlvObject_t *video =
-        getMlvObject(env, clipFds, fileName, cacheSize, cores, true);
+        getMlvObject(env, clipFds, fileName, cacheSize, cores,
+                     /*useParallelMcrawDecoder=*/true, /*isFull=*/true);
 
     if (video) {
       setMlvProcessing(video, video->processing);

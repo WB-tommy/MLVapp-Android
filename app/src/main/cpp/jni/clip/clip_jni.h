@@ -29,6 +29,7 @@ mlvObject_t *getMlvObject(
         jintArray fds,
         jstring fileName, jlong cacheSize,
         jint cores,
+        bool useParallelMcrawDecoder,
         bool isFull);
 
 JNIEXPORT jobject JNICALL
@@ -36,7 +37,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
         JNIEnv *env, jobject /* this */,
         jint fd,
         jstring fileName, jlong cacheSize,
-        jint cores);
+        jint cores,
+        jboolean useParallelMcrawDecoder);
 
 JNIEXPORT jlong JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_probeMlvGuid(
@@ -49,7 +51,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
         JNIEnv *env, jobject /* this */,
         jintArray fds,
         jstring fileName, jlong cacheSize,
-        jint cores);
+        jint cores,
+        jboolean useParallelMcrawDecoder);
 
 JNIEXPORT jlongArray JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_getVideoFrameTimestamps(
@@ -84,6 +87,12 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawGpuPreviewState(
 
 JNIEXPORT jboolean JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_setRawGpuPreviewCaching(
+        JNIEnv *env, jclass /*clazz*/,
+        jlong handle,
+        jboolean enabled);
+
+JNIEXPORT jboolean JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setMcrawParallelDecoder(
         JNIEnv *env, jclass /*clazz*/,
         jlong handle,
         jboolean enabled);

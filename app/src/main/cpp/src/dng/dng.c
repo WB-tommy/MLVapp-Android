@@ -34,8 +34,8 @@
 
 #include "../mlv/liblj92/lj92.h"
 #include "../mlv/llrawproc/llrawproc.h"
-#include "../mlv/mcraw/mcraw.h"
 #include "../mlv/macros.h"
+#include "../mlv/video_mlv.h"
 
 #define IFD0_COUNT 41
 #define EXIF_IFD_COUNT 11
@@ -915,44 +915,14 @@ static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_
 
     if (isMcrawLoaded(mlv_data))
     {
-        /* Move to start of frame in file and read the RAW data */
-        file_set_pos(fd, mlv_data->video_index[frame_index].block_offset, SEEK_SET);
-
-        mr_item_t item = {};
-
-        if (fread(&item, sizeof(mr_item_t), 1, fd) != 1)
+        /* Use the same validated type-7 decoder policy as CPU/GPU preview.
+         * Native-CFA output preserves MCRAW's DNG semantics; low-level RAW
+         * processing is still applied below exactly as before. */
+        if (getMlvRawFrameNative(mlv_data, frame_index,
+                                 dng_data->image_buf_unpacked) != 0)
         {
 #ifndef STDOUT_SILENT
-            printf("Can not read raw frame from %s\n", mlv_data->path);
-#endif
-            return -1;
-        }
-
-        size_t stored_size = item.size;
-
-        if (stored_size > dng_get_image_size(mlv_data, IMG_SIZE_UNPACKED, frame_index)) {
-            dng_data->image_buf2 = realloc(dng_data->image_buf2, stored_size);
-        }
-
-        if (fread(dng_data->image_buf2, stored_size, 1, fd) != 1)
-        {
-#ifndef STDOUT_SILENT
-            printf("Can not read raw frame from %s\n", mlv_data->path);
-#endif
-            return -1;
-        }
-
-        int64_t ret = mr_decode_video_frame((uint8_t*)dng_data->image_buf_unpacked,
-                                            (uint8_t*)dng_data->image_buf2,
-                                            stored_size,
-                                            mlv_data->RAWI.xRes,
-                                            mlv_data->RAWI.yRes,
-                                            mlv_data->compression_type);
-
-        if (ret <= 0)
-        {
-#ifndef STDOUT_SILENT
-            printf("mcraw decoder: Failed with error code (%ld)\n", ret);
+            printf("mcraw decoder: Failed to decode frame %u\n", frame_index);
 #endif
             return -1;
         }

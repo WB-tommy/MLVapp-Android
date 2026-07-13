@@ -79,6 +79,64 @@ static uint64_t monotonic_time_ns(void)
 #define FMT_SIZE "%zu"
 #endif
 
+static int clamp_mcraw_decoder_threads(int decoder_threads)
+{
+    if (decoder_threads < 1)
+    {
+        return 1;
+    }
+    return MIN(decoder_threads, MCRAW_PARALLEL_MAX_THREADS);
+}
+
+static int configured_mcraw_backend(const mlvObject_t * video)
+{
+    if (video == NULL)
+    {
+        return MCRAW_DECODER_BASELINE;
+    }
+    const int backend = __atomic_load_n(&video->mcraw_decoder_backend,
+                                        __ATOMIC_ACQUIRE);
+    return backend == MCRAW_DECODER_ROW_PARALLEL
+        ? MCRAW_DECODER_ROW_PARALLEL
+        : MCRAW_DECODER_BASELINE;
+}
+
+static int configured_mcraw_threads(const mlvObject_t * video)
+{
+    if (video == NULL)
+    {
+        return 1;
+    }
+    return clamp_mcraw_decoder_threads(
+        __atomic_load_n(&video->mcraw_decoder_threads, __ATOMIC_ACQUIRE));
+}
+
+void setMlvMcrawDecoder(mlvObject_t * video, int decoder_backend,
+                        int decoder_threads)
+{
+    if (video == NULL)
+    {
+        return;
+    }
+    const int backend = decoder_backend == MCRAW_DECODER_ROW_PARALLEL
+        ? MCRAW_DECODER_ROW_PARALLEL
+        : MCRAW_DECODER_BASELINE;
+    __atomic_store_n(&video->mcraw_decoder_threads,
+                     clamp_mcraw_decoder_threads(decoder_threads),
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&video->mcraw_decoder_backend, backend, __ATOMIC_RELEASE);
+}
+
+int getMlvMcrawParallelValidationState(const mlvObject_t * video)
+{
+    if (video == NULL)
+    {
+        return -1;
+    }
+    return __atomic_load_n(&video->mcraw_parallel_validation_state,
+                           __ATOMIC_ACQUIRE);
+}
+
 static int seek_to_next_known_block(FILE * in_file)
 {
     uint64_t read_ahead_size = 128 * 1024 * 1024;
@@ -196,7 +254,8 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
     }
     int pixels_count = width * height;
     size_t pixels_size = (size_t)pixels_count;
-    if (pixels_size > (SIZE_MAX - 7u) / (size_t)bitdepth)
+    if (pixels_size > (SIZE_MAX - 7u) / (size_t)bitdepth ||
+        pixels_size > SIZE_MAX / sizeof(uint16_t))
     {
         return 1;
     }
@@ -260,7 +319,8 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
         memset(mcraw_metrics, 0, sizeof(*mcraw_metrics));
         mcraw_metrics->requested_backend = requested_mcraw_backend;
         mcraw_metrics->actual_backend = MCRAW_DECODER_BASELINE;
-        mcraw_metrics->decoder_threads = requested_mcraw_threads;
+        mcraw_metrics->decoder_threads =
+            clamp_mcraw_decoder_threads(requested_mcraw_threads);
     }
 
     const uint64_t read_start_ns =
@@ -327,21 +387,96 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
         size_t ret = 0;
         const int parallel_requested =
             requested_mcraw_backend == MCRAW_DECODER_ROW_PARALLEL;
+        int validation_state =
+            getMlvMcrawParallelValidationState(video);
+        int owns_validation = 0;
+        if (parallel_requested &&
+            video->compression_type == MOTIONCAM_COMPRESSION_TYPE &&
+            validation_state == 0)
+        {
+            int pending = 0;
+            owns_validation = __atomic_compare_exchange_n(
+                &video->mcraw_parallel_validation_state, &pending, 2, 0,
+                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+            validation_state = owns_validation ? 2 : pending;
+        }
         const int parallel_supported =
             parallel_requested &&
-            video->compression_type == MOTIONCAM_COMPRESSION_TYPE;
+            video->compression_type == MOTIONCAM_COMPRESSION_TYPE &&
+            (validation_state == 1 || owns_validation);
 
         if (parallel_supported)
         {
             ret = mr_decode_video_frame_parallel(
                 (uint8_t*)unpackedFrame, raw_frame, frame_size, width, height,
-                video->compression_type, requested_mcraw_threads);
+                video->compression_type,
+                clamp_mcraw_decoder_threads(requested_mcraw_threads));
             if (ret == (size_t)pixels_count)
             {
+                int actual_backend = MCRAW_DECODER_ROW_PARALLEL;
+
+                /* Validate one full type-7 frame below JNI so CPU preview,
+                 * cache workers, GPU preview, and export share the same
+                 * bit-exact safety gate. Only the caller that atomically moves
+                 * pending -> validating may run the comparison; other callers
+                 * use baseline until it publishes trusted or disabled. */
+                if (owns_validation)
+                {
+                    uint16_t * baseline_frame =
+                        (uint16_t *)malloc(pixels_size * sizeof(uint16_t));
+                    if (baseline_frame != NULL)
+                    {
+                        const size_t baseline_ret = mr_decode_video_frame(
+                            (uint8_t*)baseline_frame, raw_frame, frame_size,
+                            width, height, video->compression_type);
+                        if (baseline_ret != pixels_size)
+                        {
+                            __atomic_store_n(
+                                &video->mcraw_parallel_validation_state, -1,
+                                __ATOMIC_RELEASE);
+                            ret = baseline_ret;
+                            actual_backend = MCRAW_DECODER_BASELINE;
+                        }
+                        else if (memcmp(unpackedFrame, baseline_frame,
+                                        pixels_size * sizeof(uint16_t)) != 0)
+                        {
+                            memcpy(unpackedFrame, baseline_frame,
+                                   pixels_size * sizeof(uint16_t));
+                            __atomic_store_n(
+                                &video->mcraw_parallel_validation_state, -1,
+                                __ATOMIC_RELEASE);
+                            actual_backend = MCRAW_DECODER_BASELINE;
+                        }
+                        else
+                        {
+                            __atomic_store_n(
+                                &video->mcraw_parallel_validation_state, 1,
+                                __ATOMIC_RELEASE);
+                        }
+                        free(baseline_frame);
+                    }
+                    else
+                    {
+                        /* Allocation pressure must not leave an unvalidated
+                         * decoder active. Decode this frame with baseline and
+                         * latch the safe backend for the rest of the clip. */
+                        ret = mr_decode_video_frame(
+                            (uint8_t*)unpackedFrame, raw_frame, frame_size,
+                            width, height, video->compression_type);
+                        __atomic_store_n(
+                            &video->mcraw_parallel_validation_state, -1,
+                            __ATOMIC_RELEASE);
+                        actual_backend = MCRAW_DECODER_BASELINE;
+                    }
+                }
+
                 if (mcraw_metrics != NULL)
                 {
-                    mcraw_metrics->actual_backend =
-                        MCRAW_DECODER_ROW_PARALLEL;
+                    mcraw_metrics->actual_backend = actual_backend;
+                    if (actual_backend == MCRAW_DECODER_BASELINE)
+                    {
+                        mcraw_metrics->fallback_count = 1;
+                    }
                 }
             }
             else
@@ -349,6 +484,8 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
                 ret = mr_decode_video_frame((uint8_t*)unpackedFrame, raw_frame,
                                             frame_size, width, height,
                                             video->compression_type);
+                __atomic_store_n(&video->mcraw_parallel_validation_state, -1,
+                                 __ATOMIC_RELEASE);
                 if (mcraw_metrics != NULL)
                 {
                     mcraw_metrics->fallback_count = 1;
@@ -554,7 +691,16 @@ static int get_mlv_raw_frame_uint16(mlvObject_t * video,
 int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * unpackedFrame)
 {
     return get_mlv_raw_frame_uint16(video, frameIndex, unpackedFrame, 1,
-                                    MCRAW_DECODER_BASELINE, 1, NULL);
+                                    configured_mcraw_backend(video),
+                                    configured_mcraw_threads(video), NULL);
+}
+
+int getMlvRawFrameNative(mlvObject_t * video, uint64_t frameIndex,
+                         uint16_t * unpackedFrame)
+{
+    return get_mlv_raw_frame_uint16(video, frameIndex, unpackedFrame, 0,
+                                    configured_mcraw_backend(video),
+                                    configured_mcraw_threads(video), NULL);
 }
 
 int getRawGpuFrameUint16(mlvObject_t * video, uint64_t frameIndex,
@@ -888,6 +1034,13 @@ mlvObject_t * initMlvObject()
 
     /* Seems about right */
     setMlvCpuCores(video, 4);
+    /* Type-7 MCRAW row groups are independent. Prefer the shared parallel
+     * backend for CPU and GPU callers; type-6 and classic MLV automatically
+     * remain on their built-in decoder. */
+    setMlvMcrawDecoder(video, MCRAW_DECODER_ROW_PARALLEL,
+                       getMlvCpuCores(video));
+    __atomic_store_n(&video->mcraw_parallel_validation_state, 0,
+                     __ATOMIC_RELEASE);
 
     /* Init low level raw processing object */
     video->llrawproc = initLLRawProcObject();

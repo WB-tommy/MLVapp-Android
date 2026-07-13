@@ -13,7 +13,8 @@ object NativeLib {
         fd: Int,
         clipPath: String,
         memSize: Long,
-        cpuCores: Int
+        cpuCores: Int,
+        useParallelMcrawDecoder: Boolean
     ): fm.magiclantern.forum.data.ClipPreviewData
 
     external fun probeMlvGuid(
@@ -25,7 +26,8 @@ object NativeLib {
         fds: IntArray,
         clipPath: String,
         memSize: Long,
-        cpuCores: Int
+        cpuCores: Int,
+        useParallelMcrawDecoder: Boolean
     ): fm.magiclantern.forum.data.ClipMetaData
 
     external fun fillFrame16(
@@ -72,6 +74,12 @@ object NativeLib {
 
     /** Enables or disables the CPU RGB frame cache for RAW GPU benchmarking. */
     external fun setRawGpuPreviewCaching(
+        handle: Long,
+        enabled: Boolean
+    ): Boolean
+
+    /** Selects the shared MCRAW type-7 decoder for this clip's CPU/GPU paths. */
+    external fun setMcrawParallelDecoder(
         handle: Long,
         enabled: Boolean
     ): Boolean

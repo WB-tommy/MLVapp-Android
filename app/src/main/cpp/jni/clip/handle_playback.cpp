@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
-#include <memory>
 
 namespace {
 
@@ -82,7 +81,7 @@ void resetMcrawDecoderBenchmark(JniClipWrapper *wrapper,
 
   __android_log_print(
       ANDROID_LOG_INFO, "MCRAWDecoder",
-      "A/B window started: requested=%s, threads=%d, compression=%d",
+      "Timing window started: requested=%s, threads=%d, compression=%d",
       mcrawDecoderBackendName(requestedBackend), decoderThreads,
       compressionType);
 }
@@ -115,7 +114,7 @@ void recordMcrawDecoderBenchmark(JniClipWrapper *wrapper,
   const uint64_t frames = wrapper->mcraw_benchmark_frames;
   __android_log_print(
       ANDROID_LOG_INFO, "MCRAWDecoder",
-      "A/B averages: requested=%s, threads=%d, parallel-frames=%" PRIu64 "/%" PRIu64
+      "Decode averages: requested=%s, threads=%d, parallel-frames=%" PRIu64 "/%" PRIu64
       ", read=%" PRIu64 "us, payload-decode=%" PRIu64
       "us, JNI-total=%" PRIu64 "us, fallbacks=%" PRIu64,
       mcrawDecoderBackendName(metrics.requested_backend),
@@ -240,10 +239,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawBayer16(
       (nativeClip->MLVI.videoClass & MLV_VIDEO_CLASS_FLAG_MCRAW) != 0;
 
   const int effectiveDecoderBackend =
-      isMcraw && decoderBackend == MCRAW_DECODER_ROW_PARALLEL &&
-              wrapper->mcraw_parallel_validation_state < 0
-          ? MCRAW_DECODER_BASELINE
-          : (isMcraw ? decoderBackend : MCRAW_DECODER_BASELINE);
+      isMcraw ? decoderBackend : MCRAW_DECODER_BASELINE;
   const int effectiveDecoderThreads =
       isMcraw && decoderBackend == MCRAW_DECODER_ROW_PARALLEL
           ? std::min<int>(decoderThreads, MCRAW_PARALLEL_MAX_THREADS)
@@ -271,80 +267,33 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawBayer16(
   if (!isMcraw) {
     return kRawGpuBackendClassicMlv;
   }
-  if (effectiveDecoderBackend != decoderBackend) {
-    metrics.requested_backend = decoderBackend;
-    metrics.fallback_count += 1;
-  }
-
-  // If the alternate payload decoder failed or was unavailable, the core has
-  // already produced this frame with the baseline decoder. Latch baseline for
-  // the rest of the clip so subsequent frames do not pay for both attempts.
+  // Shared native decode has already parity-checked one complete frame and
+  // permanently latched baseline on a mismatch, allocation failure, unsupported
+  // type, or decode failure. JNI only mirrors that state for one-time logging.
   if (decoderBackend == MCRAW_DECODER_ROW_PARALLEL &&
-      effectiveDecoderBackend == MCRAW_DECODER_ROW_PARALLEL &&
       metrics.actual_backend == MCRAW_DECODER_BASELINE &&
       metrics.fallback_count > 0) {
-    wrapper->mcraw_parallel_validation_state = -1;
-    __android_log_print(
-        ANDROID_LOG_WARN, "MCRAWDecoder",
-        "Alternate decoder failed or is unavailable; disabled for clip");
+    const int sharedState =
+        getMlvMcrawParallelValidationState(nativeClip);
+    if (sharedState < 0 && wrapper->mcraw_parallel_reported_state >= 0) {
+      wrapper->mcraw_parallel_reported_state = -1;
+      __android_log_print(
+          ANDROID_LOG_WARN, "MCRAWDecoder",
+          "Parallel decoder unavailable or parity failed; using baseline for clip");
+    }
     recordMcrawDecoderBenchmark(wrapper, metrics, totalNs,
                                 nativeClip->compression_type);
     return MCRAW_DECODER_BASELINE;
   }
 
-  // Before timing the alternate backend in earnest, compare one complete
-  // decoded frame with the existing decoder. A mismatch immediately replaces
-  // the frame with baseline pixels and disables parallel decode for this clip.
   if (metrics.actual_backend == MCRAW_DECODER_ROW_PARALLEL &&
-      wrapper->mcraw_parallel_validation_state == 0) {
-    std::unique_ptr<uint16_t[]> baseline(
-        new (std::nothrow) uint16_t[pixels]);
-    if (!baseline) {
-      mcraw_decode_metrics_t baselineMetrics = {};
-      const int baselineResult = getRawGpuFrameUint16(
-          nativeClip, static_cast<uint64_t>(frameIndex), dst,
-          MCRAW_DECODER_BASELINE, 1, &baselineMetrics);
-      wrapper->mcraw_parallel_validation_state = -1;
+      wrapper->mcraw_parallel_reported_state == 0 &&
+      getMlvMcrawParallelValidationState(nativeClip) > 0) {
+      wrapper->mcraw_parallel_reported_state = 1;
       __android_log_print(
-          ANDROID_LOG_ERROR, "MCRAWDecoder",
-          "Could not allocate parity buffer; alternate decoder disabled");
-      return baselineResult == 0 ? MCRAW_DECODER_BASELINE
-                                 : kRawGpuDecodeHardFailure;
-    } else {
-      mcraw_decode_metrics_t baselineMetrics = {};
-      const int baselineResult = getRawGpuFrameUint16(
-          nativeClip, static_cast<uint64_t>(frameIndex), baseline.get(),
-          MCRAW_DECODER_BASELINE, 1, &baselineMetrics);
-      if (baselineResult != 0) {
-        wrapper->mcraw_parallel_validation_state = -1;
-        __android_log_print(
-            ANDROID_LOG_ERROR, "MCRAWDecoder",
-            "Could not validate alternate decoder; disabled for clip");
-        return kRawGpuDecodeHardFailure;
-      } else {
-        size_t mismatch = 0;
-        while (mismatch < pixels && dst[mismatch] == baseline[mismatch]) {
-          ++mismatch;
-        }
-        if (mismatch == pixels) {
-          wrapper->mcraw_parallel_validation_state = 1;
-          __android_log_print(
-              ANDROID_LOG_INFO, "MCRAWDecoder",
-              "Parallel parity check passed: frame=%d, pixels=%zu", frameIndex,
-              pixels);
-        } else {
-          const unsigned parallelValue = dst[mismatch];
-          const unsigned baselineValue = baseline[mismatch];
-          memcpy(dst, baseline.get(), needed);
-          wrapper->mcraw_parallel_validation_state = -1;
-          __android_log_print(
-              ANDROID_LOG_ERROR, "MCRAWDecoder",
-              "Parallel parity mismatch at pixel=%zu (%u != %u); disabled for clip",
-              mismatch, parallelValue, baselineValue);
-          return MCRAW_DECODER_BASELINE;
-        }
-      }
-    }
+          ANDROID_LOG_INFO, "MCRAWDecoder",
+          "Shared parallel parity check passed: frame=%d, pixels=%zu",
+          frameIndex, pixels);
   }
 
   recordMcrawDecoderBenchmark(wrapper, metrics, totalNs,
@@ -456,6 +405,28 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_setRawGpuPreviewCaching(
     }
   }
 
+  return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_setMcrawParallelDecoder(
+    JNIEnv * /*env*/, jclass /*clazz*/, jlong handle, jboolean enabled) {
+  if (handle == 0) {
+    return JNI_FALSE;
+  }
+
+  auto *wrapper = reinterpret_cast<JniClipWrapper *>(handle);
+  std::lock_guard<std::mutex> lock(wrapper->render_mutex);
+  mlvObject_t *nativeClip = wrapper->mlv_object;
+  if (nativeClip == nullptr || !isMlvActive(nativeClip)) {
+    return JNI_FALSE;
+  }
+
+  setMlvMcrawDecoder(
+      nativeClip,
+      enabled == JNI_TRUE ? MCRAW_DECODER_ROW_PARALLEL
+                          : MCRAW_DECODER_BASELINE,
+      getMlvCpuCores(nativeClip));
   return JNI_TRUE;
 }
 

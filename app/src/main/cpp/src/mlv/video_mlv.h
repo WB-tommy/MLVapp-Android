@@ -68,7 +68,7 @@ void getMlvProcessedFrame16(mlvObject_t * video, uint64_t frameIndex, uint16_t *
 int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * unpackedFrame);
 /* Decode classic MLV or MCRAW to its original native-scale Bayer mosaic for
  * the experimental GPU preview. Classic MLV intentionally bypasses low-level
- * RAW corrections; decoder selection applies only to MCRAW A/B tests. */
+ * RAW corrections; decoder selection applies only to MCRAW payloads. */
 enum mcraw_decoder_backend
 {
     MCRAW_DECODER_BASELINE = 0,
@@ -88,6 +88,15 @@ typedef struct
 int getRawGpuFrameUint16(mlvObject_t * video, uint64_t frameIndex,
                          uint16_t * unpackedFrame, int requested_backend,
                          int decoder_threads, mcraw_decode_metrics_t * metrics);
+/* Decode native-scale Bayer with the clip's configured MCRAW policy while
+ * preserving the recorded CFA. Used by RAW export paths as well as preview. */
+int getMlvRawFrameNative(mlvObject_t * video, uint64_t frameIndex,
+                         uint16_t * unpackedFrame);
+/* Configure the shared MCRAW policy. Unsupported formats continue to use their
+ * built-in decoder. The row-parallel worker count is clamped internally. */
+void setMlvMcrawDecoder(mlvObject_t * video, int decoder_backend,
+                        int decoder_threads);
+int getMlvMcrawParallelValidationState(const mlvObject_t * video);
 void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outputFrame);
 
 /* Gets a debayered 16 bit frame */

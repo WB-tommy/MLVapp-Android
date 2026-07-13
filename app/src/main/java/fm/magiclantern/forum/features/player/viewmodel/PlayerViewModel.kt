@@ -64,7 +64,7 @@ class PlayerViewModel @Inject constructor(
     val experimentalRawGpuPreview: StateFlow<Boolean> =
         settingsRepository.experimentalRawGpuPreview
 
-    /** MCRAW-only decoder A/B choice inside the opt-in RAW GPU experiment. */
+    /** Shared MCRAW type-7 decoder policy for CPU and GPU paths. */
     val experimentalMcrawParallelDecoder: StateFlow<Boolean> =
         settingsRepository.experimentalMcrawParallelDecoder
 
@@ -225,6 +225,22 @@ class PlayerViewModel @Inject constructor(
                     rawGpuFailure.compareAndSet(failure, null)
                 }
             }
+        }
+        viewModelScope.launch(nativeDispatcher) {
+            combine(
+                activeClip,
+                experimentalMcrawParallelDecoder
+            ) { details, parallelEnabled -> details to parallelEnabled }
+                .collectLatest { (details, parallelEnabled) ->
+                    if (details != null && details.nativeHandle != 0L &&
+                        !NativeLib.setMcrawParallelDecoder(
+                            details.nativeHandle,
+                            parallelEnabled
+                        )
+                    ) {
+                        Log.w(tag, "Could not configure shared MCRAW decoder policy")
+                    }
+                }
         }
         
         // Observe receipt debayer mode changes (from grading screen)

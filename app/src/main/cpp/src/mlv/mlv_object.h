@@ -97,6 +97,13 @@ typedef struct {
     uint32_t    frames;          /* Number of frames */
     uint32_t    frame_size;      /* NOT counting compression factor */
     int         compression_type;  /* mcraw compression type. legacy/binned: 6, default: 7 */
+    /* MCRAW decode policy. The row-parallel backend is type-7 only; values
+     * match enum mcraw_decoder_backend in video_mlv.h. Atomic builtins guard
+     * these fields because cache, render, and export callers share the clip. */
+    int         mcraw_decoder_backend;
+    int         mcraw_decoder_threads;
+    /* 0=pending, 2=validation owned, 1=bit-exact, -1=baseline fallback. */
+    int         mcraw_parallel_validation_state;
     frame_index_t * video_index;
 
     /* Audio info */

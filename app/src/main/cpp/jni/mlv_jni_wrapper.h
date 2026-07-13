@@ -13,8 +13,8 @@ typedef struct JniClipWrapper {
   uint16_t *processing_buffer_16bit;
   std::mutex render_mutex; // Protects against concurrent render calls
 
-  // Experimental MCRAW decoder A/B counters. Access is serialized by
-  // render_mutex and the window resets whenever the requested backend changes.
+  // MCRAW decoder timing counters. Access is serialized by render_mutex and
+  // the window resets whenever the requested backend changes.
   int mcraw_benchmark_requested_backend = -1;
   int mcraw_benchmark_decoder_threads = -1;
   uint64_t mcraw_benchmark_frames = 0;
@@ -23,8 +23,9 @@ typedef struct JniClipWrapper {
   uint64_t mcraw_benchmark_decode_ns = 0;
   uint64_t mcraw_benchmark_total_ns = 0;
   uint64_t mcraw_benchmark_fallbacks = 0;
-  // 0=pending, 1=bit-exact, -1=disabled after mismatch/failure.
-  int mcraw_parallel_validation_state = 0;
+  // Mirrors the shared native parity state only to avoid duplicate log lines.
+  // Decoder selection and fallback live in mlvObject_t for CPU/GPU/export.
+  int mcraw_parallel_reported_state = 0;
 } JniClipWrapper;
 
 #endif // MLV_JNI_WRAPPER_H

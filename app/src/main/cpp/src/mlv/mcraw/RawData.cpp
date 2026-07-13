@@ -16,10 +16,10 @@
 
 // Changed:
 // - Add c API function mr_decode_video_frame(...)
-// - Add an isolated row-parallel build used only by the experimental GPU
-//   preview. It uses the original unpack implementation and adapts row grouping
-//   prototyped on MotionCam's performance branch before merge. Baseline
-//   selection/unpack behavior remains, with shared packet validation hardened.
+// - Add an isolated row-parallel build shared by CPU and GPU decode policy. It
+//   uses the original unpack implementation and adapts row grouping prototyped
+//   on MotionCam's performance branch before merge. Baseline selection/unpack
+//   behavior remains, with shared packet validation hardened.
 
 #include <cstdint>
 #include <cstring>

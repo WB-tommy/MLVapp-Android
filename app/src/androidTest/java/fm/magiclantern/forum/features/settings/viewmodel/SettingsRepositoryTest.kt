@@ -62,18 +62,18 @@ class SettingsRepositoryTest {
     }
 
     @Test
-    fun experimentalMcrawParallelDecoderDefaultsOffAndPersistsIndependently() = runBlocking {
+    fun experimentalMcrawParallelDecoderDefaultsOnAndPersistsOptOutIndependently() = runBlocking {
         val repository = SettingsRepository(context)
-        assertFalse(repository.experimentalMcrawParallelDecoder.value)
+        assertTrue(repository.experimentalMcrawParallelDecoder.value)
 
         repository.setExperimentalRawGpuPreview(true)
-        assertFalse(repository.experimentalMcrawParallelDecoder.value)
+        assertTrue(repository.experimentalMcrawParallelDecoder.value)
 
-        repository.setExperimentalMcrawParallelDecoder(true)
+        repository.setExperimentalMcrawParallelDecoder(false)
         repository.setExperimentalRawGpuPreview(false)
 
         val restoredRepository = SettingsRepository(context)
-        assertTrue(restoredRepository.experimentalMcrawParallelDecoder.value)
+        assertFalse(restoredRepository.experimentalMcrawParallelDecoder.value)
         assertFalse(restoredRepository.experimentalRawGpuPreview.value)
     }
 

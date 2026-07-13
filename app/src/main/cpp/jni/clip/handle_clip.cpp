@@ -56,7 +56,8 @@ namespace {
 } // namespace
 
 mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
-                          jlong cacheSize, jint cores, bool isFull) {
+                          jlong cacheSize, jint cores,
+                          bool useParallelMcrawDecoder, bool isFull) {
     int mlvErr = MLV_ERR_NONE;
     char mlvErrMsg[256] = {0};
 
@@ -75,12 +76,25 @@ mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
             return nullptr;
         }
 
-        if (isMcraw) {
-            nativeClip = initMlvObjectWithMcrawClip(fdArray[0], (char *) filePath,
-                                                    openMode, &mlvErr, mlvErrMsg);
+        nativeClip = initMlvObject();
+        if (nativeClip != nullptr) {
+            /* Apply decoder policy before open starts cache workers. Keep the
+             * established four cache workers during open, but give each RAW
+             * decode the caller's bounded CPU budget from frame 0. */
+            setMlvMcrawDecoder(
+                nativeClip,
+                useParallelMcrawDecoder ? MCRAW_DECODER_ROW_PARALLEL
+                                        : MCRAW_DECODER_BASELINE,
+                std::max<jint>(cores, 1));
+            if (isMcraw) {
+                mlvErr = openMcrawClip(nativeClip, fdArray[0],
+                                       (char *) filePath, openMode, mlvErrMsg);
+            } else {
+                mlvErr = openMlvClip(nativeClip, fdArray, (int) numFds,
+                                     (char *) filePath, openMode, mlvErrMsg);
+            }
         } else {
-            nativeClip = initMlvObjectWithClip(fdArray, (int) numFds, (char *) filePath,
-                                               openMode, &mlvErr, mlvErrMsg);
+            mlvErr = MLV_ERR_OPEN;
         }
         env->ReleaseIntArrayElements(fds, fdArray, JNI_ABORT);
     }
@@ -97,7 +111,7 @@ mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
 
     nativeClip->processing = initProcessingObject();
     setMlvRawCacheLimitMegaBytes(nativeClip, cacheSize);
-    setMlvCpuCores(nativeClip, cores);
+    setMlvCpuCores(nativeClip, std::max<jint>(cores, 1));
 
     return nativeClip;
 }
@@ -127,7 +141,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_probeMlvGuid(
 JNIEXPORT jobject JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
         JNIEnv *env, jobject /* this */, jint fd, jstring fileName, jlong cacheSize,
-        jint cores) {
+        jint cores, jboolean useParallelMcrawDecoder) {
 
     if (!EnsureJniCacheInitialized(env)) {
         __android_log_print(ANDROID_LOG_ERROR, kJniTag,
@@ -163,7 +177,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
     u_int32_t cameraModelId = 0;
     jstring focusPixelMapNameJ = nullptr;
 
-    nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores, false);
+    nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores,
+                             useParallelMcrawDecoder == JNI_TRUE, false);
     if (!nativeClip) {
         LOGE(kJniTag, "Failed to open clip for preview");
         goto cleanup;
@@ -316,7 +331,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
 JNIEXPORT jobject JNICALL
 Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
         JNIEnv *env, jobject /* this */, jintArray fds, jstring fileName,
-        jlong cacheSize, jint cores) {
+        jlong cacheSize, jint cores, jboolean useParallelMcrawDecoder) {
 
     if (!EnsureJniCacheInitialized(env)) {
         __android_log_print(ANDROID_LOG_ERROR, kJniTag,
@@ -330,7 +345,8 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
     JniClipWrapper *wrapper = nullptr;
     jobject metadata = nullptr;
 
-    nativeClip = getMlvObject(env, fds, fileName, cacheSize, cores, true);
+    nativeClip = getMlvObject(env, fds, fileName, cacheSize, cores,
+                             useParallelMcrawDecoder == JNI_TRUE, true);
     if (!nativeClip) {
         __android_log_print(ANDROID_LOG_ERROR, kJniTag, "Failed to open clip");
         goto cleanup;

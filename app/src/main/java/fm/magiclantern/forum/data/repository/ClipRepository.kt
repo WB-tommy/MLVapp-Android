@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import dagger.hilt.android.qualifiers.ApplicationContext
 import fm.magiclantern.forum.FocusPixelManager
 import fm.magiclantern.forum.domain.model.ClipPreview
+import fm.magiclantern.forum.features.settings.viewmodel.SettingsRepository
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.utils.MlvFileRole
 import fm.magiclantern.forum.utils.formatDuration
@@ -32,7 +33,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class ClipRepository @Inject constructor(
-    @ApplicationContext private val appContext: Context
+    @ApplicationContext private val appContext: Context,
+    private val settingsRepository: SettingsRepository
 ) {
     private val contentResolver: ContentResolver = appContext.contentResolver
     private val focusPixelManager: FocusPixelManager = FocusPixelManager
@@ -71,7 +73,8 @@ class ClipRepository @Inject constructor(
                     fd,
                     fileName,
                     cacheSizeMiB,
-                    cpuCores
+                    cpuCores,
+                    settingsRepository.experimentalMcrawParallelDecoder.value
                 )
             }
             }.getOrNull() ?: return@withContext null
@@ -123,7 +126,8 @@ class ClipRepository @Inject constructor(
             fileDescriptors,
             primaryFileName,
             cacheSizeMiB,
-            cpuCores
+            cpuCores,
+            settingsRepository.experimentalMcrawParallelDecoder.value
         )
 
         val nativeHandle = nativeMetadata.nativeHandle

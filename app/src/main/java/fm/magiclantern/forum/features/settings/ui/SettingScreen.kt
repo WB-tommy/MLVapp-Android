@@ -101,11 +101,11 @@ fun SettingsContent(viewModel: SettingsViewModel, modifier: Modifier = Modifier)
         )
 
         SwitchSettingItem(
-            title = "MotionCam Parallel Decoder (Test)",
-            summary = "MCRAW type-7 only: four-row-group decode with up to 4 CPU workers",
+            title = "MotionCam Parallel Playback Decoder",
+            summary = "MCRAW type-7 CPU and GPU playback with up to 4 workers; " +
+                "legacy MCRAW and MLV use their built-in decoders",
             checked = experimentalMcrawParallelDecoder,
-            onCheckedChange = viewModel::setExperimentalMcrawParallelDecoder,
-            enabled = experimentalRawGpuPreview
+            onCheckedChange = viewModel::setExperimentalMcrawParallelDecoder
         )
 
         HorizontalDivider(

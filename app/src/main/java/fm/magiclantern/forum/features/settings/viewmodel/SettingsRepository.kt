@@ -40,7 +40,7 @@ class SettingsRepository @Inject constructor(
         experimentalRawGpuPreviewFlow.asStateFlow()
 
     private val experimentalMcrawParallelDecoderFlow = MutableStateFlow(
-        prefs.getBoolean(KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER, false)
+        prefs.getBoolean(KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER, true)
     )
     val experimentalMcrawParallelDecoder: StateFlow<Boolean> =
         experimentalMcrawParallelDecoderFlow.asStateFlow()
