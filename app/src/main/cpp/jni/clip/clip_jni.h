@@ -70,11 +70,12 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
         jint height);
 
 JNIEXPORT jint JNICALL
-Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawBayer16(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillCorrectedRawBayer16(
         JNIEnv *env, jclass /*clazz*/,
         jlong handle,
         jint frameIndex,
         jobject dstByteBuffer,
+        jobject frameInfoByteBuffer,
         jint decoderBackend,
         jint decoderThreads);
 

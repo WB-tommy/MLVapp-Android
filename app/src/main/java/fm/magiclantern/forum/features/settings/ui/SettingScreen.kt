@@ -94,8 +94,8 @@ fun SettingsContent(viewModel: SettingsViewModel, modifier: Modifier = Modifier)
 
         SwitchSettingItem(
             title = "Experimental RAW GPU Playback",
-            summary = "MCRAW + uncompressed/LJ92 MLV: levels, WB, bilinear " +
-                "demosaic and tone; MLV bypasses Dual ISO and other RAW corrections",
+            summary = "MCRAW + uncompressed/LJ92 MLV: CPU RAW corrections, then " +
+                "GPU levels, WB, bilinear demosaic, profile and grading",
             checked = experimentalRawGpuPreview,
             onCheckedChange = viewModel::setExperimentalRawGpuPreview
         )

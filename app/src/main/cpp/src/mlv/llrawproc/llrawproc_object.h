@@ -85,6 +85,8 @@ typedef struct
     /* external dark frame buffer pointer and its size */
     uint16_t * dark_frame_data;
     uint32_t dark_frame_size;
+    /* Identifies which mode produced dark_frame_data (DF_OFF/EXT/INT). */
+    int dark_frame_data_source;
 
     /* LUTs */
     int * raw2ev;

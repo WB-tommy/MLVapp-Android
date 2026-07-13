@@ -76,6 +76,7 @@ data class RawCorrectionSettings(
     val dualIsoWhite: Int = 65013,            // Dual ISO white level
     val dualIsoBlack: Int = 4096,             // Dual ISO black level
     val darkFrameFileName: String = "No file selected",  // Dark frame file path
+    val darkFrameUri: String = "",            // Persistable SAF URI for handle restore
     val darkFrameEnabled: Int = 0             // 0=Off, 1=Ext, 2=Int
 ) : Parcelable
 
@@ -127,27 +128,10 @@ data class ColorGradingSettings(
     val agx: Int = 1                          // AgX mode (0-1)
 ) : Parcelable
 
-/** Whether the experimental RAW GPU preview must yield to the complete CPU pipeline. */
-fun ColorGradingSettings.requiresCpuProcessingPreview(): Boolean {
-    if (highlightReconstruction != 0 ||
-        (camMatrixUsed > 0 && exrMode == 0) ||
-        (camMatrixUsed == 0 && agx != 0)
-    ) {
-        return true
-    }
-    if (allowCreativeAdjustments == 0) return false
-
-    return contrast != 0 ||
-        pivot != 75 ||
-        clarity != 0 ||
-        vibrance != 0 ||
-        saturation != 0 ||
-        shadows != 0 ||
-        highlights != 0 ||
-        ds != 0 ||
-        ls != 0 ||
-        lightening != 0
-}
+/** Whether this Processing/Profile receipt requires the complete CPU preview path. */
+fun ColorGradingSettings.requiresCpuProcessingPreview(): Boolean =
+    sharpen != 0 ||
+        chromaSeparation != 0
 
 /**
  * Gradation curves settings (stub - complex data structure)
@@ -223,3 +207,39 @@ data class EffectsSettings(
     val gradientLength: Int = 1,              // Gradient length (0-100)
     val gradientAngle: Int = 0                // Gradient angle (0-360)
 )
+
+/** Whether any active receipt stage is still absent from experimental RAW GPU preview. */
+fun ClipGradingData.requiresCpuProcessingPreview(): Boolean {
+    if (colorGrading.requiresCpuProcessingPreview()) return true
+    if (colorGrading.highlightReconstruction != 0 && rawCorrection.dualIso != 0) {
+        // Desktop derives a per-frame green peak after CPU demosaic for this
+        // combination; the corrected-Bayer GPU path cannot reproduce it yet.
+        return true
+    }
+
+    val creativeAdjustmentsEnabled = colorGrading.allowCreativeAdjustments != 0
+    if (creativeAdjustmentsEnabled &&
+        (curves != CurvesSettings() || hsl != HslSettings())
+    ) {
+        return true
+    }
+    if (lut.enabled) return true
+
+    // Other RAW corrections run on CPU before upload and remain GPU eligible.
+    return effects.hasActiveCpuOnlyEffect(creativeAdjustmentsEnabled)
+}
+
+private fun EffectsSettings.hasActiveCpuOnlyEffect(
+    creativeAdjustmentsEnabled: Boolean
+): Boolean =
+    denoiserStrength != 0 ||
+        rbfDenoiserLuma != 0 ||
+        rbfDenoiserChroma != 0 ||
+        grainStrength != 0 ||
+        (creativeAdjustmentsEnabled && toningStrength != 0) ||
+        filterEnabled ||
+        vignetteStrength != 0 ||
+        caRed != 0 ||
+        caBlue != 0 ||
+        caDesaturate != 0 ||
+        (gradientEnabled && (gradientExposure != 0 || gradientContrast != 0))

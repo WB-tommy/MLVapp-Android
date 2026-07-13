@@ -4,6 +4,7 @@
 #include "../../src/mlv/video_mlv.h"
 #include <jni.h>
 #include <mutex>
+#include <unistd.h>
 
 extern "C" {
 #include "../../src/mlv/llrawproc/darkframe.h"
@@ -27,6 +28,34 @@ static mlvObject_t *getMlvObjectFromHandle(jlong handle) {
 
 static JniClipWrapper *getWrapperFromHandle(jlong handle) {
     return handle == 0 ? nullptr : reinterpret_cast<JniClipWrapper *>(handle);
+}
+
+static int clampRawSetting(int value, int minimum, int maximum) {
+    return value < minimum ? minimum : (value > maximum ? maximum : value);
+}
+
+static void resetProcessingLevelsToRaw(mlvObject_t *video) {
+    if (!video || !video->processing || !video->llrawproc) return;
+    pthread_mutex_lock(&video->processing_mutex);
+    processingSetBlackAndWhiteLevel(video->processing,
+                                    getMlvBlackLevel(video),
+                                    getMlvWhiteLevel(video),
+                                    getMlvBitdepth(video));
+    llrpResetDngBWLevels(video);
+    pthread_mutex_unlock(&video->processing_mutex);
+}
+
+static int availableDarkFrameMode(mlvObject_t *video, int requestedMode) {
+    const int mode = clampRawSetting(requestedMode, DF_OFF, DF_INT);
+    if (mode == DF_EXT &&
+        (!video->llrawproc->dark_frame_data ||
+         video->llrawproc->dark_frame_data_source != DF_EXT)) {
+        return DF_OFF;
+    }
+    if (mode == DF_INT && !video->DARK.blockType[0]) {
+        return DF_OFF;
+    }
+    return mode;
 }
 
 template <typename Update>
@@ -57,6 +86,82 @@ static void release_cstr(JNIEnv *env, jstring jstr, const char *cstr) {
     }
 }
 
+/** Restore one complete RAW receipt without exposing a partially updated
+ * correction stack to playback or the background cache. */
+extern "C" JNIEXPORT jint JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_applyRawCorrectionSettings(
+        JNIEnv * /*env*/, jobject /*this*/, jlong handle, jboolean enabled,
+        jint verticalStripes, jint focusPixels, jint fpiMethod,
+        jint badPixels, jint bpsMethod, jint bpiMethod, jint chromaSmooth,
+        jboolean patternNoise, jint deflickerTarget, jint dualIso,
+        jboolean dualIsoForced, jint dualIsoInterpolation,
+        jboolean dualIsoAliasMap, jboolean dualIsoFrBlending,
+        jint rawBlackLevel, jint rawWhiteLevel, jint darkFrameMode) {
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "applyRawCorrectionSettings: Invalid wrapper");
+        return DF_OFF;
+    }
+
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
+    if (!video || !video->llrawproc || !video->processing) {
+        LOGE(RAW_TAG, "applyRawCorrectionSettings: Invalid MLV processing state");
+        return DF_OFF;
+    }
+
+    pthread_mutex_lock(&video->processing_mutex);
+    llrpSetVerticalStripeMode(video,
+            clampRawSetting(verticalStripes, VS_OFF, VS_FORCE));
+    llrpSetFocusPixelMode(video,
+            clampRawSetting(focusPixels, FP_OFF, FP_CROPREC));
+    llrpSetFocusPixelInterpolationMethod(video,
+            clampRawSetting(fpiMethod, 0, 2));
+    llrpSetBadPixelMode(video, clampRawSetting(badPixels, 0, 3));
+    llrpSetBadPixelSearchMethod(video, clampRawSetting(bpsMethod, 0, 2));
+    llrpSetBadPixelInterpolationMethod(video,
+            clampRawSetting(bpiMethod, 0, 2));
+    llrpSetChromaSmoothMode(video,
+            clampRawSetting(chromaSmooth, CS_OFF, CS_5x5));
+    llrpSetPatternNoiseMode(video, patternNoise == JNI_TRUE ? PN_ON : PN_OFF);
+    llrpSetDeflickerTarget(video, deflickerTarget < 0 ? 0 : deflickerTarget);
+    llrpSetDualIsoMode(video,
+            clampRawSetting(dualIso, DISO_OFF, DISO_FAST));
+    llrpSetDualIsoInterpolationMethod(video,
+            clampRawSetting(dualIsoInterpolation, DISOI_AMAZE, DISOI_MEAN23));
+    llrpSetDualIsoAliasMapMode(video, dualIsoAliasMap == JNI_TRUE ? 1 : 0);
+    llrpSetDualIsoFullResBlendingMode(
+            video, dualIsoFrBlending == JNI_TRUE ? 1 : 0);
+    llrpSetDualIsoValidity(video, dualIsoForced == JNI_TRUE ? 1 : 0);
+    const int appliedDarkFrameMode = availableDarkFrameMode(video, darkFrameMode);
+    llrpSetDarkFrameMode(video, appliedDarkFrameMode);
+
+    const int bitDepth = getMlvBitdepth(video);
+    if (bitDepth > 0 && bitDepth <= 16) {
+        const int maximumLevel = static_cast<int>((1u << bitDepth) - 1u);
+        if (rawBlackLevel >= 0 && rawWhiteLevel > rawBlackLevel &&
+            rawWhiteLevel <= maximumLevel) {
+            setMlvBlackLevel(video, rawBlackLevel);
+            setMlvWhiteLevel(video, rawWhiteLevel);
+            processingSetBlackAndWhiteLevel(video->processing,
+                                            rawBlackLevel,
+                                            rawWhiteLevel,
+                                            bitDepth);
+        }
+    }
+
+    llrpResetDngBWLevels(video);
+    llrpResetFpmStatus(video);
+    llrpResetBpmStatus(video);
+    llrpComputeStripesOn(video);
+    llrpSetFixRawMode(video, enabled == JNI_TRUE ? FR_ON : FR_OFF);
+    pthread_mutex_unlock(&video->processing_mutex);
+
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+    return appliedDarkFrameMode;
+}
+
 /**
  * Enable/disable all raw corrections
  * JNI: setRawCorrectionEnabled(J, Z)V
@@ -64,59 +169,109 @@ static void release_cstr(JNIEnv *env, jstring jstr, const char *cstr) {
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setRawCorrectionEnabled(
         JNIEnv *env, jobject /* this */, jlong handle, jboolean enable) {
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setRawCorrectionEnabled: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setRawCorrectionEnabled: Invalid MLV object or llrawproc");
         return;
     }
 
     llrpSetFixRawMode(video, enable ? 1 : 0);
+    if (enable != JNI_TRUE) {
+        /* Restricted-range Dual ISO may have changed processing levels on a
+         * prior frame. Bypassing llrawproc must expose the current RAWI/user
+         * levels, not the stale scaled pair. */
+        resetProcessingLevelsToRaw(video);
+    }
     resetMlvCache(video);
     resetMlvCachedFrame(video);
 }
 
 /**
  * Set dark frame file select
- * JNI: setDarkFrameMode(J, I, Ljava/lang/String;)V
+ * JNI: setDarkFrameFile(J, I)Z
  */
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDarkFrameFile(
         JNIEnv *env, jobject /* this */, jlong handle, jint fd) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setDarkFrameFile: Invalid wrapper");
+        return JNI_FALSE;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setDarkFrameFile: Invalid MLV object or llrawproc");
-        return;
+        return JNI_FALSE;
     }
 
     char mock_filename[1] = "";
-    video->llrawproc->dark_frame_fds[0] = fd;
-    char err_msg[256];
-    llrpValidateExtDarkFrame(video, mock_filename, err_msg);
+    const int ownedFd = dup(fd);
+    if (ownedFd < 0) {
+        LOGE(RAW_TAG, "setDarkFrameFile: Could not duplicate descriptor");
+        return JNI_FALSE;
+    }
+    pthread_mutex_lock(&video->processing_mutex);
+    video->llrawproc->dark_frame_fds[0] = ownedFd;
+    char err_msg[256] = {};
+    const int validationResult =
+            llrpValidateExtDarkFrame(video, mock_filename, err_msg);
+    if (validationResult == 0) {
+        /* Commit the new buffer and Ext mode under one render/process lock.
+         * Otherwise an Int-mode draw between two JNI calls can replace the
+         * one-shot SAF buffer before Ext is enabled. */
+        llrpSetDarkFrameMode(video, DF_EXT);
+        llrpResetBpmStatus(video);
+        llrpComputeStripesOn(video);
+    }
+    pthread_mutex_unlock(&video->processing_mutex);
+    if (validationResult != 0) {
+        LOGE(RAW_TAG, "setDarkFrameFile: %s", err_msg);
+        return JNI_FALSE;
+    }
     resetMlvCache(video);
     resetMlvCachedFrame(video);
+    return JNI_TRUE;
 }
 
 /**
  * Set dark frame subtraction mode
- * JNI: setDarkFrameMode(J, I, Ljava/lang/String;)V
+ * JNI: setDarkFrameMode(J, I)Z
  */
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDarkFrameMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setDarkFrameMode: Invalid wrapper");
+        return JNI_FALSE;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setDarkFrameMode: Invalid MLV object or llrawproc");
-        return;
+        return JNI_FALSE;
     }
 
     // Mode: 0=Off, 1=External, 2=Internal
-    llrpSetDarkFrameMode(video, mode);
+    const int requestedMode = clampRawSetting(mode, DF_OFF, DF_INT);
+    const int appliedMode = availableDarkFrameMode(video, requestedMode);
+    if (appliedMode != requestedMode) {
+        LOGE(RAW_TAG, "setDarkFrameMode: requested source is unavailable");
+        return JNI_FALSE;
+    }
+    llrpSetDarkFrameMode(video, appliedMode);
     llrpResetBpmStatus(video);
     llrpComputeStripesOn(video);
     resetMlvCache(video);
     resetMlvCachedFrame(video);
+    return JNI_TRUE;
 }
 
 /**
@@ -127,8 +282,13 @@ extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setFocusDotsMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode,
         jint interpolation) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setFocusDotsMode: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setFocusDotsMode: Invalid MLV object or llrawproc");
         return;
@@ -141,7 +301,8 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setFocusDotsMode(
 
     // Trigger FPM reload and invalidate cached frame so the change is visible immediately
     llrpResetFpmStatus(video);
-    video->current_cached_frame_active = 0;
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
 }
 
 /**
@@ -152,8 +313,13 @@ extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setBadPixelsMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode, jint searchMethod,
         jint interpolation) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setBadPixelsMode: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setBadPixelsMode: Invalid MLV object or llrawproc");
         return;
@@ -169,6 +335,9 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setBadPixelsMode(
         // Interpolation: 0=Method1, 1=Method2, 2=Method3
         llrpSetBadPixelInterpolationMethod(video, interpolation);
     }
+    llrpResetBpmStatus(video);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
 }
 
 /**
@@ -178,8 +347,13 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setBadPixelsMode(
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setChromaSmoothMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setChromaSmoothMode: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setChromaSmoothMode: Invalid MLV object or llrawproc");
         return;
@@ -198,8 +372,13 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setChromaSmoothMo
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setVerticalStripesMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setVerticalStripesMode: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setVerticalStripesMode: Invalid MLV object or llrawproc");
         return;
@@ -218,8 +397,13 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setVerticalStripe
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setDualIsoMode: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setDualIsoMode: Invalid MLV object or llrawproc");
         return;
@@ -227,12 +411,7 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoMode(
 
     // Mode: 0=Off, 1=On, 2=Preview
     llrpSetDualIsoMode(video, mode);
-    // Reset processing black and white levels
-    processingSetBlackAndWhiteLevel(video->processing, getMlvBlackLevel(video),
-                                    getMlvWhiteLevel(video),
-                                    getMlvBitdepth(video));
-    // Reset diso levels to mlv raw levels
-    llrpResetDngBWLevels(video);
+    resetProcessingLevelsToRaw(video);
     resetMlvCache(video);
     resetMlvCachedFrame(video);
 }
@@ -244,14 +423,25 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoMode(
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoForced(
         JNIEnv *env, jobject /* this */, jlong handle, jboolean force) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setDualIsoForced: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setDualIsoForced: Invalid MLV object or llrawproc");
         return;
     }
 
     llrpSetDualIsoValidity(video, force ? 1 : 0);
+    /* A forced restricted-range frame can scale the processing levels. When
+     * force is removed from a clip without valid DISO metadata, reset them
+     * immediately so corrected-Bayer metadata cannot remain stale. */
+    resetProcessingLevelsToRaw(video);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
 }
 
 /**
@@ -261,8 +451,13 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoForced(
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoInterpolation(
         JNIEnv *env, jobject /* this */, jlong handle, jint interpolation) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setDualIsoInterpolation: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setDualIsoMethod: Invalid MLV object or llrawproc");
         return;
@@ -281,8 +476,13 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoInterpo
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoAliasMap(
         JNIEnv *env, jobject /* this */, jlong handle, jboolean isEnabled) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setDualIsoAliasMap: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setDualIsoAliasMap: Invalid MLV object or llrawproc");
         return;
@@ -301,8 +501,13 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoAliasMa
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setPatternNoise(
         JNIEnv *env, jobject /* this */, jlong handle, jboolean enable) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setPatternNoise: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setPatternNoise: Invalid MLV object or llrawproc");
         return;
@@ -320,23 +525,32 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setPatternNoise(
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setRawBlackLevel(
         JNIEnv *env, jobject /* this */, jlong handle, jint level) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setRawBlackLevel: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setRawBlackLevel: Invalid MLV object or llrawproc");
         return;
     }
 
-    if (getMlvBitdepth(video) == 0)
+    const int bitDepth = getMlvBitdepth(video);
+    if (bitDepth <= 0 || bitDepth > 16)
         return;
-    if (getMlvBitdepth(video) > 16)
+    const int maximumLevel = static_cast<int>((1u << bitDepth) - 1u);
+    if (level < 0 || level >= getMlvWhiteLevel(video) || level > maximumLevel)
         return;
 
+    pthread_mutex_lock(&video->processing_mutex);
     setMlvBlackLevel(video, level);
     processingSetBlackLevel(video->processing, (float) level,
-                            getMlvBitdepth(video));
+                            bitDepth);
     llrpResetFpmStatus(video);
     llrpResetBpmStatus(video);
+    pthread_mutex_unlock(&video->processing_mutex);
     resetMlvCache(video);
     resetMlvCachedFrame(video);
 }
@@ -348,22 +562,31 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setRawBlackLevel(
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setRawWhiteLevel(
         JNIEnv *env, jobject /* this */, jlong handle, jint level) {
-
-    mlvObject_t *video = getMlvObjectFromHandle(handle);
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "setRawWhiteLevel: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
     if (!video || !video->llrawproc) {
         LOGE(RAW_TAG, "setRawWhiteLevel: Invalid MLV object or llrawproc");
         return;
     }
 
-    if (getMlvBitdepth(video) == 0)
+    const int bitDepth = getMlvBitdepth(video);
+    if (bitDepth <= 0 || bitDepth > 16)
         return;
-    if (getMlvBitdepth(video) > 16)
+    const int maximumLevel = static_cast<int>((1u << bitDepth) - 1u);
+    if (level <= getMlvBlackLevel(video) || level > maximumLevel)
         return;
 
+    pthread_mutex_lock(&video->processing_mutex);
     setMlvWhiteLevel(video, level);
-    processingSetWhiteLevel(video->processing, level, getMlvBitdepth(video));
+    processingSetWhiteLevel(video->processing, level, bitDepth);
     llrpResetFpmStatus(video);
     llrpResetBpmStatus(video);
+    pthread_mutex_unlock(&video->processing_mutex);
     resetMlvCache(video);
     resetMlvCachedFrame(video);
 }

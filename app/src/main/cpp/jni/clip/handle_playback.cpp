@@ -13,18 +13,30 @@
 
 namespace {
 
-constexpr size_t kGpuPreviewParamCount = 16;
+constexpr size_t kGpuPreviewParamCount = 32;
 constexpr size_t kGpuPreviewParamsBytes =
     kGpuPreviewParamCount * sizeof(float);
 constexpr size_t kGpuPreviewToneLutEntries = 65536;
+constexpr size_t kGpuPreviewToneLutComponents = 2;
 constexpr size_t kGpuPreviewToneLutBytes =
-    kGpuPreviewToneLutEntries * sizeof(uint16_t);
+    kGpuPreviewToneLutEntries * kGpuPreviewToneLutComponents *
+    sizeof(uint16_t);
+constexpr size_t kCorrectedRawFrameInfoCount = 4;
+constexpr size_t kCorrectedRawFrameInfoBytes =
+    kCorrectedRawFrameInfoCount * sizeof(float);
+static_assert(kGpuPreviewParamsBytes == 128);
+static_assert(kGpuPreviewToneLutBytes == 262144);
+static_assert(kCorrectedRawFrameInfoBytes == 16);
 constexpr uint64_t kMcrawDecoderBenchmarkWindow = 120;
 constexpr jint kRawGpuDecodeTransient = -1;
 constexpr jint kRawGpuDecodeHardFailure = -2;
 constexpr jint kRawGpuBackendClassicMlv = 2;
 constexpr int kGpuPreviewFlagAgx = 1;
 constexpr int kGpuPreviewFlagRequiresCpuProcessing = 1 << 1;
+constexpr int kGpuPreviewFlagCreativeAllowed = 1 << 2;
+constexpr int kGpuPreviewFlagCameraMatrixEnabled = 1 << 3;
+constexpr int kGpuPreviewFlagExrMode = 1 << 4;
+constexpr int kGpuPreviewFlagHighlightReconstruction = 1 << 5;
 
 enum RawCfa : int {
   kCfaRggb = 0,
@@ -68,26 +80,57 @@ bool approximately(double value, double target, double epsilon = 1e-6) {
   return std::fabs(value - target) < epsilon;
 }
 
+bool hasNonIdentityGradationCurve(const processingObject_t *processing) {
+  for (size_t i = 0; i < kGpuPreviewToneLutEntries; ++i) {
+    const auto identity = static_cast<uint16_t>(i);
+    if (processing->gcurve_y[i] != identity ||
+        processing->gcurve_r[i] != identity ||
+        processing->gcurve_g[i] != identity ||
+        processing->gcurve_b[i] != identity) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool requiresCpuProcessing(const processingObject_t *processing) {
-  if (processing->highlight_reconstruction != 0 ||
-      (processing->use_cam_matrix > 0 && processing->exr_mode == 0) ||
-      (processing->use_cam_matrix == 0 && processing->AgX != 0)) {
+  if (processing->highlight_reconstruction != 0 &&
+      processing->dual_iso != nullptr && *processing->dual_iso != 0) {
+    // The CPU path derives a per-frame green peak after demosaic for this
+    // combination. The Bayer GPU path cannot reproduce that analysis yet.
     return true;
   }
-  if (processing->allow_creative_adjustments == 0) {
-    return false;
+
+  if (processing->allow_creative_adjustments != 0) {
+    const bool hasHsl = processing->hue_vs_hue_used != 0 ||
+                        processing->hue_vs_saturation_used != 0 ||
+                        processing->hue_vs_luma_used != 0 ||
+                        processing->luma_vs_saturation_used != 0;
+    const bool hasToning =
+        !approximately(processing->toning_dry + processing->toning_wet[0],
+                       1.0) ||
+        !approximately(processing->toning_dry + processing->toning_wet[1],
+                       1.0) ||
+        !approximately(processing->toning_dry + processing->toning_wet[2],
+                       1.0);
+    if (hasNonIdentityGradationCurve(processing) || hasHsl || hasToning) {
+      return true;
+    }
   }
 
-  return !approximately(processing->contrast, 0.0) ||
-         !approximately(processing->pivot, 0.75) ||
-         !approximately(processing->clarity, 0.0) ||
-         !approximately(processing->vibrance, 1.0) ||
-         !approximately(processing->saturation, 1.0) ||
-         !approximately(processing->shadows_highlights.shadows, 0.0) ||
-         !approximately(processing->shadows_highlights.highlights, 0.0) ||
-         !approximately(processing->dark_contrast_factor, 0.0) ||
-         !approximately(processing->light_contrast_factor, 0.0) ||
-         !approximately(processing->lighten, 0.0);
+  const bool hasGradient =
+      processing->gradient_enable != 0 &&
+      (std::fabs(processing->gradient_exposure_stops) > 0.01 ||
+       std::fabs(processing->gradient_contrast) > 0.01);
+
+  return processing->lut_on != 0 || processing->filter_on != 0 ||
+         processing->transformation != TR_NONE ||
+         processing->cs_zone.use_cs != 0 ||
+         processing->denoiserStrength > 0 ||
+         processing->rbfDenoiserLuma > 0 ||
+         processing->rbfDenoiserChroma > 0 || processing->sharpen > 0.005 ||
+         processing->grainStrength > 0 || hasGradient ||
+         processing->vignette_strength != 0 || processing->ca_desaturate > 0;
 }
 
 const char *mcrawDecoderBackendName(int backend) {
@@ -105,6 +148,7 @@ void resetMcrawDecoderBenchmark(JniClipWrapper *wrapper,
   wrapper->mcraw_benchmark_parallel_frames = 0;
   wrapper->mcraw_benchmark_read_ns = 0;
   wrapper->mcraw_benchmark_decode_ns = 0;
+  wrapper->mcraw_benchmark_raw_processing_ns = 0;
   wrapper->mcraw_benchmark_total_ns = 0;
   wrapper->mcraw_benchmark_fallbacks = 0;
 
@@ -132,6 +176,7 @@ void recordMcrawDecoderBenchmark(JniClipWrapper *wrapper,
       metrics.actual_backend == MCRAW_DECODER_ROW_PARALLEL ? 1u : 0u;
   wrapper->mcraw_benchmark_read_ns += metrics.read_ns;
   wrapper->mcraw_benchmark_decode_ns += metrics.decode_ns;
+  wrapper->mcraw_benchmark_raw_processing_ns += metrics.raw_processing_ns;
   wrapper->mcraw_benchmark_total_ns += totalNs;
   wrapper->mcraw_benchmark_fallbacks +=
       static_cast<uint64_t>(metrics.fallback_count);
@@ -145,12 +190,14 @@ void recordMcrawDecoderBenchmark(JniClipWrapper *wrapper,
       ANDROID_LOG_INFO, "MCRAWDecoder",
       "Decode averages: requested=%s, threads=%d, parallel-frames=%" PRIu64 "/%" PRIu64
       ", read=%" PRIu64 "us, payload-decode=%" PRIu64
-      "us, JNI-total=%" PRIu64 "us, fallbacks=%" PRIu64,
+      "us, RAW-corrections=%" PRIu64 "us, JNI-total=%" PRIu64
+      "us, fallbacks=%" PRIu64,
       mcrawDecoderBackendName(metrics.requested_backend),
       metrics.decoder_threads,
       wrapper->mcraw_benchmark_parallel_frames, frames,
       wrapper->mcraw_benchmark_read_ns / frames / 1000u,
       wrapper->mcraw_benchmark_decode_ns / frames / 1000u,
+      wrapper->mcraw_benchmark_raw_processing_ns / frames / 1000u,
       wrapper->mcraw_benchmark_total_ns / frames / 1000u,
       wrapper->mcraw_benchmark_fallbacks);
 
@@ -221,10 +268,12 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillFrame16(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawBayer16(
+Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillCorrectedRawBayer16(
     JNIEnv *env, jclass /*clazz*/, jlong handle, jint frameIndex,
-    jobject dstByteBuffer, jint decoderBackend, jint decoderThreads) {
-  if (handle == 0 || dstByteBuffer == nullptr || frameIndex < 0 ||
+    jobject dstByteBuffer, jobject frameInfoByteBuffer, jint decoderBackend,
+    jint decoderThreads) {
+  if (handle == 0 || dstByteBuffer == nullptr ||
+      frameInfoByteBuffer == nullptr || frameIndex < 0 ||
       (decoderBackend != MCRAW_DECODER_BASELINE &&
        decoderBackend != MCRAW_DECODER_ROW_PARALLEL) ||
       decoderThreads <= 0) {
@@ -257,10 +306,17 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawBayer16(
   const size_t needed = pixels * sizeof(uint16_t);
 
   const jlong capacity = env->GetDirectBufferCapacity(dstByteBuffer);
+  const jlong frameInfoCapacity =
+      env->GetDirectBufferCapacity(frameInfoByteBuffer);
   auto *dst =
       reinterpret_cast<uint16_t *>(env->GetDirectBufferAddress(dstByteBuffer));
+  auto *frameInfoDst = reinterpret_cast<uint8_t *>(
+      env->GetDirectBufferAddress(frameInfoByteBuffer));
   if (dst == nullptr || capacity < 0 ||
-      static_cast<uint64_t>(capacity) < static_cast<uint64_t>(needed)) {
+      frameInfoDst == nullptr || frameInfoCapacity < 0 ||
+      static_cast<uint64_t>(capacity) < static_cast<uint64_t>(needed) ||
+      static_cast<uint64_t>(frameInfoCapacity) <
+          kCorrectedRawFrameInfoBytes) {
     return kRawGpuDecodeHardFailure;
   }
 
@@ -275,10 +331,12 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawBayer16(
           : 1;
 
   mcraw_decode_metrics_t metrics = {};
+  mlv_corrected_raw_info_t correctedInfo = {};
   const auto totalStart = std::chrono::steady_clock::now();
-  const int result = getRawGpuFrameUint16(
+  const int result = getMlvRawFrameCorrectedUint16(
       nativeClip, static_cast<uint64_t>(frameIndex), dst,
-      effectiveDecoderBackend, effectiveDecoderThreads, &metrics);
+      effectiveDecoderBackend, effectiveDecoderThreads, &metrics,
+      &correctedInfo);
   const uint64_t totalNs = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - totalStart)
@@ -287,12 +345,30 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawBayer16(
     if (!isMcraw) {
       __android_log_print(
           ANDROID_LOG_ERROR, "RawGpuDecode",
-          "Classic MLV decode failed: frame=%d, class=0x%x, payload=%u, RAWI=%zux%zu",
+          "Classic MLV CPU RAW preparation failed: frame=%d, class=0x%x, payload=%u, RAWI=%zux%zu",
           frameIndex, nativeClip->MLVI.videoClass,
           nativeClip->video_index[frameIndex].frame_size, width, height);
     }
     return kRawGpuDecodeHardFailure;
   }
+
+  const int correctedCfa = rawCfaToGpuEnum(correctedInfo.cfa_pattern);
+  if (!std::isfinite(correctedInfo.black_level) ||
+      !std::isfinite(correctedInfo.white_level) ||
+      correctedInfo.white_level <= correctedInfo.black_level ||
+      correctedCfa < 0 || correctedInfo.sample_bit_depth != 16) {
+    return kRawGpuDecodeHardFailure;
+  }
+  const float frameInfo[kCorrectedRawFrameInfoCount] = {
+      correctedInfo.black_level,
+      correctedInfo.white_level,
+      static_cast<float>(correctedCfa),
+      static_cast<float>(correctedInfo.sample_bit_depth),
+  };
+  // Commit metadata only after the corrected Bayer plane is complete. A
+  // transient or hard failure therefore cannot publish mismatched levels.
+  memcpy(frameInfoDst, frameInfo, kCorrectedRawFrameInfoBytes);
+
   if (!isMcraw) {
     return kRawGpuBackendClassicMlv;
   }
@@ -374,18 +450,21 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawGpuPreviewState(
     return JNI_FALSE;
   }
 
-  const float nativeScale = static_cast<float>(1u << (16 - bitDepth));
-  params[0] = processing->black_level / nativeScale;
-  params[1] = static_cast<float>(processing->white_level) / nativeScale;
+  params[0] = processing->black_level;
+  params[1] = static_cast<float>(processing->white_level);
   params[2] = static_cast<float>(processing->final_matrix[0]);
   params[3] = static_cast<float>(processing->final_matrix[4]);
   params[4] = static_cast<float>(processing->final_matrix[8]);
   const int gpuCfa = rawCfaToGpuEnum(nativeClip->RAWI.raw_info.cfa_pattern);
-  if (gpuCfa < 0) {
+  const bool isMcraw =
+      (nativeClip->MLVI.videoClass & MLV_VIDEO_CLASS_FLAG_MCRAW) != 0;
+  if (gpuCfa < 0 || (!isMcraw && gpuCfa != kCfaRggb)) {
     pthread_mutex_unlock(&nativeClip->processing_mutex);
     return JNI_FALSE;
   }
-  params[5] = static_cast<float>(gpuCfa);
+  // CPU preparation phase-shifts supported MCRAW patterns to canonical RGGB.
+  // Per-frame metadata will authoritatively overwrite this defensive default.
+  params[5] = static_cast<float>(kCfaRggb);
 
   if (processing->use_cam_matrix > 0) {
     for (size_t i = 0; i < 9; ++i) {
@@ -396,15 +475,44 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_fillRawGpuPreviewState(
     params[10] = 1.0f;
     params[14] = 1.0f;
   }
-  // Bit 0 asks the GPU to reproduce the CPU AgX compression -> tone curve ->
-  // inverse-compression sandwich. Bit 1 asks the renderer to use the full CPU
-  // path because this prototype does not implement the active adjustment.
+  // Flags describe active profile/processing branches and retain a defensive
+  // fallback bit for processing stages not implemented by the GPU renderer.
   int flags = processing->AgX != 0 ? kGpuPreviewFlagAgx : 0;
   if (requiresCpuProcessing(processing)) {
     flags |= kGpuPreviewFlagRequiresCpuProcessing;
   }
+  if (processing->allow_creative_adjustments != 0) {
+    flags |= kGpuPreviewFlagCreativeAllowed;
+  }
+  if (processing->use_cam_matrix > 0) {
+    flags |= kGpuPreviewFlagCameraMatrixEnabled;
+  }
+  if (processing->exr_mode != 0) {
+    flags |= kGpuPreviewFlagExrMode;
+  }
+  if (processing->highlight_reconstruction != 0) {
+    flags |= kGpuPreviewFlagHighlightReconstruction;
+  }
   params[15] = static_cast<float>(flags);
-  memcpy(toneLutDst, processing->pre_calc_gamma, kGpuPreviewToneLutBytes);
+  params[16] = static_cast<float>(processing->contrast);
+  params[17] = static_cast<float>(processing->pivot);
+  params[18] = static_cast<float>(processing->clarity);
+  params[19] =
+      static_cast<float>(processing->shadows_highlights.shadows);
+  params[20] =
+      static_cast<float>(processing->shadows_highlights.highlights);
+  params[21] = static_cast<float>(processing->vibrance);
+  params[22] = static_cast<float>(processing->saturation);
+  params[23] = static_cast<float>(processing->highest_green) / 65535.0f;
+  params[24] = 0.5f / 65535.0f;
+  params[25] = static_cast<float>(processing->colour_gamut);
+
+  auto *toneLut = reinterpret_cast<uint16_t *>(toneLutDst);
+  for (size_t i = 0; i < kGpuPreviewToneLutEntries; ++i) {
+    toneLut[i * kGpuPreviewToneLutComponents] = processing->pre_calc_gamma[i];
+    toneLut[i * kGpuPreviewToneLutComponents + 1] =
+        processing->pre_calc_curve_r[i];
+  }
   pthread_mutex_unlock(&nativeClip->processing_mutex);
 
   memcpy(paramsDst, params, kGpuPreviewParamsBytes);

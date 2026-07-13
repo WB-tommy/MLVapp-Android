@@ -55,10 +55,11 @@ data class ClipDetails(
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
         other as ClipDetails
-        return preview.guid == other.preview.guid
+        return preview.guid == other.preview.guid &&
+            nativeHandle == other.nativeHandle
     }
 
-    override fun hashCode(): Int = preview.guid.hashCode()
+    override fun hashCode(): Int = 31 * preview.guid.hashCode() + nativeHandle.hashCode()
 }
 
 /**

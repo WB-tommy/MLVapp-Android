@@ -8,7 +8,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import fm.magiclantern.forum.features.grading.viewmodel.GradingViewModel
 
@@ -31,8 +30,6 @@ fun ColorGradingScreen(
     val dualIsoValid by gradingViewModel.dualIsoValid.collectAsState()
     val bitDepth by gradingViewModel.bitDepth.collectAsState()
 
-    val context = LocalContext.current
-
     val scrollState = rememberScrollState()
 
     // Dark frame file picker
@@ -40,7 +37,7 @@ fun ColorGradingScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         uri?.let {
-            gradingViewModel.setDarkFrameFile(context, it)
+            gradingViewModel.setDarkFrameFile(it)
         }
     }
 

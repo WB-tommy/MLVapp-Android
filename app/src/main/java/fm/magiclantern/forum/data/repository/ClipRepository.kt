@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import dagger.hilt.android.qualifiers.ApplicationContext
 import fm.magiclantern.forum.FocusPixelManager
 import fm.magiclantern.forum.domain.model.ClipPreview
+import fm.magiclantern.forum.domain.model.RawCorrectionSettings
 import fm.magiclantern.forum.features.settings.viewmodel.SettingsRepository
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.utils.MlvFileRole
@@ -201,14 +202,12 @@ class ClipRepository @Inject constructor(
 
         // Auto-detect focus pixel mode for eligible clips
         val detectedFocusMode = NativeLib.checkCameraModel(nativeHandle)
-        val initialRawCorrection = if (detectedFocusMode != 0) {
-            fm.magiclantern.forum.domain.model.RawCorrectionSettings(
-                enabled = true,
-                focusPixels = detectedFocusMode
-            )
-        } else {
-            fm.magiclantern.forum.domain.model.RawCorrectionSettings()
-        }
+        val initialRawCorrection = RawCorrectionSettings(
+            enabled = true,
+            focusPixels = detectedFocusMode,
+            dualIsoBlack = nativeMetadata.originalBlackLevel,
+            dualIsoWhite = nativeMetadata.originalWhiteLevel
+        )
 
         val clipDetails = fm.magiclantern.forum.domain.model.ClipDetails(
             preview = updatedPreview,

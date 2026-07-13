@@ -66,9 +66,7 @@ void getMlvProcessedFrame16(mlvObject_t * video, uint64_t frameIndex, uint16_t *
  * Needs memory sized: sizeof(uint16_t) * getMlvHeight(video) * getMlvWidth(video).
  * Output remains at the file's native sensor-code scale; RAW corrections are not applied. */
 int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * unpackedFrame);
-/* Decode classic MLV or MCRAW to its original native-scale Bayer mosaic for
- * the experimental GPU preview. Classic MLV intentionally bypasses low-level
- * RAW corrections; decoder selection applies only to MCRAW payloads. */
+/* Decoder selection applies only to MCRAW payloads. */
 enum mcraw_decoder_backend
 {
     MCRAW_DECODER_BASELINE = 0,
@@ -79,17 +77,33 @@ typedef struct
 {
     uint64_t read_ns;
     uint64_t decode_ns;
+    uint64_t raw_processing_ns;
     int requested_backend;
     int actual_backend;
     int decoder_threads;
     int fallback_count;
 } mcraw_decode_metrics_t;
 
-int getRawGpuFrameUint16(mlvObject_t * video, uint64_t frameIndex,
-                         uint16_t * unpackedFrame, int requested_backend,
-                         int decoder_threads, mcraw_decode_metrics_t * metrics);
+typedef struct
+{
+    float black_level;
+    float white_level;
+    uint32_t cfa_pattern;
+    int sample_bit_depth;
+} mlv_corrected_raw_info_t;
+
+/* Prepare one playback Bayer frame using the same CPU-side low-level RAW
+ * correction path as normal preview, but stop before levels, white balance,
+ * and demosaic. Output is canonical RGGB at full 16-bit code scale so GLES can
+ * apply levels/WB and bilinear demosaic consistently for MLV and MCRAW. */
+int getMlvRawFrameCorrectedUint16(mlvObject_t * video, uint64_t frameIndex,
+                                  uint16_t * correctedFrame,
+                                  int requested_backend,
+                                  int decoder_threads,
+                                  mcraw_decode_metrics_t * metrics,
+                                  mlv_corrected_raw_info_t * corrected_info);
 /* Decode native-scale Bayer with the clip's configured MCRAW policy while
- * preserving the recorded CFA. Used by RAW export paths as well as preview. */
+ * preserving the recorded CFA for native-CFA/DNG export consumers. */
 int getMlvRawFrameNative(mlvObject_t * video, uint64_t frameIndex,
                          uint16_t * unpackedFrame);
 /* Configure the shared MCRAW policy. Unsupported formats continue to use their

@@ -21,6 +21,7 @@ data class CpuProcessingPreviewRequirement(
  */
 @Singleton
 class ActiveClipHolder @Inject constructor() {
+    private val activationLock = Any()
     
     private val _activeClip = MutableStateFlow<ClipDetails?>(null)
     
@@ -55,6 +56,8 @@ class ActiveClipHolder @Inject constructor() {
 
     private val _cpuProcessingPreviewRequirement =
         MutableStateFlow(CpuProcessingPreviewRequirement())
+    @Volatile
+    private var processingReceiptReady = true
 
     /** True while active settings need processing stages absent from RAW GPU preview. */
     val cpuProcessingPreviewRequirement: StateFlow<CpuProcessingPreviewRequirement> =
@@ -108,6 +111,29 @@ class ActiveClipHolder @Inject constructor() {
     }
 
     fun setRequiresCpuProcessingPreview(required: Boolean) {
+        synchronized(activationLock) {
+            val effectiveRequired = required ||
+                (_activeClip.value != null && !processingReceiptReady)
+            publishCpuProcessingRequirement(effectiveRequired)
+        }
+    }
+
+    /** Release the activation safety gate only after native receipt commit. */
+    fun completeProcessingReceiptRestore(
+        expectedHandle: Long,
+        expectedGuid: Long,
+        required: Boolean
+    ): Boolean = synchronized(activationLock) {
+        val active = _activeClip.value
+        if (active?.nativeHandle != expectedHandle || active.guid != expectedGuid) {
+            return@synchronized false
+        }
+        processingReceiptReady = true
+        publishCpuProcessingRequirement(required)
+        true
+    }
+
+    private fun publishCpuProcessingRequirement(required: Boolean) {
         _cpuProcessingPreviewRequirement.update { current ->
             if (current.required == required) current
             else CpuProcessingPreviewRequirement(required, current.revision + 1L)
@@ -130,10 +156,13 @@ class ActiveClipHolder @Inject constructor() {
         // Reset cut marks to defaults before activating, so PlayerViewModel
         // never reads stale marks from the previous clip in the race window
         // before GradingViewModel loads the new clip's grading data.
-        _currentCutIn.value = 1
-        _currentCutOut.value = 0
-        setRequiresCpuProcessingPreview(false)
-        _activeClip.value = details
+        synchronized(activationLock) {
+            _currentCutIn.value = 1
+            _currentCutOut.value = 0
+            processingReceiptReady = false
+            publishCpuProcessingRequirement(true)
+            _activeClip.value = details
+        }
         _selectedPreview.value = details.preview
         _isLoading.value = false
     }
@@ -142,8 +171,11 @@ class ActiveClipHolder @Inject constructor() {
      * Clear the active clip (e.g., when clip is deleted or closed).
      */
     fun clearActiveClip() {
-        _activeClip.value = null
-        setRequiresCpuProcessingPreview(false)
+        synchronized(activationLock) {
+            _activeClip.value = null
+            processingReceiptReady = true
+            publishCpuProcessingRequirement(false)
+        }
         _selectedPreview.value = null
         _isLoading.value = false
     }

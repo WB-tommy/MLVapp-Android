@@ -1,0 +1,4 @@
+# Patch payloads preserve upstream context whitespace verbatim so they remain
+# applicable after desktop-core syncs; do not lint their encoded lines as
+# source-file trailing whitespace.
+android_patches/*.patch -whitespace

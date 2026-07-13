@@ -6,6 +6,29 @@ package fm.magiclantern.forum.nativeInterface
  */
 object RawCorrectionNative {
 
+    /** Restore the complete low-level RAW receipt as one render-serialized update. */
+    external fun applyRawCorrectionSettings(
+        mlvObjectPtr: Long,
+        enabled: Boolean,
+        verticalStripes: Int,
+        focusPixels: Int,
+        fpiMethod: Int,
+        badPixels: Int,
+        bpsMethod: Int,
+        bpiMethod: Int,
+        chromaSmooth: Int,
+        patternNoise: Boolean,
+        deflickerTarget: Int,
+        dualIso: Int,
+        dualIsoForced: Boolean,
+        dualIsoInterpolation: Int,
+        dualIsoAliasMap: Boolean,
+        dualIsoFrBlending: Boolean,
+        rawBlackLevel: Int,
+        rawWhiteLevel: Int,
+        darkFrameMode: Int
+    ): Int
+
     /**
      * Enable/disable all raw corrections
      * @param mlvObjectPtr Native pointer to MLV object
@@ -18,14 +41,14 @@ object RawCorrectionNative {
      * @param mlvObjectPtr Native pointer to MLV object
      * @param fd File descriptor of dark frame file
      */
-    external fun setDarkFrameFile(mlvObjectPtr: Long, fd: Int)
+    external fun setDarkFrameFile(mlvObjectPtr: Long, fd: Int): Boolean
 
     /**
      * Set dark frame subtraction mode
      * @param mlvObjectPtr Native pointer to MLV object
      * @param mode 0=Off, 1=External, 2=Internal
      */
-    external fun setDarkFrameMode(mlvObjectPtr: Long, mode: Int)
+    external fun setDarkFrameMode(mlvObjectPtr: Long, mode: Int): Boolean
 
     /**
      * Set focus dots fix mode

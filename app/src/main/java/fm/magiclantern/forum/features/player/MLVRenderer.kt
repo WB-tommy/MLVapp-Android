@@ -16,12 +16,15 @@ import kotlin.math.abs
  * Preview renderer with two deliberately separate paths:
  *
  *  * Standard: native code returns fully processed RGB16 and GLES presents it.
- *  * Experimental RAW: native code only decodes Bayer uint16. GLES applies
- *    levels, Bayer-domain WB, bilinear demosaic, the colour matrix, and tone LUT.
+ *  * Experimental RAW: native code decodes Bayer and applies only low-level
+ *    CPU RAW corrections. GLES applies levels, Bayer-domain WB, bilinear
+ *    demosaic, desktop-ordered Processing controls, colour/profile transforms,
+ *    and native-generated LUTs.
  *
  * The experimental path never affects export and falls back to the standard path
- * when native decode or any required GLES resource is unavailable. For classic
- * MLV it deliberately bypasses low-level RAW corrections such as Dual ISO.
+ * when CPU RAW preparation or any required GLES resource is unavailable.
+ * Clarity and shadows/highlights use a downsampled edge-aware luminance preview;
+ * CPU preview/export retain the desktop recursive-bilateral reference.
  */
 class MlvRenderer(
     private val cpuCores: Int,
@@ -76,22 +79,11 @@ class MlvRenderer(
         }
     """.trimIndent()
 
-    private val gpuProcessFragmentShader = """
-        #version 300 es
-        precision highp float;
-        precision highp int;
-
+    private val rawSamplingFragmentFunctions = """
         uniform highp usampler2D uRawTexture;
-        uniform highp usampler2D uToneTexture;
         uniform vec2 uLevels;
         uniform vec3 uCfaGains;
         uniform int uCfaPattern;
-        uniform vec3 uColorRow0;
-        uniform vec3 uColorRow1;
-        uniform vec3 uColorRow2;
-        uniform int uAgxEnabled;
-
-        out vec4 fragColor;
 
         // CFA enum supplied by JNI: 0=RGGB, 1=GBRG, 2=BGGR, 3=GRBG.
         ivec2 cfaOffset() {
@@ -125,48 +117,279 @@ class MlvRenderer(
             return clamp(q, ivec2(0), size - ivec2(1));
         }
 
-        float balancedSample(ivec2 centre, ivec2 delta) {
+        float rawCodeSample(ivec2 centre, ivec2 delta) {
             ivec2 p = neighbour(centre, delta);
-            float code = float(texelFetch(uRawTexture, p, 0).r);
-            float range = max(uLevels.y - uLevels.x, 1.0);
-            float linearRaw = clamp((code - uLevels.x) / range, 0.0, 1.0);
-            return linearRaw * uCfaGains[cfaChannel(p)];
+            return float(texelFetch(uRawTexture, p, 0).r);
         }
 
         vec3 bilinearDemosaic(ivec2 p) {
-            float c = balancedSample(p, ivec2(0, 0));
-            float n = balancedSample(p, ivec2(0, -1));
-            float s = balancedSample(p, ivec2(0, 1));
-            float w = balancedSample(p, ivec2(-1, 0));
-            float e = balancedSample(p, ivec2(1, 0));
-            float nw = balancedSample(p, ivec2(-1, -1));
-            float ne = balancedSample(p, ivec2(1, -1));
-            float sw = balancedSample(p, ivec2(-1, 1));
-            float se = balancedSample(p, ivec2(1, 1));
+            ivec2 size = textureSize(uRawTexture, 0);
+            p = clamp(p, ivec2(0), size - ivec2(1));
+            float c = rawCodeSample(p, ivec2(0, 0));
+            float n = rawCodeSample(p, ivec2(0, -1));
+            float s = rawCodeSample(p, ivec2(0, 1));
+            float w = rawCodeSample(p, ivec2(-1, 0));
+            float e = rawCodeSample(p, ivec2(1, 0));
+            float nw = rawCodeSample(p, ivec2(-1, -1));
+            float ne = rawCodeSample(p, ivec2(1, -1));
+            float sw = rawCodeSample(p, ivec2(-1, 1));
+            float se = rawCodeSample(p, ivec2(1, 1));
 
             int channel = cfaChannel(p);
+            vec3 codeRgb;
             if (channel == 0) {
-                return vec3(c, (n + s + w + e) * 0.25,
-                            (nw + ne + sw + se) * 0.25);
-            }
-            if (channel == 2) {
-                return vec3((nw + ne + sw + se) * 0.25,
-                            (n + s + w + e) * 0.25, c);
+                codeRgb = vec3(c, (n + s + w + e) * 0.25,
+                               (nw + ne + sw + se) * 0.25);
+            } else if (channel == 2) {
+                codeRgb = vec3((nw + ne + sw + se) * 0.25,
+                               (n + s + w + e) * 0.25, c);
+            } else if (cfaPhase(p).y == 0) {
+                // Green on a red row.
+                codeRgb = vec3((w + e) * 0.5, c, (n + s) * 0.5);
+            } else {
+                // Green on a blue row.
+                codeRgb = vec3((n + s) * 0.5, c, (w + e) * 0.5);
             }
 
-            ivec2 phase = cfaPhase(p);
-            if (phase.y == 0) {
-                // Green on a red row.
-                return vec3((w + e) * 0.5, c, (n + s) * 0.5);
-            }
-            // Green on a blue row.
-            return vec3((n + s) * 0.5, c, (w + e) * 0.5);
+            // Match desktop order: interpolate sensor code values first,
+            // then normalize black/white and apply channel white balance.
+            float range = max(uLevels.y - uLevels.x, 1.0);
+            vec3 linearRgb = clamp(
+                (codeRgb - vec3(uLevels.x)) / range,
+                vec3(0.0),
+                vec3(1.0)
+            );
+            return linearRgb * uCfaGains;
+        }
+    """.trimIndent()
+
+    /**
+     * Produces a small edge-aware luminance image for the spatial controls.
+     * Desktop uses a recursive bilateral RGB pass; this bounded preview pass
+     * samples the same levelled/WB camera RGB but at 1/8 resolution.
+     */
+    private val gpuLocalLumaFragmentShader = """
+        #version 300 es
+        precision highp float;
+        precision highp int;
+
+        $rawSamplingFragmentFunctions
+
+        out vec4 fragColor;
+
+        float cameraLumaAt(ivec2 p) {
+            ivec2 rawSize = textureSize(uRawTexture, 0);
+            p = clamp(p, ivec2(0), rawSize - ivec2(1));
+            vec3 rgb = bilinearDemosaic(p);
+            return clamp(dot(rgb, vec3(0.25, 0.6875, 0.0625)), 0.0, 1.0);
+        }
+
+        void addLocalSample(
+            ivec2 p,
+            float centre,
+            inout float weightedSum,
+            inout float totalWeight
+        ) {
+            float sampleValue = cameraLumaAt(p);
+            float delta = (sampleValue - centre) / 0.165;
+            float weight = exp(-0.5 * delta * delta);
+            weightedSum += sampleValue * weight;
+            totalWeight += weight;
+        }
+
+        void main() {
+            ivec2 rawSize = textureSize(uRawTexture, 0);
+            ivec2 centre = clamp(
+                ivec2(floor(gl_FragCoord.xy * 8.0)),
+                ivec2(0),
+                rawSize - ivec2(1)
+            );
+            ivec2 stepSize = ivec2(4);
+            float centreValue = cameraLumaAt(centre);
+            float weightedSum = centreValue;
+            float totalWeight = 1.0;
+            addLocalSample(centre + ivec2(stepSize.x, 0), centreValue, weightedSum, totalWeight);
+            addLocalSample(centre - ivec2(stepSize.x, 0), centreValue, weightedSum, totalWeight);
+            addLocalSample(centre + ivec2(0, stepSize.y), centreValue, weightedSum, totalWeight);
+            addLocalSample(centre - ivec2(0, stepSize.y), centreValue, weightedSum, totalWeight);
+            addLocalSample(centre + stepSize, centreValue, weightedSum, totalWeight);
+            addLocalSample(centre - stepSize, centreValue, weightedSum, totalWeight);
+            addLocalSample(centre + ivec2(stepSize.x, -stepSize.y), centreValue, weightedSum, totalWeight);
+            addLocalSample(centre + ivec2(-stepSize.x, stepSize.y), centreValue, weightedSum, totalWeight);
+            fragColor = vec4(clamp(weightedSum / max(totalWeight, 0.0001), 0.0, 1.0));
+        }
+    """.trimIndent()
+
+    private val gpuProcessFragmentShader = """
+        #version 300 es
+        precision highp float;
+        precision highp int;
+
+        uniform highp usampler2D uToneTexture;
+        uniform sampler2D uLocalTexture;
+        uniform vec3 uColorRow0;
+        uniform vec3 uColorRow1;
+        uniform vec3 uColorRow2;
+        uniform vec4 uCreativeA;
+        uniform vec3 uCreativeB;
+        uniform vec2 uHighlightRecovery;
+        uniform int uFlags;
+        uniform int uGamut;
+        uniform int uLocalEnabled;
+
+        $rawSamplingFragmentFunctions
+
+        out vec4 fragColor;
+
+        const int FLAG_AGX = 1;
+        const int FLAG_CREATIVE = 4;
+        const int FLAG_CAMERA_MATRIX = 8;
+        const int FLAG_EXR_MODE = 16;
+        const int FLAG_HIGHLIGHT_RECONSTRUCTION = 32;
+
+        uvec2 curveValues(float value) {
+            uint index = uint(floor(clamp(value, 0.0, 1.0) * 65535.0 + 0.5));
+            ivec2 lutPos = ivec2(int(index & 255u), int(index >> 8u));
+            return texelFetch(uToneTexture, lutPos, 0).rg;
         }
 
         float tone(float value) {
-            uint index = uint(floor(clamp(value, 0.0, 1.0) * 65535.0 + 0.5));
-            ivec2 lutPos = ivec2(int(index & 255u), int(index >> 8u));
-            return float(texelFetch(uToneTexture, lutPos, 0).r) / 65535.0;
+            return float(curveValues(value).r) / 65535.0;
+        }
+
+        float creativeCurve(float value) {
+            return float(curveValues(value).g) / 65535.0;
+        }
+
+        bool flagEnabled(int flag) {
+            return (uFlags & flag) != 0;
+        }
+
+        float addContrast(
+            float pixel,
+            float darkRange,
+            float darkFactor,
+            float lightRange,
+            float lightFactor
+        ) {
+            if (darkRange > 0.00001 && pixel < darkRange) {
+                float strength = darkFactor / (darkRange * 2.0);
+                pixel = pow(
+                    max(pixel, 0.0),
+                    1.0 + (darkRange - pixel) * strength *
+                        (1.0 - pixel / darkRange)
+                );
+            }
+            pixel = 1.0 - pixel;
+            if (lightRange > 0.00001 && pixel > 0.0 && pixel < lightRange) {
+                float strength = lightFactor / (lightRange * 2.0);
+                pixel = pow(
+                    max(pixel, 0.0),
+                    1.0 + (lightRange - pixel) * strength *
+                        (1.0 - pixel / lightRange)
+                );
+            }
+            return 1.0 - pixel;
+        }
+
+        float contrastFactor(float luma, float amount, float pivot) {
+            // Native processing enables this stage at |amount| >= 0.01.
+            if (abs(amount) < 0.01 || luma <= 0.0) return 1.0;
+            float value = pow(clamp(luma, 0.0, 1.0), pivot);
+            float adjusted = addContrast(value, 0.7, -amount * 0.5, 0.0, 0.0);
+            if (adjusted > 0.2) {
+                float mixFactor = (adjusted - 0.2) / 0.8;
+                adjusted = mix(adjusted, adjusted * exp2(amount * -1.5), mixFactor);
+            }
+            return abs(adjusted) > 0.000001 ? value / adjusted : 1.0;
+        }
+
+        float shadowHighlightFactor(float luma, float shadows, float highlights) {
+            if ((abs(shadows) < 0.01 && abs(highlights) < 0.01) || luma <= 0.0) {
+                return 1.0;
+            }
+            float value = pow(clamp(luma, 0.0, 1.0), 0.75);
+            float adjusted = addContrast(value, 0.7, shadows * 0.5, 0.0, 0.0);
+            if (adjusted > 0.2) {
+                float mixFactor = (adjusted - 0.2) / 0.8;
+                adjusted = mix(adjusted, adjusted * exp2(highlights * -1.5), mixFactor);
+            }
+            return abs(adjusted) > 0.000001 ? value / adjusted : 1.0;
+        }
+
+        float localLuma() {
+            vec2 rawSize = vec2(textureSize(uRawTexture, 0));
+            vec2 uv = gl_FragCoord.xy / rawSize;
+            vec2 texel = 1.0 / vec2(textureSize(uLocalTexture, 0));
+            float centre = texture(uLocalTexture, uv).r * 4.0;
+            float neighbours = texture(uLocalTexture, uv + vec2(texel.x, 0.0)).r +
+                texture(uLocalTexture, uv - vec2(texel.x, 0.0)).r +
+                texture(uLocalTexture, uv + vec2(0.0, texel.y)).r +
+                texture(uLocalTexture, uv - vec2(0.0, texel.y)).r;
+            return clamp((centre + neighbours) * 0.125, 0.0, 1.0);
+        }
+
+        vec3 gamutLumaCoefficients() {
+            if (uGamut == 1) return vec3(0.26187796, 0.67638344, 0.06174118);
+            if (uGamut == 2) return vec3(0.34396645, 0.72816610, -0.07213255);
+            if (uGamut == 3) return vec3(0.29737686, 0.62734909, 0.07527408);
+            if (uGamut == 4) return vec3(0.28804026, 0.71187411, 0.00008570);
+            if (uGamut == 5) return vec3(0.0, 1.0, 0.0);
+            if (uGamut == 6) return vec3(0.29195383, 0.82384104, -0.11579452);
+            if (uGamut == 7) return vec3(0.21507582, 0.88506848, -0.10014432);
+            if (uGamut == 8) return vec3(0.27411851, 0.87363189, -0.14775041);
+            if (uGamut == 9) return vec3(0.27222872, 0.67408177, 0.05368952);
+            if (uGamut == 10) return vec3(0.26126136, 0.86964214, -0.13090350);
+            if (uGamut == 11) return vec3(0.26068560, 0.77489460, -0.03558027);
+            return vec3(0.21267285, 0.71515214, 0.07217500);
+        }
+
+        float reinhard(float value) {
+            return value < 0.0 ? value : value / (1.0 + value);
+        }
+
+        float footprintChannel(float distance, float threshold) {
+            if (distance < threshold) return distance;
+            float range = 1.0 - threshold;
+            return reinhard((distance - threshold) / range) * range + threshold;
+        }
+
+        vec3 compressGamutFootprint(vec3 rgb) {
+            float y = dot(gamutLumaCoefficients(), rgb);
+            if (y <= 0.000001) return rgb;
+            float sourceMinimum = min(rgb.r, min(rgb.g, rgb.b));
+            vec3 distance = (vec3(y) - rgb) / y;
+            vec3 mappedDistance = vec3(
+                footprintChannel(distance.r, 0.5),
+                footprintChannel(distance.g, 0.7),
+                footprintChannel(distance.b, 0.7)
+            );
+            vec3 mapped = vec3(y) - mappedDistance * y;
+            float denominator = y - sourceMinimum;
+            if (abs(denominator) <= 0.000001) return rgb;
+            float factor = (y - min(mapped.r, min(mapped.g, mapped.b))) / denominator;
+            if (!isnan(factor) && !isinf(factor)) {
+                return (rgb - vec3(y)) * factor + vec3(y);
+            }
+            return rgb;
+        }
+
+        vec3 applyVibrance(vec3 rgb, float factor) {
+            if (abs(factor - 1.0) <= 0.01) return rgb;
+            float y = dot(rgb, vec3(0.25, 0.6875, 0.0625));
+            vec3 adjusted = clamp(vec3(y) + (rgb - vec3(y)) * factor, 0.0, 1.0);
+            if (factor <= 1.0) return adjusted;
+            float largest = max(rgb.r, max(rgb.g, rgb.b));
+            float smallest = min(rgb.r, min(rgb.g, rgb.b));
+            float saturation = largest > 0.0 ? (largest - smallest) / largest : 0.0;
+            saturation = min(2.0 * saturation / (saturation * saturation + 1.0), 1.0);
+            return clamp(mix(adjusted, rgb, saturation), 0.0, 1.0);
+        }
+
+        vec3 applySaturation(vec3 rgb, float factor) {
+            if (abs(factor - 1.0) <= 0.01) return rgb;
+            float y = dot(rgb, vec3(0.25, 0.6875, 0.0625));
+            return clamp(vec3(y) + (rgb - vec3(y)) * factor, 0.0, 1.0);
         }
 
         vec3 agxCompress(vec3 value) {
@@ -191,14 +414,68 @@ class MlvRenderer(
             // to the original buffer rows; presentation performs the only flip.
             ivec2 p = ivec2(gl_FragCoord.xy);
             vec3 cameraRgb = bilinearDemosaic(p);
+            float originalLuma = clamp(
+                dot(cameraRgb, vec3(0.25, 0.6875, 0.0625)),
+                0.0,
+                1.0
+            );
+            float originalGreen = clamp(cameraRgb.g, 0.0, 1.0);
+
+            if (flagEnabled(FLAG_CREATIVE)) {
+                float exposureCorrection = 1.0;
+                if (uLocalEnabled != 0) {
+                    float blurredLuma = localLuma();
+                    if (abs(uCreativeA.z) >= 0.01) {
+                        float blurredFactor = contrastFactor(blurredLuma, uCreativeA.z, 0.75);
+                        float originalFactor = contrastFactor(originalLuma, uCreativeA.z, 0.75);
+                        exposureCorrection *= (originalFactor * originalFactor) /
+                            max(blurredFactor * blurredFactor, 0.000001);
+                    }
+                    exposureCorrection *= shadowHighlightFactor(
+                        blurredLuma,
+                        uCreativeB.y,
+                        uCreativeB.z
+                    );
+                }
+                exposureCorrection *= contrastFactor(
+                    originalLuma,
+                    uCreativeA.x,
+                    uCreativeA.y
+                );
+                cameraRgb *= exposureCorrection;
+            }
+            cameraRgb = clamp(cameraRgb, 0.0, 1.0);
+
+            if (flagEnabled(FLAG_HIGHLIGHT_RECONSTRUCTION) &&
+                abs(originalGreen - uHighlightRecovery.x) <= uHighlightRecovery.y
+            ) {
+                cameraRgb.g = (cameraRgb.r + cameraRgb.b) * 0.5;
+            }
+
             vec3 outputRgb = vec3(
                 dot(uColorRow0, cameraRgb),
                 dot(uColorRow1, cameraRgb),
                 dot(uColorRow2, cameraRgb)
             );
-            if (uAgxEnabled != 0) outputRgb = agxCompress(outputRgb);
+            if (flagEnabled(FLAG_CAMERA_MATRIX) && !flagEnabled(FLAG_EXR_MODE)) {
+                outputRgb = compressGamutFootprint(outputRgb);
+            }
+            if (flagEnabled(FLAG_AGX) && flagEnabled(FLAG_CAMERA_MATRIX)) {
+                outputRgb = agxCompress(outputRgb);
+            }
             outputRgb = vec3(tone(outputRgb.r), tone(outputRgb.g), tone(outputRgb.b));
-            if (uAgxEnabled != 0) outputRgb = agxExpand(outputRgb);
+
+            if (flagEnabled(FLAG_CREATIVE)) {
+                outputRgb = applyVibrance(outputRgb, uCreativeA.w);
+                outputRgb = applySaturation(outputRgb, uCreativeB.x);
+                outputRgb = vec3(
+                    creativeCurve(outputRgb.r),
+                    creativeCurve(outputRgb.g),
+                    creativeCurve(outputRgb.b)
+                );
+            }
+
+            if (flagEnabled(FLAG_AGX)) outputRgb = agxExpand(outputRgb);
             fragColor = vec4(clamp(outputRgb, 0.0, 1.0), 1.0);
         }
     """.trimIndent()
@@ -218,6 +495,7 @@ class MlvRenderer(
     private lateinit var texCoordBuffer: FloatBuffer
 
     private var standardProgram = 0
+    private var gpuLocalLumaProgram = 0
     private var gpuProcessProgram = 0
     private var gpuDisplayProgram = 0
 
@@ -225,15 +503,25 @@ class MlvRenderer(
     private var standardWidthUniform = -1
     private var standardScaleUniform = -1
     private var standardStretchUniform = -1
+    private var localRawUniform = -1
+    private var localLevelsUniform = -1
+    private var localGainsUniform = -1
+    private var localCfaUniform = -1
     private var processRawUniform = -1
     private var processToneUniform = -1
+    private var processLocalUniform = -1
     private var processLevelsUniform = -1
     private var processGainsUniform = -1
     private var processCfaUniform = -1
     private var processColorRow0Uniform = -1
     private var processColorRow1Uniform = -1
     private var processColorRow2Uniform = -1
-    private var processAgxUniform = -1
+    private var processCreativeAUniform = -1
+    private var processCreativeBUniform = -1
+    private var processHighlightRecoveryUniform = -1
+    private var processFlagsUniform = -1
+    private var processGamutUniform = -1
+    private var processLocalEnabledUniform = -1
     private var displayTextureUniform = -1
     private var displayScaleUniform = -1
     private var displayStretchUniform = -1
@@ -241,14 +529,20 @@ class MlvRenderer(
     private var standardTexture = 0
     private var rawTexture = 0
     private var toneTexture = 0
+    private var localLumaTexture = 0
     private var processedTexture = 0
+    private var localLumaFramebuffer = 0
     private var processedFramebuffer = 0
 
     private var standardTextureWidth = 0
     private var standardTextureHeight = 0
     private var gpuTextureWidth = 0
     private var gpuTextureHeight = 0
+    private var localTextureWidth = 0
+    private var localTextureHeight = 0
     private var maxTextureSize = 0
+    private var preferHalfFloatLocalTarget = false
+    private var usingHalfFloatLocalTarget = false
 
     private var viewWidth = 1
     private var viewHeight = 1
@@ -256,11 +550,17 @@ class MlvRenderer(
     private val stretch = floatArrayOf(1f, 1f)
     private var lastLoggedStretchX = 1f
     private var lastLoggedStretchY = 1f
+    private var renderStretchX = 1f
+    private var renderStretchY = 1f
 
     private var bayerBuffer: ByteBuffer? = null
+    private val correctedRawFrameInfoBuffer: ByteBuffer =
+        ByteBuffer.allocateDirect(CORRECTED_RAW_FRAME_INFO_BYTES)
+            .order(ByteOrder.nativeOrder())
+    private val correctedRawFrameInfo = FloatArray(CORRECTED_RAW_FRAME_INFO_FLOATS)
     private val gpuStateBuffer: ByteBuffer = ByteBuffer.allocateDirect(GPU_STATE_BYTES)
         .order(ByteOrder.nativeOrder())
-    private val toneLutBuffer: ByteBuffer = ByteBuffer.allocateDirect(TONE_LUT_BYTES)
+    private val toneLutBuffer: ByteBuffer = ByteBuffer.allocateDirect(TONE_CURVE_LUT_BYTES)
         .order(ByteOrder.nativeOrder())
     private val gpuState = FloatArray(GPU_STATE_FLOATS)
     private var loadedGpuStateVersion = Long.MIN_VALUE
@@ -268,10 +568,15 @@ class MlvRenderer(
     private var gpuStateFailureVersion = Long.MIN_VALUE
     private var gpuStateFailureHandle = 0L
     private var gpuHardFailure = false
+    private var gpuContextHardFailure = false
+    private var gpuFailureHandle = 0L
+    private var currentRenderHandle = 0L
     private var gpuFailureLogged = false
     private var gpuPathLoggedBackend = DECODER_BACKEND_UNSET
     private var processedGpuFrameHandle = 0L
     private var cacheRestoreRequestedHandle = 0L
+    private var pendingNativeCpuFallbackHandle = 0L
+    private var pendingNativeCpuFallbackVersion = Long.MIN_VALUE
     private var gpuStateFailureCount = 0
     private var gpuTimingFrames = 0
     private var gpuTimingDecodeNs = 0L
@@ -295,6 +600,10 @@ class MlvRenderer(
             .apply { put(textureCoords).position(0) }
 
         standardProgram = createProgram(presentationVertexShader, standardFragmentShader)
+        gpuLocalLumaProgram = createProgram(
+            gpuProcessVertexShader,
+            gpuLocalLumaFragmentShader
+        )
         gpuProcessProgram = createProgram(gpuProcessVertexShader, gpuProcessFragmentShader)
         gpuDisplayProgram = createProgram(presentationVertexShader, gpuDisplayFragmentShader)
         cacheUniformLocations()
@@ -302,24 +611,34 @@ class MlvRenderer(
         standardTexture = generateTexture()
         rawTexture = generateTexture()
         toneTexture = generateTexture()
+        localLumaTexture = generateTexture()
         processedTexture = generateTexture()
+        localLumaFramebuffer = generateFramebuffer()
         processedFramebuffer = generateFramebuffer()
 
         val maxSize = IntArray(1)
         GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, maxSize, 0)
         maxTextureSize = maxSize[0]
+        val extensions = GLES30.glGetString(GLES30.GL_EXTENSIONS).orEmpty()
+        preferHalfFloatLocalTarget =
+            extensions.contains("GL_EXT_color_buffer_half_float") ||
+                extensions.contains("GL_EXT_color_buffer_float")
         GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
 
         if (standardProgram == 0) {
             Log.e(tag, "Standard preview shader could not be created")
         }
-        if (gpuProcessProgram == 0 || gpuDisplayProgram == 0 ||
-            rawTexture == 0 || toneTexture == 0 || processedTexture == 0 ||
-            processedFramebuffer == 0
+        if (gpuLocalLumaProgram == 0 || gpuProcessProgram == 0 ||
+            gpuDisplayProgram == 0 || rawTexture == 0 || toneTexture == 0 ||
+            localLumaTexture == 0 || processedTexture == 0 ||
+            localLumaFramebuffer == 0 || processedFramebuffer == 0
         ) {
-            latchGpuFailure("required GLES program or object creation failed")
+            latchGpuFailure(
+                "required GLES program or object creation failed",
+                contextWide = true
+            )
         }
-        viewModel.prepareRawGpuRetry(viewModel.clipHandle.value)
+        viewModel.prepareRawGpuRetry(viewModel.activeClip.value?.nativeHandle ?: 0L)
         checkGlError("onSurfaceCreated")
     }
 
@@ -330,10 +649,32 @@ class MlvRenderer(
     }
 
     override fun onDrawFrame(gl: GL10?) {
-        val clipHandle = viewModel.clipHandle.value
-        val videoWidth = viewModel.width.value
-        val videoHeight = viewModel.height.value
-        val frameIndex = viewModel.currentFrame.value
+        // Handle, geometry, and format must come from the same publication.
+        // Independent derived flows can briefly mix two clips during A -> B.
+        val clip = viewModel.activeClip.value
+        val clipHandle = clip?.nativeHandle ?: 0L
+        val videoWidth = clip?.width ?: 0
+        val videoHeight = clip?.height ?: 0
+        val isMcraw = clip?.metadata?.isMcraw ?: clip?.isMcraw ?: false
+        renderStretchX = clip?.processing?.stretchFactorX ?: 1f
+        renderStretchY = clip?.processing?.stretchFactorY ?: 1f
+        val frameCount = clip?.frames ?: 0
+        val frameIndex = if (frameCount > 0) {
+            viewModel.currentFrame.value.coerceIn(0, frameCount - 1)
+        } else {
+            0
+        }
+        currentRenderHandle = clipHandle
+        if (gpuHardFailure && !gpuContextHardFailure &&
+            gpuFailureHandle != 0L && gpuFailureHandle != clipHandle
+        ) {
+            // Native format/preparation failures are clip-local. A valid next
+            // clip in the same EGL context must still get its own GPU attempt.
+            gpuHardFailure = false
+            gpuFailureLogged = false
+            gpuFailureHandle = 0L
+            cacheRestoreRequestedHandle = 0L
+        }
 
         if (clipHandle == 0L || videoWidth <= 0 || videoHeight <= 0) {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -343,6 +684,7 @@ class MlvRenderer(
         }
 
         val frameStart = System.nanoTime()
+        val processingVersion = viewModel.processingVersion.value
         var decodeNs = 0L
         var rendered = false
         var usedGpu = false
@@ -350,7 +692,8 @@ class MlvRenderer(
         var gpuDecoderBackend = DECODER_BACKEND_UNSET
         val wantsGpu = viewModel.experimentalRawGpuPreview.value &&
             viewModel.isRawGpuReady(clipHandle) &&
-            !viewModel.requiresCpuProcessingPreview()
+            !viewModel.requiresCpuProcessingPreview() &&
+            !viewModel.requiresRawGpuNativeCpuFallback(clipHandle, processingVersion)
         if (!wantsGpu) {
             // The ViewModel restores normal caching when the experiment is
             // disabled. Clear the per-handle notification marker so a later
@@ -359,7 +702,13 @@ class MlvRenderer(
         }
 
         if (wantsGpu && !gpuHardFailure) {
-            val gpuResult = drawGpuFrame(clipHandle, frameIndex, videoWidth, videoHeight)
+            val gpuResult = drawGpuFrame(
+                clipHandle,
+                frameIndex,
+                videoWidth,
+                videoHeight,
+                isMcraw
+            )
             decodeNs += gpuResult.decodeNs
             rendered = gpuResult.rendered
             usedGpu = rendered && gpuResult.freshFrame
@@ -374,6 +723,15 @@ class MlvRenderer(
             decodeNs += standardResult.decodeNs
             rendered = standardResult.rendered
             freshFrame = rendered && standardResult.freshFrame
+        }
+
+        if (pendingNativeCpuFallbackHandle == clipHandle) {
+            val fallbackVersion = pendingNativeCpuFallbackVersion
+            pendingNativeCpuFallbackHandle = 0L
+            pendingNativeCpuFallbackVersion = Long.MIN_VALUE
+            // Defer cache restoration until after this frame's CPU draw so its
+            // fillFrame16 try-lock cannot lose to the cache-policy transition.
+            viewModel.reportRawGpuRequiresCpuProcessing(clipHandle, fallbackVersion)
         }
 
         if (wantsGpu && gpuHardFailure && cacheRestoreRequestedHandle != clipHandle) {
@@ -480,29 +838,37 @@ class MlvRenderer(
         handle: Long,
         frameIndex: Int,
         width: Int,
-        height: Int
+        height: Int,
+        isMcraw: Boolean
     ): DrawResult {
         if (!canAllocateGpuFrame(width, height)) return DrawResult(false, 0L)
         if (!ensureGpuTextures(width, height)) return DrawResult(false, 0L)
         if (!refreshGpuStateIfNeeded(handle)) return DrawResult(false, 0L)
         if ((gpuState[PARAM_FLAGS].toInt() and FLAG_REQUIRES_CPU_PROCESSING) != 0) {
+            // Native is the final authority for stages not represented in the
+            // Kotlin receipt model. Report after the same-frame CPU draw and
+            // scope the fallback to this processing snapshot.
+            pendingNativeCpuFallbackHandle = handle
+            pendingNativeCpuFallbackVersion = loadedGpuStateVersion
             return DrawResult(false, 0L)
         }
 
         val buffer = getOrAllocateBayerBuffer(width, height) ?: return DrawResult(false, 0L)
         buffer.position(0)
         val requestedDecoderBackend = if (
-            viewModel.isMcraw.value && viewModel.experimentalMcrawParallelDecoder.value
+            isMcraw && viewModel.experimentalMcrawParallelDecoder.value
         ) {
             DECODER_BACKEND_ROW_PARALLEL
         } else {
             DECODER_BACKEND_CURRENT
         }
         val decodeStart = System.nanoTime()
-        val decoderBackend = NativeLib.fillRawBayer16(
+        correctedRawFrameInfoBuffer.position(0)
+        val decoderBackend = NativeLib.fillCorrectedRawBayer16(
             handle,
             frameIndex,
             buffer,
+            correctedRawFrameInfoBuffer,
             requestedDecoderBackend,
             cpuCores
         )
@@ -514,8 +880,17 @@ class MlvRenderer(
             return DrawResult(preserved, decodeNs)
         }
         if (decoderBackend < RAW_GPU_DECODE_TRANSIENT) {
-            latchGpuFailure("native RAW Bayer decode failed ($decoderBackend)")
+            latchGpuFailure("native corrected RAW preparation failed ($decoderBackend)")
             return DrawResult(false, decodeNs)
+        }
+        correctedRawFrameInfoBuffer.position(0)
+        correctedRawFrameInfoBuffer.asFloatBuffer().apply {
+            position(0)
+            get(correctedRawFrameInfo)
+        }
+        if (!applyCorrectedRawFrameInfo()) {
+            latchGpuFailure("native corrected RAW metadata is invalid")
+            return DrawResult(false, decodeNs, decoderBackend)
         }
 
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
@@ -538,6 +913,13 @@ class MlvRenderer(
             return DrawResult(false, decodeNs, decoderBackend)
         }
 
+        val localEnabled = requiresLocalLumaPass()
+        if (localEnabled && !drawLocalLumaPass()) {
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            latchGpuFailure("local luminance processing pass failed")
+            return DrawResult(false, decodeNs, decoderBackend)
+        }
+
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, processedFramebuffer)
         GLES30.glViewport(0, 0, width, height)
         GLES30.glUseProgram(gpuProcessProgram)
@@ -548,6 +930,9 @@ class MlvRenderer(
         GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, toneTexture)
         GLES30.glUniform1i(processToneUniform, 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, localLumaTexture)
+        GLES30.glUniform1i(processLocalUniform, 2)
 
         GLES30.glUniform2f(
             processLevelsUniform,
@@ -565,10 +950,27 @@ class MlvRenderer(
             gpuState[PARAM_CFA].toInt()
         )
         setColorMatrixUniforms()
-        GLES30.glUniform1i(
-            processAgxUniform,
-            if ((gpuState[PARAM_FLAGS].toInt() and FLAG_AGX) != 0) 1 else 0
+        GLES30.glUniform4f(
+            processCreativeAUniform,
+            gpuState[PARAM_CONTRAST],
+            gpuState[PARAM_PIVOT],
+            gpuState[PARAM_CLARITY],
+            gpuState[PARAM_VIBRANCE]
         )
+        GLES30.glUniform3f(
+            processCreativeBUniform,
+            gpuState[PARAM_SATURATION],
+            gpuState[PARAM_SHADOWS],
+            gpuState[PARAM_HIGHLIGHTS]
+        )
+        GLES30.glUniform2f(
+            processHighlightRecoveryUniform,
+            gpuState[PARAM_HIGHEST_GREEN],
+            gpuState[PARAM_HIGHLIGHT_TOLERANCE]
+        )
+        GLES30.glUniform1i(processFlagsUniform, gpuState[PARAM_FLAGS].toInt())
+        GLES30.glUniform1i(processGamutUniform, gpuState[PARAM_GAMUT].toInt())
+        GLES30.glUniform1i(processLocalEnabledUniform, if (localEnabled) 1 else 0)
         drawQuad()
 
         if (!checkGlError("RAW process pass")) {
@@ -584,20 +986,79 @@ class MlvRenderer(
         }
         processedGpuFrameHandle = handle
         viewModel.reportRawGpuSuccess(handle)
+        releaseStandardPreviewStorage()
         if (displayed && gpuPathLoggedBackend != decoderBackend) {
             gpuPathLoggedBackend = decoderBackend
-            val format = if (viewModel.isMcraw.value) {
+            val format = if (isMcraw) {
                 "MCRAW"
             } else {
-                "MLV (RAW corrections bypassed)"
+                "MLV"
             }
             Log.i(
                 tag,
-                "Experimental RAW GPU preview active for $format (${width}x$height, " +
+                "Hybrid RAW GPU preview active for $format (${width}x$height, " +
+                    "CPU RAW corrections + GPU levels/WB/bilinear/grading, " +
+                    "target=RGBA8/local-${if (usingHalfFloatLocalTarget) "R16F" else "R8"}, " +
                     "decoder=${decoderBackendName(decoderBackend)})"
             )
         }
         return DrawResult(displayed, decodeNs, decoderBackend, freshFrame = displayed)
+    }
+
+    private fun releaseStandardPreviewStorage() {
+        if (standardTextureWidth > 0 && standardTextureHeight > 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, standardTexture)
+            GLES30.glTexImage2D(
+                GLES30.GL_TEXTURE_2D,
+                0,
+                GLES30.GL_RG8,
+                1,
+                1,
+                0,
+                GLES30.GL_RG,
+                GLES30.GL_UNSIGNED_BYTE,
+                null
+            )
+            standardTextureWidth = 0
+            standardTextureHeight = 0
+            checkGlError("release standard preview texture storage")
+        }
+        viewModel.releaseStandardPreviewBuffer()
+    }
+
+    private fun requiresLocalLumaPass(): Boolean {
+        val flags = gpuState[PARAM_FLAGS].toInt()
+        if ((flags and FLAG_CREATIVE) == 0) return false
+        return abs(gpuState[PARAM_CLARITY]) >= LOCAL_ADJUSTMENT_EPSILON ||
+            abs(gpuState[PARAM_SHADOWS]) >= LOCAL_ADJUSTMENT_EPSILON ||
+            abs(gpuState[PARAM_HIGHLIGHTS]) >= LOCAL_ADJUSTMENT_EPSILON
+    }
+
+    private fun drawLocalLumaPass(): Boolean {
+        if (gpuLocalLumaProgram == 0 || localTextureWidth <= 0 || localTextureHeight <= 0) {
+            return false
+        }
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, localLumaFramebuffer)
+        GLES30.glViewport(0, 0, localTextureWidth, localTextureHeight)
+        GLES30.glUseProgram(gpuLocalLumaProgram)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, rawTexture)
+        GLES30.glUniform1i(localRawUniform, 0)
+        GLES30.glUniform2f(
+            localLevelsUniform,
+            gpuState[PARAM_BLACK],
+            gpuState[PARAM_WHITE]
+        )
+        GLES30.glUniform3f(
+            localGainsUniform,
+            gpuState[PARAM_GAIN_R],
+            gpuState[PARAM_GAIN_G],
+            gpuState[PARAM_GAIN_B]
+        )
+        GLES30.glUniform1i(localCfaUniform, gpuState[PARAM_CFA].toInt())
+        drawQuad()
+        return checkGlError("RAW local luminance pass")
     }
 
     private fun drawProcessedTexture(width: Int, height: Int): Boolean {
@@ -651,11 +1112,11 @@ class MlvRenderer(
         GLES30.glTexImage2D(
             GLES30.GL_TEXTURE_2D,
             0,
-            GLES30.GL_R16UI,
+            GLES30.GL_RG16UI,
             TONE_LUT_SIDE,
             TONE_LUT_SIDE,
             0,
-            GLES30.GL_RED_INTEGER,
+            GLES30.GL_RG_INTEGER,
             GLES30.GL_UNSIGNED_SHORT,
             toneLutBuffer
         )
@@ -690,6 +1151,33 @@ class MlvRenderer(
         for (index in PARAM_MATRIX_START until PARAM_MATRIX_START + 9) {
             if (!gpuState[index].isFinite()) return false
         }
+        for (index in PARAM_CONTRAST..PARAM_HIGHLIGHT_TOLERANCE) {
+            if (!gpuState[index].isFinite()) return false
+        }
+        if (gpuState[PARAM_PIVOT] !in 0f..1f ||
+            gpuState[PARAM_HIGHLIGHT_TOLERANCE] < 0f
+        ) return false
+        val gamut = gpuState[PARAM_GAMUT].toInt()
+        if (gamut !in GAMUT_REC709..GAMUT_PANASONIC_V) return false
+        return true
+    }
+
+    private fun applyCorrectedRawFrameInfo(): Boolean {
+        val black = correctedRawFrameInfo[FRAME_INFO_BLACK]
+        val white = correctedRawFrameInfo[FRAME_INFO_WHITE]
+        val cfaValue = correctedRawFrameInfo[FRAME_INFO_CFA]
+        val representationBits = correctedRawFrameInfo[FRAME_INFO_BITS]
+        if (!black.isFinite() || !white.isFinite() || white <= black ||
+            black < 0f || white > 65_535f || !cfaValue.isFinite() ||
+            cfaValue != cfaValue.toInt().toFloat() ||
+            cfaValue.toInt() !in CFA_RGGB..CFA_GRBG ||
+            representationBits != CORRECTED_RAW_REPRESENTATION_BITS.toFloat()
+        ) {
+            return false
+        }
+        gpuState[PARAM_BLACK] = black
+        gpuState[PARAM_WHITE] = white
+        gpuState[PARAM_CFA] = cfaValue
         return true
     }
 
@@ -740,6 +1228,7 @@ class MlvRenderer(
         if (gpuTextureWidth == width && gpuTextureHeight == height) return true
 
         processedGpuFrameHandle = 0L
+        val useHalfFloatLocalTarget = preferHalfFloatLocalTarget
 
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, rawTexture)
@@ -778,6 +1267,55 @@ class MlvRenderer(
             return false
         }
 
+        localTextureWidth = (width + LOCAL_LUMA_DOWNSAMPLE - 1) / LOCAL_LUMA_DOWNSAMPLE
+        localTextureHeight = (height + LOCAL_LUMA_DOWNSAMPLE - 1) / LOCAL_LUMA_DOWNSAMPLE
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, localLumaTexture)
+        configureNormalizedTexture(GLES30.GL_LINEAR)
+        GLES30.glTexImage2D(
+            GLES30.GL_TEXTURE_2D,
+            0,
+            if (useHalfFloatLocalTarget) GLES30.GL_R16F else GLES30.GL_R8,
+            localTextureWidth,
+            localTextureHeight,
+            0,
+            GLES30.GL_RED,
+            if (useHalfFloatLocalTarget) GLES30.GL_HALF_FLOAT else GLES30.GL_UNSIGNED_BYTE,
+            null
+        )
+        if (!checkGlError("local luminance texture allocation")) {
+            if (useHalfFloatLocalTarget) {
+                return retryLocalLumaAsR8(width, height, "R16F is unavailable")
+            }
+            latchGpuFailure("local luminance texture allocation failed")
+            return false
+        }
+
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, localLumaFramebuffer)
+        GLES30.glFramebufferTexture2D(
+            GLES30.GL_FRAMEBUFFER,
+            GLES30.GL_COLOR_ATTACHMENT0,
+            GLES30.GL_TEXTURE_2D,
+            localLumaTexture,
+            0
+        )
+        val localFramebufferStatus =
+            GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+        if (localFramebufferStatus != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            if (useHalfFloatLocalTarget) {
+                return retryLocalLumaAsR8(
+                    width,
+                    height,
+                    "R16F framebuffer is not color-renderable"
+                )
+            }
+            latchGpuFailure(
+                "local luminance framebuffer incomplete: " +
+                    "0x${Integer.toHexString(localFramebufferStatus)}"
+            )
+            return false
+        }
+
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, processedFramebuffer)
         GLES30.glFramebufferTexture2D(
             GLES30.GL_FRAMEBUFFER,
@@ -795,8 +1333,17 @@ class MlvRenderer(
 
         gpuTextureWidth = width
         gpuTextureHeight = height
+        usingHalfFloatLocalTarget = useHalfFloatLocalTarget
         loadedGpuStateVersion = Long.MIN_VALUE
         return true
+    }
+
+    private fun retryLocalLumaAsR8(width: Int, height: Int, reason: String): Boolean {
+        Log.w(tag, "$reason; falling back to an R8 local-luminance target")
+        preferHalfFloatLocalTarget = false
+        usingHalfFloatLocalTarget = false
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        return ensureGpuTextures(width, height)
     }
 
     private fun canAllocateGpuFrame(width: Int, height: Int): Boolean {
@@ -840,9 +1387,8 @@ class MlvRenderer(
     }
 
     private fun setPresentationUniforms(program: Int, videoWidth: Int, videoHeight: Int) {
-        val processing = viewModel.processingData.value
-        val stretchX = sanitizeStretch(processing.stretchFactorX)
-        val stretchY = sanitizeStretch(processing.stretchFactorY)
+        val stretchX = sanitizeStretch(renderStretchX)
+        val stretchY = sanitizeStretch(renderStretchY)
         stretch[0] = stretchX
         stretch[1] = stretchY
 
@@ -914,16 +1460,30 @@ class MlvRenderer(
             standardScaleUniform = GLES30.glGetUniformLocation(standardProgram, "uScale")
             standardStretchUniform = GLES30.glGetUniformLocation(standardProgram, "uStretch")
         }
+        if (gpuLocalLumaProgram != 0) {
+            localRawUniform = GLES30.glGetUniformLocation(gpuLocalLumaProgram, "uRawTexture")
+            localLevelsUniform = GLES30.glGetUniformLocation(gpuLocalLumaProgram, "uLevels")
+            localGainsUniform = GLES30.glGetUniformLocation(gpuLocalLumaProgram, "uCfaGains")
+            localCfaUniform = GLES30.glGetUniformLocation(gpuLocalLumaProgram, "uCfaPattern")
+        }
         if (gpuProcessProgram != 0) {
             processRawUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uRawTexture")
             processToneUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uToneTexture")
+            processLocalUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uLocalTexture")
             processLevelsUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uLevels")
             processGainsUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uCfaGains")
             processCfaUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uCfaPattern")
             processColorRow0Uniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uColorRow0")
             processColorRow1Uniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uColorRow1")
             processColorRow2Uniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uColorRow2")
-            processAgxUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uAgxEnabled")
+            processCreativeAUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uCreativeA")
+            processCreativeBUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uCreativeB")
+            processHighlightRecoveryUniform =
+                GLES30.glGetUniformLocation(gpuProcessProgram, "uHighlightRecovery")
+            processFlagsUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uFlags")
+            processGamutUniform = GLES30.glGetUniformLocation(gpuProcessProgram, "uGamut")
+            processLocalEnabledUniform =
+                GLES30.glGetUniformLocation(gpuProcessProgram, "uLocalEnabled")
         }
         if (gpuDisplayProgram != 0) {
             displayTextureUniform = GLES30.glGetUniformLocation(gpuDisplayProgram, "uTexture")
@@ -996,8 +1556,14 @@ class MlvRenderer(
         return success
     }
 
-    private fun latchGpuFailure(reason: String) {
+    private fun latchGpuFailure(reason: String, contextWide: Boolean = false) {
         gpuHardFailure = true
+        if (contextWide) {
+            gpuContextHardFailure = true
+            gpuFailureHandle = 0L
+        } else {
+            gpuFailureHandle = currentRenderHandle
+        }
         if (!gpuFailureLogged) {
             gpuFailureLogged = true
             Log.e(tag, "Experimental RAW GPU preview disabled for this EGL context: $reason")
@@ -1024,7 +1590,7 @@ class MlvRenderer(
             Log.i(
                 tag,
                 "RAW GPU preview averages: decoder=${decoderBackendName(decoderBackend)}, " +
-                    "decode=${decodeUs}us, " +
+                    "CPU prepare=${decodeUs}us, " +
                     "upload/GL-submit=${submissionUs}us (GPU execution is asynchronous)"
             )
             gpuTimingFrames = 0
@@ -1035,26 +1601,40 @@ class MlvRenderer(
 
     private fun resetContextState() {
         standardProgram = 0
+        gpuLocalLumaProgram = 0
         gpuProcessProgram = 0
         gpuDisplayProgram = 0
         standardTexture = 0
         rawTexture = 0
         toneTexture = 0
+        localLumaTexture = 0
         processedTexture = 0
+        localLumaFramebuffer = 0
         processedFramebuffer = 0
         standardTextureWidth = 0
         standardTextureHeight = 0
         gpuTextureWidth = 0
         gpuTextureHeight = 0
+        localTextureWidth = 0
+        localTextureHeight = 0
+        renderStretchX = 1f
+        renderStretchY = 1f
+        preferHalfFloatLocalTarget = false
+        usingHalfFloatLocalTarget = false
         loadedGpuStateVersion = Long.MIN_VALUE
         loadedGpuStateHandle = 0L
         gpuStateFailureVersion = Long.MIN_VALUE
         gpuStateFailureHandle = 0L
         gpuHardFailure = false
+        gpuContextHardFailure = false
+        gpuFailureHandle = 0L
+        currentRenderHandle = 0L
         gpuFailureLogged = false
         gpuPathLoggedBackend = DECODER_BACKEND_UNSET
         processedGpuFrameHandle = 0L
         cacheRestoreRequestedHandle = 0L
+        pendingNativeCpuFallbackHandle = 0L
+        pendingNativeCpuFallbackVersion = Long.MIN_VALUE
         gpuStateFailureCount = 0
         gpuTimingFrames = 0
         gpuTimingDecodeNs = 0L
@@ -1080,10 +1660,16 @@ class MlvRenderer(
         const val POSITION_ATTRIBUTE = 0
         const val TEXCOORD_ATTRIBUTE = 1
 
-        const val GPU_STATE_FLOATS = 16
+        const val GPU_STATE_FLOATS = 32
         const val GPU_STATE_BYTES = GPU_STATE_FLOATS * Float.SIZE_BYTES
+        const val CORRECTED_RAW_FRAME_INFO_FLOATS = 4
+        const val CORRECTED_RAW_FRAME_INFO_BYTES =
+            CORRECTED_RAW_FRAME_INFO_FLOATS * Float.SIZE_BYTES
+        const val CORRECTED_RAW_REPRESENTATION_BITS = 16
         const val TONE_LUT_SIDE = 256
-        const val TONE_LUT_BYTES = 65_536 * Short.SIZE_BYTES
+        const val TONE_CURVE_LUT_BYTES = 65_536 * 2 * Short.SIZE_BYTES
+        const val LOCAL_LUMA_DOWNSAMPLE = 8
+        const val LOCAL_ADJUSTMENT_EPSILON = 0.01f
         const val GPU_TIMING_LOG_WINDOW = 120
         const val GPU_STATE_FAILURE_LIMIT = 3
 
@@ -1093,6 +1679,11 @@ class MlvRenderer(
         const val DECODER_BACKEND_CLASSIC_MLV = 2
         const val RAW_GPU_DECODE_TRANSIENT = -1
 
+        const val FRAME_INFO_BLACK = 0
+        const val FRAME_INFO_WHITE = 1
+        const val FRAME_INFO_CFA = 2
+        const val FRAME_INFO_BITS = 3
+
         const val PARAM_BLACK = 0
         const val PARAM_WHITE = 1
         const val PARAM_GAIN_R = 2
@@ -1101,11 +1692,24 @@ class MlvRenderer(
         const val PARAM_CFA = 5
         const val PARAM_MATRIX_START = 6
         const val PARAM_FLAGS = 15
+        const val PARAM_CONTRAST = 16
+        const val PARAM_PIVOT = 17
+        const val PARAM_CLARITY = 18
+        const val PARAM_SHADOWS = 19
+        const val PARAM_HIGHLIGHTS = 20
+        const val PARAM_VIBRANCE = 21
+        const val PARAM_SATURATION = 22
+        const val PARAM_HIGHEST_GREEN = 23
+        const val PARAM_HIGHLIGHT_TOLERANCE = 24
+        const val PARAM_GAMUT = 25
 
         const val FLAG_AGX = 1
         const val FLAG_REQUIRES_CPU_PROCESSING = 1 shl 1
+        const val FLAG_CREATIVE = 1 shl 2
 
         const val CFA_RGGB = 0
         const val CFA_GRBG = 3
+        const val GAMUT_REC709 = 0
+        const val GAMUT_PANASONIC_V = 11
     }
 }

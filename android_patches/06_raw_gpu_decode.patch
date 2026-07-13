@@ -3,17 +3,17 @@ index 862db46..0bfc236 100644
 --- a/app/src/main/cpp/src/dng/dng.c
 +++ b/app/src/main/cpp/src/dng/dng.c
 @@ -34,8 +34,8 @@
-
+ 
  #include "../mlv/liblj92/lj92.h"
  #include "../mlv/llrawproc/llrawproc.h"
 -#include "../mlv/mcraw/mcraw.h"
  #include "../mlv/macros.h"
 +#include "../mlv/video_mlv.h"
-
+ 
  #define IFD0_COUNT 41
  #define EXIF_IFD_COUNT 11
 @@ -915,44 +915,14 @@ static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_
-
+ 
      if (isMcrawLoaded(mlv_data))
      {
 -        /* Move to start of frame in file and read the RAW data */
@@ -63,19 +63,96 @@ index 862db46..0bfc236 100644
  #endif
              return -1;
          }
+diff --git a/app/src/main/cpp/src/mlv/llrawproc/llrawproc.c b/app/src/main/cpp/src/mlv/llrawproc/llrawproc.c
+index b88d54f..84d0c9d 100644
+--- a/app/src/main/cpp/src/mlv/llrawproc/llrawproc.c
++++ b/app/src/main/cpp/src/mlv/llrawproc/llrawproc.c
+@@ -171,8 +171,10 @@ llrawprocObject_t * initLLRawProcObject()
+     llrawproc->dark_frame = 0;
+ 
+     llrawproc->dark_frame_filename = NULL;
++    llrawproc->dark_frame_fds[0] = -1;
+     llrawproc->dark_frame_data = NULL;
+     llrawproc->dark_frame_size = 0;
++    llrawproc->dark_frame_data_source = DF_OFF;
+ 
+     llrawproc->raw2ev = NULL;
+     llrawproc->ev2raw = NULL;
+@@ -197,7 +199,10 @@ void freeLLRawProcObject(mlvObject_t * video)
+ }
+ 
+ /* all low level raw processing takes place here */
+-void applyLLRawProcObject(mlvObject_t * video, uint16_t * raw_image_buff, size_t raw_image_size)
++static void applyLLRawProcObjectInternal(mlvObject_t * video,
++                                         uint16_t * raw_image_buff,
++                                         size_t raw_image_size,
++                                         int prepared_as_rggb)
+ {
+     /* if 'fix_raw == false' skip raw processing alltogether */
+     if(!video->llrawproc->fix_raw) return;
+@@ -216,6 +221,13 @@ void applyLLRawProcObject(mlvObject_t * video, uint16_t * raw_image_buff, size_t
+ 
+     /* make copy of 'RAWI.raw_info' struct for subsequent modification */
+     struct raw_info raw_info = video->RAWI.raw_info;
++    if (prepared_as_rggb)
++    {
++        /* The MCRAW unpacker has already phase-normalized the Bayer plane.
++         * Use that effective layout for CFA-sensitive corrections without
++         * changing the clip metadata shared by other decoder workers. */
++        raw_info.cfa_pattern = 0x02010100;
++    }
+ 
+     /* convert uncompressed 10/12bit raw data to 14bits for correct processing */
+     if(video->RAWI.raw_info.bits_per_pixel < 14)
+@@ -477,6 +489,20 @@ void applyLLRawProcObject(mlvObject_t * video, uint16_t * raw_image_buff, size_t
+ #endif
+ }
+ 
++void applyLLRawProcObject(mlvObject_t * video,
++                          uint16_t * raw_image_buff,
++                          size_t raw_image_size)
++{
++    applyLLRawProcObjectInternal(video, raw_image_buff, raw_image_size, 0);
++}
++
++void applyLLRawProcObjectPreparedRggb(mlvObject_t * video,
++                                      uint16_t * raw_image_buff,
++                                      size_t raw_image_size)
++{
++    applyLLRawProcObjectInternal(video, raw_image_buff, raw_image_size, 1);
++}
++
+ /* Detect focus dot fix mode according to RAWC block info (binning + skipping) and camera ID
+    Return value 0 = off, 1 = On, 2 = CropRec */
+ int llrpDetectFocusDotFixMode(mlvObject_t * video)
+diff --git a/app/src/main/cpp/src/mlv/llrawproc/llrawproc.h b/app/src/main/cpp/src/mlv/llrawproc/llrawproc.h
+index 731edf8..31c6515 100644
+--- a/app/src/main/cpp/src/mlv/llrawproc/llrawproc.h
++++ b/app/src/main/cpp/src/mlv/llrawproc/llrawproc.h
+@@ -29,6 +29,10 @@ void freeLLRawProcObject(mlvObject_t * video);
+ 
+ /* all low level raw processing takes place here */
+ void applyLLRawProcObject(mlvObject_t * video, uint16_t * raw_image_buff, size_t raw_image_size);
++/* Same corrections for an input Bayer plane already phase-normalized to RGGB. */
++void applyLLRawProcObjectPreparedRggb(mlvObject_t * video,
++                                      uint16_t * raw_image_buff,
++                                      size_t raw_image_size);
+ 
+ /* Detect focus dot fix mode according to RAWC block info (binning + skipping) and camera ID
+    Return value 0 = off, 1 = On, 2 = CropRec */
 diff --git a/app/src/main/cpp/src/mlv/mcraw/RawData.cpp b/app/src/main/cpp/src/mlv/mcraw/RawData.cpp
 index 5c77eea..cdd1b5d 100644
 --- a/app/src/main/cpp/src/mlv/mcraw/RawData.cpp
 +++ b/app/src/main/cpp/src/mlv/mcraw/RawData.cpp
 @@ -16,14 +16,26 @@
-
+ 
  // Changed:
  // - Add c API function mr_decode_video_frame(...)
 +// - Add an isolated row-parallel build shared by CPU and GPU decode policy. It
 +//   uses the original unpack implementation and adapts row grouping prototyped
 +//   on MotionCam's performance branch before merge. Baseline selection/unpack
 +//   behavior remains, with shared packet validation hardened.
-
+ 
  #include <cstdint>
 -#include <vector>
  #include <cstring>
@@ -85,7 +162,7 @@ index 5c77eea..cdd1b5d 100644
  #if defined(__x86_64__)
  #include <immintrin.h>
  #endif
-
+ 
 +#if defined(MCRAW_BUILD_EXPERIMENTAL_PARALLEL)
 +#define MCRAW_DECODE_FUNCTION DecodeMotionCamParallel
 +#else
@@ -93,7 +170,7 @@ index 5c77eea..cdd1b5d 100644
 +#endif
 +
  #include "mcraw.h"
-
+ 
  namespace motioncam {
 @@ -545,8 +557,10 @@ namespace motioncam {
          const size_t len)
@@ -107,7 +184,7 @@ index 5c77eea..cdd1b5d 100644
 +        }
       
          input += offset;
-
+ 
 @@ -590,18 +604,25 @@ namespace motioncam {
      }
      
@@ -138,7 +215,7 @@ index 5c77eea..cdd1b5d 100644
 @@ -611,11 +632,22 @@ namespace motioncam {
          // Decode bits
          uint16_t* data = outMetadata.data();
-
+ 
 -        for(int i = 0; i < numBlocks; i+=ENCODING_BLOCK) {
 +        for(uint32_t i = 0; i < numBlocks; i+=ENCODING_BLOCK) {
 +            if (offset > len || len - offset < HEADER_LENGTH) {
@@ -176,7 +253,7 @@ index 5c77eea..cdd1b5d 100644
 @@ -654,42 +687,230 @@ namespace motioncam {
      
      } // unnamed namespace
-
+ 
 -    size_t Decode(
 +    size_t MCRAW_DECODE_FUNCTION(
          uint16_t* output,
@@ -200,10 +277,10 @@ index 5c77eea..cdd1b5d 100644
 +            len < METADATA_OFFSET) {
 +            return 0;
 +        }
-
+ 
          std::vector<uint16_t> bits, refs;
          uint32_t encodedWidth, encodedHeight, bitsOffset, refsOffset;
-
+ 
          ReadMetadataHeader(input, encodedWidth, encodedHeight, bitsOffset, refsOffset);
 -        
 -        if(bitsOffset > len || refsOffset > len)
@@ -242,7 +319,7 @@ index 5c77eea..cdd1b5d 100644
 +            readUint32(refsOffset) != paddedMetadataEntries) {
              return 0;
 +        }
-
+ 
          // Decode bits
 -        DecodeMetadata(input, bitsOffset, len, bits);
 +        if (!DecodeMetadata(input, bitsOffset, len, bits)) {
@@ -254,7 +331,7 @@ index 5c77eea..cdd1b5d 100644
 +        if (!DecodeMetadata(input, refsOffset, len, refs)) {
 +            return 0;
 +        }
-
+ 
 +        if (bits.size() < metadataEntries || refs.size() < metadataEntries) {
 +            return 0;
 +        }
@@ -446,7 +523,7 @@ index 5c77eea..cdd1b5d 100644
 +                                       payloadEnd);
 +                if (consumed != ENCODING_BLOCK_LENGTH[blockBits[3]]) return 0;
 +                offset += consumed;
-
+ 
                  for(int i = 0; i < ENCODING_BLOCK; i+=2) {
                      row0[x + i]     = p0[i/2] + blockRef[0];
 @@ -738,14 +971,50 @@ namespace motioncam {
@@ -456,7 +533,7 @@ index 5c77eea..cdd1b5d 100644
 +#endif
      }
  }}
-
+ 
 -extern "C" size_t mr_decode_video_frame(uint8_t *dstData, uint8_t *srcData, uint32_t srcSize, int width, int height, int compression_type)
 +#if defined(MCRAW_BUILD_EXPERIMENTAL_PARALLEL)
 +extern "C" size_t mr_decode_video_frame_parallel(uint8_t *dstData,
@@ -472,7 +549,7 @@ index 5c77eea..cdd1b5d 100644
 +    if (compression_type != MOTIONCAM_COMPRESSION_TYPE) {
 +        return 0;
      }
-
+ 
 -    return motioncam::raw::DecodeLegacy((uint16_t*)dstData, width, height, srcData, srcSize);
 +    try {
 +        return motioncam::raw::DecodeMotionCamParallel(
@@ -520,7 +597,7 @@ index 2eb5e72..ac7f735 100644
 +                                      const uint8_t *srcData,
 +                                      uint32_t srcSize, int width, int height,
 +                                      int comp_type, int decoder_threads);
-
+ 
  void mr_dump(mr_ctx_t *ctx);
  FILE* mr_get_file_handle(mr_ctx_t *ctx);
 diff --git a/app/src/main/cpp/src/mlv/mlv_object.h b/app/src/main/cpp/src/mlv/mlv_object.h
@@ -539,10 +616,10 @@ index a6f579c..b496d56 100644
 +    /* 0=pending, 2=validation owned, 1=bit-exact, -1=baseline fallback. */
 +    int         mcraw_parallel_validation_state;
      frame_index_t * video_index;
-
+ 
      /* Audio info */
 diff --git a/app/src/main/cpp/src/mlv/video_mlv.c b/app/src/main/cpp/src/mlv/video_mlv.c
-index 8c75b6d..4566c23 100644
+index 8c75b6d..ecd53d8 100644
 --- a/app/src/main/cpp/src/mlv/video_mlv.c
 +++ b/app/src/main/cpp/src/mlv/video_mlv.c
 @@ -7,6 +7,7 @@
@@ -551,12 +628,12 @@ index 8c75b6d..4566c23 100644
  #include <inttypes.h>
 +#include <limits.h>
  #include "camid/camera_id.h"
-
+ 
  #include <unistd.h>
 @@ -55,6 +56,17 @@ static uint64_t file_get_pos(FILE *stream)
  #endif
  }
-
+ 
 +static uint64_t monotonic_time_ns(void)
 +{
 +    struct timespec time = {0};
@@ -574,7 +651,7 @@ index 8c75b6d..4566c23 100644
 @@ -67,6 +79,64 @@ static uint64_t file_get_pos(FILE *stream)
  #define FMT_SIZE "%zu"
  #endif
-
+ 
 +static int clamp_mcraw_decoder_threads(int decoder_threads)
 +{
 +    if (decoder_threads < 1)
@@ -639,15 +716,15 @@ index 8c75b6d..4566c23 100644
 @@ -152,32 +222,116 @@ static void frame_index_sort(frame_index_t *frame_index, uint32_t entries)
      } while (n > 1);
  }
-
+ 
 -/* Unpack or decompress original raw data */
 -int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * unpackedFrame)
 +/* Unpack or decompress original raw data.
 + *
 + * The legacy CPU path requests its shared VIDF metadata and assumes RGGB
 + * input, so MCRAW frames with a different CFA are phase-shifted below when
-+ * prepare_cpu_raw is true. The experimental GPU path bypasses corrections,
-+ * understands the original CFA, and asks us to preserve decoder output. */
++ * prepare_cpu_raw is true. Native RAW/export consumers can request the
++ * recorded CFA and avoid touching shared per-frame correction metadata. */
 +static int get_mlv_raw_frame_uint16(mlvObject_t * video,
 +                                    uint64_t frameIndex,
 +                                    uint16_t * unpackedFrame,
@@ -679,7 +756,7 @@ index 8c75b6d..4566c23 100644
 +    {
 +        return 1;
 +    }
-
+ 
      int chunk = video->video_index[frameIndex].chunk_num;
 +    if (chunk < 0 || chunk >= video->filenum || video->file[chunk] == NULL)
 +    {
@@ -688,7 +765,7 @@ index 8c75b6d..4566c23 100644
      uint32_t frame_size = video->video_index[frameIndex].frame_size;
      uint64_t frame_offset = video->video_index[frameIndex].frame_offset;
      uint64_t frame_header_offset = video->video_index[frameIndex].block_offset;
-
+ 
 -    /* How many bytes is RAW frame */
 -    int raw_frame_size = (width * height * bitdepth) / 8;
 -    /* Memory buffer for original RAW data */
@@ -735,9 +812,9 @@ index 8c75b6d..4566c23 100644
 +            return 1;
 +        }
 +    }
-
+ 
      FILE * file = video->file[chunk];
-
+ 
 +    if (mcraw_metrics != NULL)
 +    {
 +        memset(mcraw_metrics, 0, sizeof(*mcraw_metrics));
@@ -752,18 +829,18 @@ index 8c75b6d..4566c23 100644
 +
      /* Move to start of frame in file and read the RAW data */
      pthread_mutex_lock(video->main_file_mutex + chunk);
-
+ 
      file_set_pos(file, frame_header_offset, SEEK_SET);
-
+ 
 -    if (isMcrawLoaded(video))
 +    if (mcraw_loaded)
      {
          mr_item_t item = {};
-
+ 
 @@ -191,6 +345,28 @@ int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * un
-
+ 
          frame_size = item.size;
-
+ 
 +        /* A type-7 block can approach 16 bits/pixel plus metadata. Keep a
 +         * generous format-local ceiling while rejecting corrupt multi-GB item
 +         * sizes before allocation/fread, especially on the 32-bit ABI. */
@@ -790,9 +867,9 @@ index 8c75b6d..4566c23 100644
          {
              DEBUG( printf("Frame data read error\n"); )
 @@ -201,16 +377,147 @@ int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * un
-
+ 
          pthread_mutex_unlock(video->main_file_mutex + chunk);
-
+ 
 -        int64_t ret = mr_decode_video_frame((uint8_t*)unpackedFrame, raw_frame, frame_size, width, height, video->compression_type);
 +        if (mcraw_metrics != NULL)
 +        {
@@ -821,9 +898,11 @@ index 8c75b6d..4566c23 100644
 +            parallel_requested &&
 +            video->compression_type == MOTIONCAM_COMPRESSION_TYPE &&
 +            (validation_state == 1 || owns_validation);
-+
+ 
+-        if (ret <= 0)
 +        if (parallel_supported)
-+        {
+         {
+-            DEBUG( printf("mcraw decoder: Failed with error code (%d)\n", ret); )
 +            ret = mr_decode_video_frame_parallel(
 +                (uint8_t*)unpackedFrame, raw_frame, frame_size, width, height,
 +                video->compression_type,
@@ -924,17 +1003,15 @@ index 8c75b6d..4566c23 100644
 +        {
 +            mcraw_metrics->decode_ns = monotonic_time_ns() - decode_start_ns;
 +        }
-
--        if (ret <= 0)
++
 +        if (ret != pixels_size)
-         {
--            DEBUG( printf("mcraw decoder: Failed with error code (%d)\n", ret); )
++        {
 +            DEBUG( printf("mcraw decoder: Expected %zu pixels, decoded %zu\n",
 +                          pixels_size, ret); )
              free(raw_frame);
              return 1;
          }
-
+ 
 -        if (video->RAWI.raw_info.cfa_pattern == 0x01000201)   // gbrg
 +        if (prepare_cpu_raw &&
 +            video->RAWI.raw_info.cfa_pattern == 0x01000201)   // gbrg
@@ -966,8 +1043,8 @@ index 8c75b6d..4566c23 100644
      else
      {
 -        if (fread(&video->VIDF, sizeof(mlv_vidf_hdr_t), 1, file) != 1)
-+        /* The GPU path bypasses llrawproc and therefore does not need the
-+         * shared VIDF pan metadata. Keep its header local so an in-flight
++        /* Native-CFA consumers do not run llrawproc and therefore do not need
++         * shared VIDF pan metadata. Keep their header local so an in-flight
 +         * cache worker on another chunk cannot race this decode. */
 +        mlv_vidf_hdr_t local_vidf = {0};
 +        mlv_vidf_hdr_t * vidf = prepare_cpu_raw
@@ -978,9 +1055,9 @@ index 8c75b6d..4566c23 100644
              DEBUG( printf("Frame header read error\n"); )
              free(raw_frame);
 @@ -283,21 +599,58 @@ int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * un
-
+ 
              pthread_mutex_unlock(video->main_file_mutex + chunk);
-
+ 
 +            const int expected_width = width;
 +            const int expected_height = height;
 +            const int expected_bitdepth = bitdepth;
@@ -1038,10 +1115,10 @@ index 8c75b6d..4566c23 100644
                      free(raw_frame);
                      return 1;
                  }
-@@ -335,6 +688,48 @@ int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * un
+@@ -335,6 +688,122 @@ int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * un
      return 0;
  }
-
+ 
 +int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * unpackedFrame)
 +{
 +    return get_mlv_raw_frame_uint16(video, frameIndex, unpackedFrame, 1,
@@ -1057,13 +1134,17 @@ index 8c75b6d..4566c23 100644
 +                                    configured_mcraw_threads(video), NULL);
 +}
 +
-+int getRawGpuFrameUint16(mlvObject_t * video, uint64_t frameIndex,
-+                         uint16_t * unpackedFrame, int requested_backend,
-+                         int decoder_threads, mcraw_decode_metrics_t * metrics)
++int getMlvRawFrameCorrectedUint16(mlvObject_t * video, uint64_t frameIndex,
++                                  uint16_t * correctedFrame,
++                                  int requested_backend,
++                                  int decoder_threads,
++                                  mcraw_decode_metrics_t * metrics,
++                                  mlv_corrected_raw_info_t * corrected_info)
 +{
 +    const int mcraw_loaded = video != NULL &&
 +        (video->MLVI.videoClass & MLV_VIDEO_CLASS_FLAG_MCRAW) != 0;
-+    if (video == NULL || unpackedFrame == NULL ||
++    if (video == NULL || correctedFrame == NULL ||
++        video->processing == NULL || video->llrawproc == NULL ||
 +        frameIndex >= video->frames || video->video_index == NULL ||
 +        video->file == NULL || video->main_file_mutex == NULL ||
 +        (!mcraw_loaded &&
@@ -1074,21 +1155,109 @@ index 8c75b6d..4566c23 100644
 +        return 1;
 +    }
 +
++    const uint32_t source_cfa = video->RAWI.raw_info.cfa_pattern;
++    const int canonical_rggb =
++        source_cfa == 0 || source_cfa == 0x02010100;
++    const int supported_mcraw_cfa = canonical_rggb ||
++        source_cfa == 0x01000201 || source_cfa == 0x00010102 ||
++        source_cfa == 0x01020001;
++    if ((!mcraw_loaded && !canonical_rggb) ||
++        (mcraw_loaded && !supported_mcraw_cfa))
++    {
++        return 1;
++    }
++
 +    if (!mcraw_loaded)
 +    {
 +        requested_backend = MCRAW_DECODER_BASELINE;
 +        decoder_threads = 1;
 +    }
 +
-+    return get_mlv_raw_frame_uint16(video, frameIndex, unpackedFrame, 0,
-+                                    requested_backend, decoder_threads, metrics);
++    const int result = get_mlv_raw_frame_uint16(
++        video, frameIndex, correctedFrame, 1,
++        requested_backend, decoder_threads, metrics);
++    if (result != 0)
++    {
++        return result;
++    }
++
++    const uint64_t raw_processing_start_ns = monotonic_time_ns();
++    const size_t pixel_count =
++        (size_t)video->RAWI.xRes * (size_t)video->RAWI.yRes;
++    const size_t corrected_frame_size = pixel_count * sizeof(uint16_t);
++
++    /* Keep RAW settings and the scale decision atomic. llrawproc uses the
++     * same recursive mutex internally for level/map updates. */
++    pthread_mutex_lock(&video->processing_mutex);
++    if (mcraw_loaded)
++    {
++        /* prepare_cpu_raw already phase-normalized supported MCRAW to RGGB.
++         * Use that layout locally in llrawproc without mutating shared clip
++         * metadata that another decoder/cache worker may read. */
++        applyLLRawProcObjectPreparedRggb(
++            video, correctedFrame, corrected_frame_size);
++    }
++    else
++    {
++        applyLLRawProcObject(video, correctedFrame, corrected_frame_size);
++    }
++
++    /* Normal RAW is still at the file's sensor-code scale after llrawproc.
++     * Full Dual ISO output is already true 16-bit. This is representation
++     * normalization only; black/white normalization remains a GPU stage. */
++    const int shift = llrpHQDualIso(video)
++        ? 0
++        : 16 - video->RAWI.raw_info.bits_per_pixel;
++    if (shift > 0)
++    {
++        #pragma omp parallel for
++        for (size_t i = 0; i < pixel_count; ++i)
++        {
++            correctedFrame[i] =
++                (uint16_t)((uint32_t)correctedFrame[i] << shift);
++        }
++    }
++
++    if (corrected_info != NULL)
++    {
++        corrected_info->black_level = video->processing->black_level;
++        corrected_info->white_level = video->processing->white_level;
++        corrected_info->cfa_pattern = 0x02010100;
++        corrected_info->sample_bit_depth = 16;
++    }
++    pthread_mutex_unlock(&video->processing_mutex);
++
++    if (metrics != NULL)
++    {
++        metrics->raw_processing_ns =
++            monotonic_time_ns() - raw_processing_start_ns;
++    }
++    return 0;
 +}
 +
  /* Unpacks the bits of a frame to get a bayer B&W image (without black level correction)
   * Needs memory to return to, sized: sizeof(float) * getMlvHeight(urvid) * getMlvWidth(urvid)
   * Output image's pixels will be in range 0-65535 as if it is 16 bit integers */
-@@ -639,6 +1034,13 @@ mlvObject_t * initMlvObject()
-
+@@ -355,7 +824,16 @@ void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outpu
+ 
+     /* apply low level raw processing to the unpacked_frame (lock protects llrawproc params) */
+     pthread_mutex_lock(&video->processing_mutex);
+-    applyLLRawProcObject(video, unpacked_frame, unpacked_frame_size);
++    if (isMcrawLoaded(video))
++    {
++        /* getMlvRawFrameUint16 already normalized supported MCRAW to RGGB. */
++        applyLLRawProcObjectPreparedRggb(
++            video, unpacked_frame, unpacked_frame_size);
++    }
++    else
++    {
++        applyLLRawProcObject(video, unpacked_frame, unpacked_frame_size);
++    }
+     pthread_mutex_unlock(&video->processing_mutex);
+ 
+     /* high quality dualiso buffer consists of real 16 bit values, no converting needed */
+@@ -639,6 +1117,13 @@ mlvObject_t * initMlvObject()
+ 
      /* Seems about right */
      setMlvCpuCores(video, 4);
 +    /* Type-7 MCRAW row groups are independent. Prefer the shared parallel
@@ -1098,33 +1267,50 @@ index 8c75b6d..4566c23 100644
 +                       getMlvCpuCores(video));
 +    __atomic_store_n(&video->mcraw_parallel_validation_state, 0,
 +                     __ATOMIC_RELEASE);
-
+ 
      /* Init low level raw processing object */
      video->llrawproc = initLLRawProcObject();
-@@ -1599,6 +2001,7 @@ int openMcrawClip(mlvObject_t * video, int fd, char * mcrawPath, int open_mode,
+@@ -1599,6 +2084,7 @@ int openMcrawClip(mlvObject_t * video, int fd, char * mcrawPath, int open_mode,
      FILE **files = malloc(sizeof(FILE*));
      files[0] = mr_get_file_handle(ctx);
      video->file = files;
 +    video->filenum = 1;
-
-
+ 
+ 
      /* Mutexes for every file */
+@@ -1667,12 +2153,18 @@ int openMcrawClip(mlvObject_t * video, int fd, char * mcrawPath, int open_mode,
+     video->RAWI.blockSize                 = sizeof(mlv_rawi_hdr_t);
+     video->RAWI.xRes                      = mr_get_width(ctx);
+     video->RAWI.yRes                      = mr_get_height(ctx);
++    video->RAWI.raw_info.width            = video->RAWI.xRes;
++    video->RAWI.raw_info.height           = video->RAWI.yRes;
+     video->RAWI.raw_info.active_area.x1   = 0;
+     video->RAWI.raw_info.active_area.x2   = video->RAWI.xRes;
+     video->RAWI.raw_info.active_area.y1   = 0;
+     video->RAWI.raw_info.active_area.y2   = video->RAWI.yRes;
+ 
+     video->RAWI.raw_info.bits_per_pixel   = mr_get_bits_per_pixel(ctx);
++    video->RAWI.raw_info.pitch            =
++        (video->RAWI.xRes * video->RAWI.raw_info.bits_per_pixel + 7) / 8;
++    video->RAWI.raw_info.frame_size       =
++        video->RAWI.raw_info.pitch * video->RAWI.yRes;
+     video->RAWI.raw_info.black_level      = mr_get_black_level(ctx);
+     video->RAWI.raw_info.white_level      = mr_get_white_level(ctx);
+     video->RAWI.raw_info.cfa_pattern      = mr_get_cfa_pattern(ctx);
 diff --git a/app/src/main/cpp/src/mlv/video_mlv.h b/app/src/main/cpp/src/mlv/video_mlv.h
-index ce8e48f..72cf332 100644
+index ce8e48f..4b65a8a 100644
 --- a/app/src/main/cpp/src/mlv/video_mlv.h
 +++ b/app/src/main/cpp/src/mlv/video_mlv.h
-@@ -63,9 +63,40 @@ void getMlvProcessedFrame8(mlvObject_t * video, uint64_t frameIndex, uint8_t * o
+@@ -63,9 +63,54 @@ void getMlvProcessedFrame8(mlvObject_t * video, uint64_t frameIndex, uint8_t * o
  void getMlvProcessedFrame16(mlvObject_t * video, uint64_t frameIndex, uint16_t * outputFrame, int threads);
-
+ 
  /* Unpacks the bits of a frame to get a bayer B&W image (without black level correction)
 - * Needs memory to return to, sized: sizeof(float) * getMlvHeight(urvid) * getMlvWidth(urvid)
 - * Output values will be in range 0-65535 (16 bit), float is only because AMAzE uses it */
 + * Needs memory sized: sizeof(uint16_t) * getMlvHeight(video) * getMlvWidth(video).
 + * Output remains at the file's native sensor-code scale; RAW corrections are not applied. */
  int getMlvRawFrameUint16(mlvObject_t * video, uint64_t frameIndex, uint16_t * unpackedFrame);
-+/* Decode classic MLV or MCRAW to its original native-scale Bayer mosaic for
-+ * the experimental GPU preview. Classic MLV intentionally bypasses low-level
-+ * RAW corrections; decoder selection applies only to MCRAW payloads. */
++/* Decoder selection applies only to MCRAW payloads. */
 +enum mcraw_decoder_backend
 +{
 +    MCRAW_DECODER_BASELINE = 0,
@@ -1135,17 +1321,33 @@ index ce8e48f..72cf332 100644
 +{
 +    uint64_t read_ns;
 +    uint64_t decode_ns;
++    uint64_t raw_processing_ns;
 +    int requested_backend;
 +    int actual_backend;
 +    int decoder_threads;
 +    int fallback_count;
 +} mcraw_decode_metrics_t;
 +
-+int getRawGpuFrameUint16(mlvObject_t * video, uint64_t frameIndex,
-+                         uint16_t * unpackedFrame, int requested_backend,
-+                         int decoder_threads, mcraw_decode_metrics_t * metrics);
++typedef struct
++{
++    float black_level;
++    float white_level;
++    uint32_t cfa_pattern;
++    int sample_bit_depth;
++} mlv_corrected_raw_info_t;
++
++/* Prepare one playback Bayer frame using the same CPU-side low-level RAW
++ * correction path as normal preview, but stop before levels, white balance,
++ * and demosaic. Output is canonical RGGB at full 16-bit code scale so GLES can
++ * apply levels/WB and bilinear demosaic consistently for MLV and MCRAW. */
++int getMlvRawFrameCorrectedUint16(mlvObject_t * video, uint64_t frameIndex,
++                                  uint16_t * correctedFrame,
++                                  int requested_backend,
++                                  int decoder_threads,
++                                  mcraw_decode_metrics_t * metrics,
++                                  mlv_corrected_raw_info_t * corrected_info);
 +/* Decode native-scale Bayer with the clip's configured MCRAW policy while
-+ * preserving the recorded CFA. Used by RAW export paths as well as preview. */
++ * preserving the recorded CFA for native-CFA/DNG export consumers. */
 +int getMlvRawFrameNative(mlvObject_t * video, uint64_t frameIndex,
 +                         uint16_t * unpackedFrame);
 +/* Configure the shared MCRAW policy. Unsupported formats continue to use their
@@ -1154,5 +1356,5 @@ index ce8e48f..72cf332 100644
 +                        int decoder_threads);
 +int getMlvMcrawParallelValidationState(const mlvObject_t * video);
  void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outputFrame);
-
+ 
  /* Gets a debayered 16 bit frame */

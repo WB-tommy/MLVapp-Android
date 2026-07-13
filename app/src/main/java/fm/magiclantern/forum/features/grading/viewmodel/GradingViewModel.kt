@@ -1,12 +1,15 @@
 package fm.magiclantern.forum.features.grading.viewmodel
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import fm.magiclantern.forum.domain.model.ClipDetails
 import fm.magiclantern.forum.domain.model.ClipGradingData
 import fm.magiclantern.forum.domain.model.ColorGradingSettings
@@ -42,7 +45,8 @@ enum class WhiteBalancePickerMode(val nativeValue: Int, val displayName: String)
 @HiltViewModel
 @OptIn(ExperimentalCoroutinesApi::class)
 class GradingViewModel @Inject constructor(
-    private val activeClipHolder: ActiveClipHolder
+    private val activeClipHolder: ActiveClipHolder,
+    @param:ApplicationContext private val applicationContext: Context
 ) : ViewModel() {
     private val nativeDispatcher = Dispatchers.Default.limitedParallelism(1)
 
@@ -56,6 +60,8 @@ class GradingViewModel @Inject constructor(
     private var currentGradingGuid = 0L
     @Volatile
     private var gradingEpoch = 0L
+    @Volatile
+    private var darkFrameRequestGeneration = 0L
 
     private val _whiteBalancePickerActive = MutableStateFlow(false)
     val whiteBalancePickerActive: StateFlow<Boolean> = _whiteBalancePickerActive
@@ -124,7 +130,7 @@ class GradingViewModel @Inject constructor(
                         details.nativeHandle,
                         details.guid,
                         gradingEpoch,
-                        grading.colorGrading
+                        grading
                     )
                 } else {
                     currentGradingGuid = 0L
@@ -158,7 +164,7 @@ class GradingViewModel @Inject constructor(
         // Sync cut marks to ActiveClipHolder for PlayerViewModel playback bounds
         activeClipHolder.setCutMarks(grading.cutIn, grading.cutOut)
         activeClipHolder.setRequiresCpuProcessingPreview(
-            grading.colorGrading.requiresCpuProcessingPreview()
+            grading.requiresCpuProcessingPreview()
         )
         return grading
     }
@@ -167,9 +173,10 @@ class GradingViewModel @Inject constructor(
         handle: Long,
         guid: Long,
         expectedEpoch: Long,
-        settings: ColorGradingSettings
+        grading: ClipGradingData
     ) {
         if (handle == 0L) return
+        val expectedDarkFrameGeneration = ++darkFrameRequestGeneration
 
         viewModelScope.launch(nativeDispatcher) {
             try {
@@ -179,6 +186,35 @@ class GradingViewModel @Inject constructor(
                 ) {
                     return@launch
                 }
+                val raw = grading.rawCorrection
+                var restoredDarkFrameMode = raw.darkFrameEnabled
+                if (restoredDarkFrameMode == 1 &&
+                    !loadExternalDarkFrame(handle, raw.darkFrameUri)
+                ) {
+                    restoredDarkFrameMode = 0
+                }
+                restoredDarkFrameMode = RawCorrectionNative.applyRawCorrectionSettings(
+                    mlvObjectPtr = handle,
+                    enabled = raw.enabled,
+                    verticalStripes = raw.verticalStripes,
+                    focusPixels = raw.focusPixels,
+                    fpiMethod = raw.fpiMethod,
+                    badPixels = raw.badPixels,
+                    bpsMethod = raw.bpsMethod,
+                    bpiMethod = raw.bpiMethod,
+                    chromaSmooth = raw.chromaSmooth,
+                    patternNoise = raw.patternNoise != 0,
+                    deflickerTarget = raw.deflickerTarget,
+                    dualIso = raw.dualIso,
+                    dualIsoForced = raw.dualIsoForced,
+                    dualIsoInterpolation = raw.dualIsoInterpolation,
+                    dualIsoAliasMap = raw.dualIsoAliasMap,
+                    dualIsoFrBlending = raw.dualIsoFrBlending,
+                    rawBlackLevel = raw.dualIsoBlack,
+                    rawWhiteLevel = raw.dualIsoWhite,
+                    darkFrameMode = restoredDarkFrameMode
+                )
+                val settings = grading.colorGrading
                 RawCorrectionNative.applyProcessingSettings(
                     mlvObjectPtr = handle,
                     exposure = settings.exposure,
@@ -206,11 +242,43 @@ class GradingViewModel @Inject constructor(
                     exrMode = settings.exrMode != 0,
                     agx = settings.agx != 0
                 )
+                if (restoredDarkFrameMode != raw.darkFrameEnabled &&
+                    darkFrameRequestGeneration == expectedDarkFrameGeneration
+                ) {
+                    withContext(Dispatchers.Main.immediate) {
+                        val current = clipGradingStates[guid]
+                        val activeNow = activeClipHolder.activeClip.value
+                        if (current != null && activeNow?.nativeHandle == handle &&
+                            activeNow.guid == guid && gradingEpoch == expectedEpoch &&
+                            darkFrameRequestGeneration == expectedDarkFrameGeneration
+                        ) {
+                            val corrected = current.copy(
+                                rawCorrection = current.rawCorrection.copy(
+                                    darkFrameEnabled = restoredDarkFrameMode
+                                )
+                            )
+                            clipGradingStates[guid] = corrected
+                            _currentGrading.value = corrected
+                            Toast.makeText(
+                                applicationContext,
+                                "External dark frame could not be restored",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
                 val stillActive = activeClipHolder.activeClip.value
                 if (stillActive != null && stillActive.nativeHandle == handle &&
                     stillActive.guid == guid && gradingEpoch == expectedEpoch
                 ) {
-                    activeClipHolder.notifyProcessingChanged()
+                    if (activeClipHolder.completeProcessingReceiptRestore(
+                            expectedHandle = handle,
+                            expectedGuid = guid,
+                            required = _currentGrading.value.requiresCpuProcessingPreview()
+                        )
+                    ) {
+                        activeClipHolder.notifyProcessingChanged()
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("GradingViewModel", "Failed to restore processing settings: ${e.message}", e)
@@ -230,7 +298,7 @@ class GradingViewModel @Inject constructor(
         clipGradingStates[currentGuid] = newGrading
         _currentGrading.value = newGrading
         activeClipHolder.setRequiresCpuProcessingPreview(
-            newGrading.colorGrading.requiresCpuProcessingPreview()
+            newGrading.requiresCpuProcessingPreview()
         )
 
         // Notify player to redraw with new settings
@@ -322,35 +390,84 @@ class GradingViewModel @Inject constructor(
             it.copy(rawCorrection = it.rawCorrection.copy(dualIsoAliasMap = isEnabled))
         }
 
-        if (_currentGrading.value.rawCorrection.dualIso > 0) {
-            launchNativeUpdate("set Dual ISO alias map") {
-                RawCorrectionNative.setDualIsoAliasMap(handle, isEnabled)
-            }
+        launchNativeUpdate("set Dual ISO alias map") {
+            RawCorrectionNative.setDualIsoAliasMap(handle, isEnabled)
         }
     }
 
-    fun setDarkFrameFile(context: Context, uri: Uri) {
+    fun setDarkFrameFile(uri: Uri) {
         val handle = clipHandle
         if (handle == 0L) return
 
-        val fileName = DocumentFile.fromSingleUri(context, uri)?.name ?: "Unknown"
-
-        updateGrading {
-            it.copy(
-                rawCorrection = it.rawCorrection.copy(
-                    darkFrameFileName = fileName,
-                    darkFrameEnabled = 1  // Enable external dark frame
-                )
+        try {
+            applicationContext.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
+        } catch (e: SecurityException) {
+            Log.w("GradingViewModel", "Dark-frame URI permission is not persistable", e)
         }
+        val fileName = DocumentFile.fromSingleUri(applicationContext, uri)?.name ?: "Unknown"
+        activateExternalDarkFrame(handle, uri.toString(), fileName)
+    }
 
+    private fun loadExternalDarkFrame(handle: Long, uriString: String): Boolean {
+        if (uriString.isBlank()) return false
+        val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return false
+        return try {
+            applicationContext.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                RawCorrectionNative.setDarkFrameFile(handle, pfd.fd)
+            } == true
+        } catch (e: Exception) {
+            Log.e("GradingViewModel", "Failed to open external dark frame", e)
+            false
+        }
+    }
+
+    private fun activateExternalDarkFrame(
+        handle: Long,
+        uriString: String,
+        fileName: String
+    ) {
+        val expectedGuid = currentGradingGuid
+        val expectedEpoch = gradingEpoch
+        val requestGeneration = ++darkFrameRequestGeneration
         viewModelScope.launch(nativeDispatcher) {
-            try {
-                context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                    RawCorrectionNative.setDarkFrameFile(handle, pfd.fd)
+            val active = activeClipHolder.activeClip.value
+            if (active?.nativeHandle != handle || active.guid != expectedGuid ||
+                gradingEpoch != expectedEpoch ||
+                darkFrameRequestGeneration != requestGeneration
+            ) {
+                return@launch
+            }
+
+            val loaded = loadExternalDarkFrame(handle, uriString)
+
+            withContext(Dispatchers.Main.immediate) {
+                val activeNow = activeClipHolder.activeClip.value
+                if (activeNow?.nativeHandle != handle || activeNow.guid != expectedGuid ||
+                    gradingEpoch != expectedEpoch ||
+                    darkFrameRequestGeneration != requestGeneration
+                ) {
+                    return@withContext
                 }
-            } catch (e: Exception) {
-                Log.e("GradingViewModel", "Failed to set dark frame: ${e.message}", e)
+                if (loaded) {
+                    updateGrading {
+                        it.copy(
+                            rawCorrection = it.rawCorrection.copy(
+                                darkFrameFileName = fileName,
+                                darkFrameUri = uriString,
+                                darkFrameEnabled = 1
+                            )
+                        )
+                    }
+                } else {
+                    Toast.makeText(
+                        applicationContext,
+                        "The selected file is not a compatible dark-frame MLV",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
         }
     }
@@ -359,12 +476,49 @@ class GradingViewModel @Inject constructor(
         val handle = clipHandle
         if (handle == 0L) return
 
-        updateGrading {
-            it.copy(rawCorrection = it.rawCorrection.copy(darkFrameEnabled = mode))
+        val requestedMode = mode.coerceIn(0, 2)
+        if (requestedMode == 1) {
+            val raw = _currentGrading.value.rawCorrection
+            if (raw.darkFrameUri.isBlank()) return
+            activateExternalDarkFrame(handle, raw.darkFrameUri, raw.darkFrameFileName)
+            return
         }
-
-        launchNativeUpdate("set dark frame mode") {
-            RawCorrectionNative.setDarkFrameMode(handle, mode)
+        val requestGeneration = ++darkFrameRequestGeneration
+        val expectedGuid = currentGradingGuid
+        val expectedEpoch = gradingEpoch
+        viewModelScope.launch(nativeDispatcher) {
+            val active = activeClipHolder.activeClip.value
+            if (active?.nativeHandle != handle || active.guid != expectedGuid ||
+                gradingEpoch != expectedEpoch ||
+                darkFrameRequestGeneration != requestGeneration
+            ) {
+                return@launch
+            }
+            val accepted = RawCorrectionNative.setDarkFrameMode(handle, requestedMode)
+            withContext(Dispatchers.Main.immediate) {
+                val activeNow = activeClipHolder.activeClip.value
+                if (activeNow?.nativeHandle != handle || activeNow.guid != expectedGuid ||
+                    gradingEpoch != expectedEpoch ||
+                    darkFrameRequestGeneration != requestGeneration
+                ) {
+                    return@withContext
+                }
+                if (accepted) {
+                    updateGrading {
+                        it.copy(
+                            rawCorrection = it.rawCorrection.copy(
+                                darkFrameEnabled = requestedMode
+                            )
+                        )
+                    }
+                } else {
+                    Toast.makeText(
+                        applicationContext,
+                        "This clip has no usable internal dark frame",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
         }
     }
 

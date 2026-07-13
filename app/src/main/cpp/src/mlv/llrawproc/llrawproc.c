@@ -171,8 +171,10 @@ llrawprocObject_t * initLLRawProcObject()
     llrawproc->dark_frame = 0;
 
     llrawproc->dark_frame_filename = NULL;
+    llrawproc->dark_frame_fds[0] = -1;
     llrawproc->dark_frame_data = NULL;
     llrawproc->dark_frame_size = 0;
+    llrawproc->dark_frame_data_source = DF_OFF;
 
     llrawproc->raw2ev = NULL;
     llrawproc->ev2raw = NULL;
@@ -197,7 +199,10 @@ void freeLLRawProcObject(mlvObject_t * video)
 }
 
 /* all low level raw processing takes place here */
-void applyLLRawProcObject(mlvObject_t * video, uint16_t * raw_image_buff, size_t raw_image_size)
+static void applyLLRawProcObjectInternal(mlvObject_t * video,
+                                         uint16_t * raw_image_buff,
+                                         size_t raw_image_size,
+                                         int prepared_as_rggb)
 {
     /* if 'fix_raw == false' skip raw processing alltogether */
     if(!video->llrawproc->fix_raw) return;
@@ -216,6 +221,13 @@ void applyLLRawProcObject(mlvObject_t * video, uint16_t * raw_image_buff, size_t
 
     /* make copy of 'RAWI.raw_info' struct for subsequent modification */
     struct raw_info raw_info = video->RAWI.raw_info;
+    if (prepared_as_rggb)
+    {
+        /* The MCRAW unpacker has already phase-normalized the Bayer plane.
+         * Use that effective layout for CFA-sensitive corrections without
+         * changing the clip metadata shared by other decoder workers. */
+        raw_info.cfa_pattern = 0x02010100;
+    }
 
     /* convert uncompressed 10/12bit raw data to 14bits for correct processing */
     if(video->RAWI.raw_info.bits_per_pixel < 14)
@@ -475,6 +487,20 @@ void applyLLRawProcObject(mlvObject_t * video, uint16_t * raw_image_buff, size_t
 #ifndef STDOUT_SILENT
     printf("raw_image_buff[1000] = %u, Proc_Black = %d, Proc_White = %d, Raw_Black = %d, Raw_White = %d <= THE END OF LLRAWPROC\n", raw_image_buff[1000], video->processing->black_level, video->processing->white_level, video->RAWI.raw_info.black_level, video->RAWI.raw_info.white_level);
 #endif
+}
+
+void applyLLRawProcObject(mlvObject_t * video,
+                          uint16_t * raw_image_buff,
+                          size_t raw_image_size)
+{
+    applyLLRawProcObjectInternal(video, raw_image_buff, raw_image_size, 0);
+}
+
+void applyLLRawProcObjectPreparedRggb(mlvObject_t * video,
+                                      uint16_t * raw_image_buff,
+                                      size_t raw_image_size)
+{
+    applyLLRawProcObjectInternal(video, raw_image_buff, raw_image_size, 1);
 }
 
 /* Detect focus dot fix mode according to RAWC block info (binning + skipping) and camera ID

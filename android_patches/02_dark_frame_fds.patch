@@ -1,14 +1,200 @@
---- a/app/src/main/cpp/src/mlv/llrawproc/llrawproc_object.h
-+++ b/app/src/main/cpp/src/mlv/llrawproc/llrawproc_object.h
-@@ -74,6 +74,8 @@
+diff --git a/app/src/main/cpp/src/mlv/llrawproc/darkframe.c b/app/src/main/cpp/src/mlv/llrawproc/darkframe.c
+index cdb8375..38ec701 100644
+--- a/app/src/main/cpp/src/mlv/llrawproc/darkframe.c
++++ b/app/src/main/cpp/src/mlv/llrawproc/darkframe.c
+@@ -22,8 +22,10 @@
+ #include <stdint.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <unistd.h>
  
-     /* external dark frame file name */
-     char * dark_frame_filename;
-+    /* Android: pre-opened file descriptor for dark frame (from Java SAF layer) */
-+    int dark_frame_fds[1];
-     /* external dark frame block header */
-     mlv_dark_hdr_t dark_frame_hdr;
-     /* external dark frame buffer pointer and its size */
+ #include "darkframe.h"
++#include "../video_mlv.h"
+ 
+ #define MIN(a,b) (((a)<(b))?(a):(b))
+ #define MAX(a,b) (((a)>(b))?(a):(b))
+@@ -41,9 +43,12 @@ static uint64_t file_set_pos(FILE *stream, uint64_t offset, int whence)
+ /* unload the darkframe mlv */
+ static void df_unload( mlvObject_t* df_mlv )
+ {
++    /* External dark-frame loading always opens exactly one descriptor.
++     * openMlvClip decrements filenum on several error paths, so filenum is
++     * not a reliable ownership count for partial objects. */
++    int entries = df_mlv->file ? 1 : 0;
+     /* Close all MLV file chunks */
+     FILE** files = df_mlv->file;
+-    int entries = df_mlv->filenum;
+     for(int i = 0; i < entries; i++)
+         if(files[i]) fclose(files[i]);
+     if(files) free(files);
+@@ -72,7 +77,7 @@ static void df_unload( mlvObject_t* df_mlv )
+     if(df_mlv->path) free(df_mlv->path);
+ 
+     /* Mutex things here... */
+-    for (int i = 0; i < df_mlv->filenum; ++i)
++    for (int i = 0; i < entries; ++i)
+         if(df_mlv->main_file_mutex) pthread_mutex_destroy(df_mlv->main_file_mutex + i);
+     if(df_mlv->main_file_mutex) free(df_mlv->main_file_mutex);
+     pthread_mutex_destroy(&df_mlv->g_mutexFind);
+@@ -85,16 +90,33 @@ static int df_load_ext(mlvObject_t * video, char * error_message)
+ {
+     /* If file name is not set return error */
+     if(!video->llrawproc->dark_frame_filename) return 1;
++    int dark_frame_fd = video->llrawproc->dark_frame_fds[0];
++    if(dark_frame_fd < 0)
++    {
++        if(error_message != NULL) strcpy(error_message, "Dark frame descriptor is no longer available");
++        return 1;
++    }
+     /* Parse dark frame MLV */
+     mlvObject_t df_mlv = { 0 };
++    /* openMlvClip's preview path expects these mutexes to exist even though
++     * this lightweight object is not created through initMlvObject(). */
++    pthread_mutex_init(&df_mlv.g_mutexFind, NULL);
++    pthread_mutex_init(&df_mlv.g_mutexCount, NULL);
++    pthread_mutex_init(&df_mlv.cache_mutex, NULL);
+     char err_msg[256] = { 0 };
+-    int ret = openMlvClip(&df_mlv, video->llrawproc->dark_frame_filename, 2, err_msg);
++    int ret = openMlvClip(&df_mlv, &dark_frame_fd, 1,
++                          video->llrawproc->dark_frame_filename,
++                          MLV_OPEN_PREVIEW, err_msg);
++    int descriptor_wrapped = df_mlv.file && df_mlv.file[0];
++    video->llrawproc->dark_frame_fds[0] = -1;
+     if(ret != 0)
+     {
+ #ifndef STDOUT_SILENT
+         printf("DF: %s\n", err_msg);
+ #endif
+         if(error_message != NULL) strcpy(error_message, err_msg);
++        df_unload(&df_mlv);
++        if(!descriptor_wrapped) close(dark_frame_fd);
+         return ret;
+     }
+ 
+@@ -188,7 +210,16 @@ static int df_load_ext(mlvObject_t * video, char * error_message)
+     /* Allocate the dark frame 16bit buffer */
+     video->llrawproc->dark_frame_size = df_mlv.RAWI.xRes * df_mlv.RAWI.yRes * 2;
+     video->llrawproc->dark_frame_data = calloc(video->llrawproc->dark_frame_size + 4, 1);
++    if(!video->llrawproc->dark_frame_data)
++    {
++        if(error_message != NULL) strcpy(error_message, "Dark frame buffer allocation error");
++        video->llrawproc->dark_frame_size = 0;
++        free(df_packed_buf);
++        df_unload(&df_mlv);
++        return 1;
++    }
+     dng_unpack_image_bits(video->llrawproc->dark_frame_data, (uint16_t*)df_packed_buf, df_mlv.RAWI.xRes, df_mlv.RAWI.yRes, df_mlv.RAWI.raw_info.bits_per_pixel);
++    video->llrawproc->dark_frame_data_source = DF_EXT;
+ #ifndef STDOUT_SILENT
+     printf("DF: initialized Ext mode\n");
+ #endif
+@@ -232,7 +263,14 @@ static int df_load_int(mlvObject_t * video)
+     /* Allocate the dark frame 16bit buffer */
+     video->llrawproc->dark_frame_size = video->DARK.xRes * video->DARK.yRes * 2;
+     video->llrawproc->dark_frame_data = calloc(video->llrawproc->dark_frame_size + 4, 1);
++    if(!video->llrawproc->dark_frame_data)
++    {
++        video->llrawproc->dark_frame_size = 0;
++        free(df_packed_buf);
++        return 1;
++    }
+     dng_unpack_image_bits(video->llrawproc->dark_frame_data, (uint16_t*)df_packed_buf, video->DARK.xRes, video->DARK.yRes, video->DARK.bits_per_pixel);
++    video->llrawproc->dark_frame_data_source = DF_INT;
+ #ifndef STDOUT_SILENT
+     printf("DF: initialized Int mode\n");
+ #endif
+@@ -245,7 +283,8 @@ void df_init_filename(mlvObject_t * video, char * df_filename)
+ {
+     size_t df_filename_size = strlen(df_filename);
+     video->llrawproc->dark_frame_filename = calloc(df_filename_size + 1, 1);
+-    memcpy(video->llrawproc->dark_frame_filename, df_filename, df_filename_size);
++    if(video->llrawproc->dark_frame_filename)
++        memcpy(video->llrawproc->dark_frame_filename, df_filename, df_filename_size);
+ }
+ 
+ /* delete filename of external dark frame MLV from llrawproc structure */
+@@ -286,10 +325,51 @@ void df_subtract(mlvObject_t * video, uint16_t * raw_image_buff, size_t raw_imag
+ /* validate external dark frame file */
+ int df_validate(mlvObject_t * video, char * df_filename, char * error_message)
+ {
++    /* Android receives a one-shot SAF descriptor rather than a reopenable
++     * path. Keep the successfully decoded frame and a sentinel filename so
++     * playback can reuse it after the descriptor is closed by the caller. */
++    /* Decode a replacement transactionally. A bad selection must not destroy
++     * the external frame that is currently active for this clip. */
++    char * old_filename = video->llrawproc->dark_frame_filename;
++    uint16_t * old_data = video->llrawproc->dark_frame_data;
++    uint32_t old_size = video->llrawproc->dark_frame_size;
++    mlv_dark_hdr_t old_header = video->llrawproc->dark_frame_hdr;
++    int old_source = video->llrawproc->dark_frame_data_source;
++
++    video->llrawproc->dark_frame_filename = NULL;
++    video->llrawproc->dark_frame_data = NULL;
++    video->llrawproc->dark_frame_size = 0;
++    memset(&video->llrawproc->dark_frame_hdr, 0, sizeof(mlv_dark_hdr_t));
++    video->llrawproc->dark_frame_data_source = DF_OFF;
+     df_init_filename(video, df_filename);
+-    int ret = df_load_ext(video, error_message);
+-    df_free_filename(video);
+-    df_free(video);
++    int ret;
++    if(!video->llrawproc->dark_frame_filename)
++    {
++        int pending_fd = video->llrawproc->dark_frame_fds[0];
++        video->llrawproc->dark_frame_fds[0] = -1;
++        if(pending_fd >= 0) close(pending_fd);
++        if(error_message != NULL) strcpy(error_message, "Dark frame filename allocation error");
++        ret = 1;
++    }
++    else
++    {
++        ret = df_load_ext(video, error_message);
++    }
++    if (ret != 0)
++    {
++        df_free_filename(video);
++        df_free(video);
++        video->llrawproc->dark_frame_filename = old_filename;
++        video->llrawproc->dark_frame_data = old_data;
++        video->llrawproc->dark_frame_size = old_size;
++        video->llrawproc->dark_frame_hdr = old_header;
++        video->llrawproc->dark_frame_data_source = old_source;
++    }
++    else
++    {
++        free(old_filename);
++        free(old_data);
++    }
+ 
+     return ret;
+ }
+@@ -300,11 +380,17 @@ int df_init(mlvObject_t * video)
+     switch(video->llrawproc->dark_frame)
+     {
+         case DF_EXT:
++            if(video->llrawproc->dark_frame_data &&
++               video->llrawproc->dark_frame_data_source == DF_EXT) return 0;
+             return df_load_ext(video, NULL);
+         case DF_INT:
++            if(video->llrawproc->dark_frame_data &&
++               video->llrawproc->dark_frame_data_source == DF_INT) return 0;
+             return df_load_int(video);
+         default:
+-            df_free(video);
++            /* Retain a selected external frame while disabled: SAF cannot
++             * reopen it by display name when the user enables it again. */
++            if(!video->llrawproc->dark_frame_filename) df_free(video);
+             return 1; // DF mode = Off
+     }
+ }
+@@ -322,4 +408,5 @@ void df_free(mlvObject_t * video)
+         video->llrawproc->dark_frame_size = 0;
+         memset(&video->llrawproc->dark_frame_hdr, 0, sizeof(mlv_dark_hdr_t));
+     }
++    video->llrawproc->dark_frame_data_source = DF_OFF;
+ }
+diff --git a/app/src/main/cpp/src/mlv/llrawproc/darkframe.h b/app/src/main/cpp/src/mlv/llrawproc/darkframe.h
+index acda9ec..44277bf 100644
 --- a/app/src/main/cpp/src/mlv/llrawproc/darkframe.h
 +++ b/app/src/main/cpp/src/mlv/llrawproc/darkframe.h
 @@ -24,7 +24,7 @@
@@ -20,14 +206,43 @@
  /* from dng.c */
  extern void dng_unpack_image_bits(uint16_t * input_buffer, uint16_t * output_buffer, int width, int height, uint32_t bpp);
  
---- a/app/src/main/cpp/src/mlv/llrawproc/darkframe.c
-+++ b/app/src/main/cpp/src/mlv/llrawproc/darkframe.c
-@@ -88,7 +88,7 @@
-     /* Parse dark frame MLV */
-     mlvObject_t df_mlv = { 0 };
-     char err_msg[256] = { 0 };
--    int ret = openMlvClip(&df_mlv, video->llrawproc->dark_frame_filename, 2, err_msg);
-+    int ret = openMlvClip(&df_mlv, &video->llrawproc->dark_frame_fds[0], 1, video->llrawproc->dark_frame_filename, 2, err_msg);
-     if(ret != 0)
-     {
- #ifndef STDOUT_SILENT
+diff --git a/app/src/main/cpp/src/mlv/llrawproc/llrawproc_object.h b/app/src/main/cpp/src/mlv/llrawproc/llrawproc_object.h
+index 0a8f0c9..b1c9ee5 100644
+--- a/app/src/main/cpp/src/mlv/llrawproc/llrawproc_object.h
++++ b/app/src/main/cpp/src/mlv/llrawproc/llrawproc_object.h
+@@ -23,6 +23,7 @@
+ #define _llrawproc_object_h
+ 
+ #include <sys/types.h>
++#include <pthread.h>
+ #include "pixelproc.h"
+ #include "stripes.h"
+ #include "../mlv.h"
+@@ -30,7 +31,10 @@
+ /* Low level raw processing object */
+ typedef struct
+ {
+-    /* flags */ 
++    /* Back-pointer to parent mlvObject_t's processing_mutex (set during init) */
++    pthread_mutex_t * param_mutex;
++
++    /* flags */
+     int fix_raw;          // apply raw fixes or not, 0 = do not apply, 1 = apply
+     int vertical_stripes; // fix vertical stripes, 0 = do not fix", 1 = fix, 2 = compute stripes for every frame
+     int compute_stripes;  // 0 = do not compute stripes, 1 = compute stripes
+@@ -74,11 +78,15 @@ typedef struct
+ 
+     /* external dark frame file name */
+     char * dark_frame_filename;
++    /* Android: pre-opened file descriptor for dark frame (from Java SAF layer) */
++    int dark_frame_fds[1];
+     /* external dark frame block header */
+     mlv_dark_hdr_t dark_frame_hdr;
+     /* external dark frame buffer pointer and its size */
+     uint16_t * dark_frame_data;
+     uint32_t dark_frame_size;
++    /* Identifies which mode produced dark_frame_data (DF_OFF/EXT/INT). */
++    int dark_frame_data_source;
+ 
+     /* LUTs */
+     int * raw2ev;

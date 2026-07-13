@@ -33,8 +33,7 @@ fun RawCorrectionArea(
     var isExpanded by remember { mutableStateOf(false) }
 
     // Check if dark frame file is loaded
-    val darkFrameFileLoaded = state.darkFrameFileName != "No file selected" &&
-            state.darkFrameFileName.isNotEmpty()
+    val darkFrameFileLoaded = state.darkFrameUri.isNotEmpty()
 
     // Calculate max white level based on bit depth
     val effectiveBitDepth = if (bitDepth in 8..16) bitDepth else 14
@@ -46,52 +45,39 @@ fun RawCorrectionArea(
     val originalWhiteLevel by gradingViewModel.originalWhiteLevel.collectAsState()
     val hasClipLoaded by gradingViewModel.hasClipLoaded.collectAsState()
 
-    // Track if we've initialized from original values
-    var initialized by remember { mutableStateOf(false) }
-
     // Local state for text fields (updates immediately for UI responsiveness)
-    var blackLevelText by remember { mutableStateOf("0") }
-    var whiteLevelText by remember { mutableStateOf("0") }
-
-    // Debounced state (commits to native after delay)
-    var debouncedBlackLevel by remember { mutableStateOf(0) }
-    var debouncedWhiteLevel by remember { mutableStateOf(0) }
+    var blackLevelText by remember { mutableStateOf(state.dualIsoBlack.toString()) }
+    var whiteLevelText by remember { mutableStateOf(state.dualIsoWhite.toString()) }
 
     // Parse current values
     val blackLevel = blackLevelText.toIntOrNull() ?: 0
     val whiteLevel = whiteLevelText.toIntOrNull() ?: 1
 
-    // Debounce black level: apply to native after 300ms of no change
-    LaunchedEffect(debouncedBlackLevel) {
-        if (hasClipLoaded && initialized) {
-            kotlinx.coroutines.delay(300)
-            gradingViewModel.setRawBlackLevel(debouncedBlackLevel)
+    // Receipt changes include direct clip-to-clip switches. Reflect them in
+    // the fields without emitting setters during composition/restore.
+    LaunchedEffect(state.dualIsoBlack) {
+        if (blackLevelText.toIntOrNull() != state.dualIsoBlack) {
+            blackLevelText = state.dualIsoBlack.toString()
+        }
+    }
+    LaunchedEffect(state.dualIsoWhite) {
+        if (whiteLevelText.toIntOrNull() != state.dualIsoWhite) {
+            whiteLevelText = state.dualIsoWhite.toString()
         }
     }
 
-    // Debounce white level: apply to native after 300ms of no change
-    LaunchedEffect(debouncedWhiteLevel) {
-        if (hasClipLoaded && initialized) {
-            kotlinx.coroutines.delay(300)
-            gradingViewModel.setRawWhiteLevel(debouncedWhiteLevel)
-        }
+    // Only user edits are debounced into the receipt/native state.
+    LaunchedEffect(blackLevelText, state.dualIsoBlack, hasClipLoaded) {
+        val candidate = blackLevelText.toIntOrNull() ?: return@LaunchedEffect
+        if (!hasClipLoaded || candidate == state.dualIsoBlack) return@LaunchedEffect
+        kotlinx.coroutines.delay(300)
+        gradingViewModel.setRawBlackLevel(candidate)
     }
-
-    // When clip is loaded, initialize with original values
-    LaunchedEffect(hasClipLoaded, originalBlackLevel, originalWhiteLevel) {
-        if (hasClipLoaded && !initialized && originalWhiteLevel > 0) {
-            blackLevelText = originalBlackLevel.toString()
-            whiteLevelText = originalWhiteLevel.toString()
-            // Apply the original values to native immediately (no debounce for init)
-            gradingViewModel.setRawBlackLevel(originalBlackLevel)
-            gradingViewModel.setRawWhiteLevel(originalWhiteLevel)
-            initialized = true
-        } else if (!hasClipLoaded) {
-            // Reset to 0 when no clip loaded
-            blackLevelText = "0"
-            whiteLevelText = "0"
-            initialized = false
-        }
+    LaunchedEffect(whiteLevelText, state.dualIsoWhite, hasClipLoaded) {
+        val candidate = whiteLevelText.toIntOrNull() ?: return@LaunchedEffect
+        if (!hasClipLoaded || candidate == state.dualIsoWhite) return@LaunchedEffect
+        kotlinx.coroutines.delay(300)
+        gradingViewModel.setRawWhiteLevel(candidate)
     }
 
     Card(
@@ -148,13 +134,13 @@ fun RawCorrectionArea(
 
                     RadioButtonGroup(
                         options = listOf("Off", "Ext", "Int"),
-                        selectedIndex = if (state.darkFrameEnabled > 0) 1 else 0,
+                        selectedIndex = state.darkFrameEnabled.coerceIn(0, 2),
                         onSelectionChange = { mode ->
-                            if (darkFrameFileLoaded || mode == 0) {
+                            if (mode != 1 || darkFrameFileLoaded) {
                                 gradingViewModel.setDarkFrameMode(mode)
                             }
                         },
-                        enabled = darkFrameFileLoaded
+                        enabled = true
                     )
                 }
 
@@ -375,8 +361,6 @@ fun RawCorrectionArea(
                                         val maxBlack = (whiteLevel - 1).coerceAtLeast(0)
                                         val clamped = parsedValue.coerceIn(0, maxBlack)
                                         blackLevelText = clamped.toString()
-                                        // Trigger debounce instead of direct call
-                                        debouncedBlackLevel = clamped
                                     },
                                     label = { Text("Black Level") },
                                     singleLine = true,
@@ -387,7 +371,6 @@ fun RawCorrectionArea(
                                 IconButton(
                                     onClick = {
                                         blackLevelText = originalBlackLevel.toString()
-                                        debouncedBlackLevel = originalBlackLevel
                                     },
                                     enabled = hasClipLoaded && blackLevel != originalBlackLevel
                                 ) {
@@ -432,8 +415,6 @@ fun RawCorrectionArea(
                                         val minWhite = (blackLevel + 1).coerceAtLeast(1)
                                         val clamped = parsedValue.coerceIn(minWhite, maxWhiteLevel)
                                         whiteLevelText = clamped.toString()
-                                        // Trigger debounce instead of direct call
-                                        debouncedWhiteLevel = clamped
                                     },
                                     label = { Text("White Level") },
                                     singleLine = true,
@@ -444,7 +425,6 @@ fun RawCorrectionArea(
                                 IconButton(
                                     onClick = {
                                         whiteLevelText = originalWhiteLevel.toString()
-                                        debouncedWhiteLevel = originalWhiteLevel
                                     },
                                     enabled = hasClipLoaded && whiteLevel != originalWhiteLevel
                                 ) {

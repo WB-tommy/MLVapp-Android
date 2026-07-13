@@ -21,6 +21,7 @@ typedef struct JniClipWrapper {
   uint64_t mcraw_benchmark_parallel_frames = 0;
   uint64_t mcraw_benchmark_read_ns = 0;
   uint64_t mcraw_benchmark_decode_ns = 0;
+  uint64_t mcraw_benchmark_raw_processing_ns = 0;
   uint64_t mcraw_benchmark_total_ns = 0;
   uint64_t mcraw_benchmark_fallbacks = 0;
   // Mirrors the shared native parity state only to avoid duplicate log lines.

@@ -14,6 +14,7 @@ set -e
 PATCH_DIR="$(dirname "$0")"
 FAILED=()
 SKIPPED=()
+STATUS=0
 
 apply_patch() {
     local num="$1"
@@ -60,11 +61,11 @@ echo "============================================="
 
 # Apply in dependency order
 apply_patch "01" "fd_based_file_io"    # video_mlv.c/h, mcraw.c/h
-apply_patch "02" "dark_frame_fds"       # llrawproc_object.h, darkframe.h/c
+apply_patch "02" "dark_frame_fds"       # SAF descriptor + retained dark-frame state
 apply_patch "03" "save_dng_fd"          # dng.c/h
 apply_patch "04" "cmake_fixes"          # librtprocess/src/CMakeLists.txt
 apply_patch "05" "header_fixes"         # image_profile.h, processing.c
-apply_patch "06" "raw_gpu_decode"       # RAW GPU entry point + shared type-7 MCRAW row decoder
+apply_patch "06" "raw_gpu_decode"       # Corrected RAW/llrawproc playback + shared type-7 row decoder
 
 echo ""
 echo "============================================="
@@ -73,6 +74,7 @@ if [ ${#FAILED[@]} -eq 0 ] && [ ${#SKIPPED[@]} -eq 0 ]; then
 elif [ ${#FAILED[@]} -eq 0 ]; then
     echo "  Done. ${#SKIPPED[@]} patch(es) skipped (empty or missing)."
 else
+    STATUS=1
     echo "  Done with ${#FAILED[@]} failure(s). Manual resolution needed:"
     for f in "${FAILED[@]}"; do
         echo "    - $f"
@@ -83,3 +85,4 @@ else
     echo "  Then resolve conflicts and: git add <file>"
 fi
 echo "============================================="
+exit "$STATUS"

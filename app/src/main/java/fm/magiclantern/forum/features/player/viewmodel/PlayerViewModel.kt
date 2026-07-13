@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -42,17 +43,25 @@ class PlayerViewModel @Inject constructor(
     private val tag = "PlayerViewModel"
 
     private data class RawGpuFailureKey(val guid: Long, val handle: Long)
+    private data class RawGpuNativeCpuFallbackKey(
+        val guid: Long,
+        val handle: Long,
+        val processingVersion: Long
+    )
     private data class RawGpuCachePolicy(
         val details: ClipDetails?,
         val gpuEnabled: Boolean,
         val failure: RawGpuFailureKey?,
-        val requirement: CpuProcessingPreviewRequirement
+        val requirement: CpuProcessingPreviewRequirement,
+        val nativeCpuFallback: RawGpuNativeCpuFallbackKey?
     )
 
     private data class RawGpuReadyKey(val handle: Long, val requirementRevision: Long)
     private data class PresentedFrame(val handle: Long, val frameIndex: Int)
 
     private val rawGpuFailure = MutableStateFlow<RawGpuFailureKey?>(null)
+    private val rawGpuNativeCpuFallback =
+        MutableStateFlow<RawGpuNativeCpuFallbackKey?>(null)
     private val rawGpuReady = MutableStateFlow<RawGpuReadyKey?>(null)
     private val lastPresentedFrame = MutableStateFlow<PresentedFrame?>(null)
 
@@ -129,7 +138,7 @@ class PlayerViewModel @Inject constructor(
     /**
      * Releases the shared frame buffer to free memory.
      */
-    private fun releaseFrameBuffer() {
+    fun releaseStandardPreviewBuffer() {
         synchronized(bufferLock) {
             sharedFrameBuffer = null
         }
@@ -206,27 +215,47 @@ class PlayerViewModel @Inject constructor(
                 }
             }
         }
+        val nativeCpuFallbackForCurrentVersion = combine(
+            activeClipHolder.processingVersion,
+            rawGpuNativeCpuFallback
+        ) { version, fallback ->
+            fallback?.takeIf { it.processingVersion == version }
+        }.distinctUntilChanged()
         viewModelScope.launch(nativeDispatcher) {
             combine(
                 activeClip,
                 experimentalRawGpuPreview,
                 rawGpuFailure,
-                cpuProcessingPreviewRequirement
-            ) { details, gpuEnabled, failure, requirement ->
-                RawGpuCachePolicy(details, gpuEnabled, failure, requirement)
+                cpuProcessingPreviewRequirement,
+                nativeCpuFallbackForCurrentVersion
+            ) { details, gpuEnabled, failure, requirement, nativeCpuFallback ->
+                RawGpuCachePolicy(
+                    details,
+                    gpuEnabled,
+                    failure,
+                    requirement,
+                    nativeCpuFallback
+                )
             }.collectLatest { policy ->
                 val details = policy.details
                 val gpuEnabled = policy.gpuEnabled
                 val failure = policy.failure
+                val nativeCpuFallback = policy.nativeCpuFallback
+                val nativeCpuFallbackMatches = gpuEnabled && details != null &&
+                    nativeCpuFallback != null &&
+                    nativeCpuFallback.guid == details.guid &&
+                    nativeCpuFallback.handle == details.nativeHandle
                 if (details != null && details.nativeHandle != 0L) {
                     val failureMatches = gpuEnabled && failure != null &&
                         failure.guid == details.guid &&
                         failure.handle == details.nativeHandle
-                    val requiresCpu = gpuEnabled && policy.requirement.required
+                    val requiresCpu = gpuEnabled &&
+                        (policy.requirement.required || nativeCpuFallbackMatches)
                     rawGpuReady.value = null
-                    // Background RGB caching performs CPU RAW fixes and demosaic. Keep it
-                    // out of GPU benchmark measurements, then restore it for a
-                    // disabled, hard-failed, or full-CPU processing path.
+                    // Background RGB caching also runs llrawproc while sharing
+                    // per-frame RAW metadata and correction state. Disable it for
+                    // corrected-Bayer playback, then restore it for a disabled,
+                    // hard-failed, or full-CPU processing path.
                     val configured = NativeLib.setRawGpuPreviewCaching(
                         details.nativeHandle,
                         !gpuEnabled || failureMatches || requiresCpu
@@ -244,9 +273,13 @@ class PlayerViewModel @Inject constructor(
                         } else {
                             null
                         }
-                        // A paused renderer may have missed the transition while
-                        // cache control held render_mutex.
-                        activeClipHolder.notifyProcessingChanged()
+                        // A native-only fallback is reported by the renderer
+                        // after its same-frame CPU draw. Do not bump its version
+                        // while active; the completed exit transition still gets
+                        // the normal post-cache redraw below.
+                        if (!nativeCpuFallbackMatches) {
+                            activeClipHolder.notifyProcessingChanged()
+                        }
                     }
                 } else {
                     rawGpuReady.value = null
@@ -450,6 +483,27 @@ class PlayerViewModel @Inject constructor(
 
     fun requiresCpuProcessingPreview(): Boolean =
         cpuProcessingPreviewRequirement.value.required
+
+    /** Native found an active stage absent from GPU for this processing snapshot. */
+    fun reportRawGpuRequiresCpuProcessing(handle: Long, processingVersion: Long) {
+        val details = activeClip.value ?: return
+        if (handle == 0L || details.nativeHandle != handle ||
+            activeClipHolder.processingVersion.value != processingVersion
+        ) return
+        rawGpuNativeCpuFallback.value = RawGpuNativeCpuFallbackKey(
+            details.guid,
+            handle,
+            processingVersion
+        )
+    }
+
+    fun requiresRawGpuNativeCpuFallback(handle: Long, processingVersion: Long): Boolean {
+        val details = activeClip.value ?: return false
+        val fallback = rawGpuNativeCpuFallback.value ?: return false
+        return handle != 0L && details.nativeHandle == handle &&
+            fallback.guid == details.guid && fallback.handle == handle &&
+            fallback.processingVersion == processingVersion
+    }
 
     /** Clear an older context's hard failure once this clip produces a fresh GPU frame. */
     fun reportRawGpuSuccess(handle: Long) {
