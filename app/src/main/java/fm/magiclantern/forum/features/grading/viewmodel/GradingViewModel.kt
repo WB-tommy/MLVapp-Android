@@ -14,8 +14,18 @@ import fm.magiclantern.forum.domain.model.ClipDetails
 import fm.magiclantern.forum.domain.model.ClipGradingData
 import fm.magiclantern.forum.domain.model.ColorGradingSettings
 import fm.magiclantern.forum.domain.model.DebayerAlgorithm
+import fm.magiclantern.forum.domain.model.DualIsoSnapshotFence
+import fm.magiclantern.forum.domain.model.DualIsoSettingsContract
 import fm.magiclantern.forum.domain.model.ProfilePreset
+import fm.magiclantern.forum.domain.model.RawCorrectionSettings
+import fm.magiclantern.forum.domain.model.ResolvedDualIsoValues
+import fm.magiclantern.forum.domain.model.normalizedDualIso
+import fm.magiclantern.forum.domain.model.reconciledWithDualIsoMetadata
+import fm.magiclantern.forum.domain.model.resolvedDualIsoValues
 import fm.magiclantern.forum.domain.model.requiresCpuProcessingPreview
+import fm.magiclantern.forum.domain.model.withDualIsoForced
+import fm.magiclantern.forum.domain.model.withDualIsoPattern
+import fm.magiclantern.forum.domain.model.withResolvedDualIsoState
 import fm.magiclantern.forum.domain.session.ActiveClipHolder
 import fm.magiclantern.forum.nativeInterface.NativeLib
 import fm.magiclantern.forum.nativeInterface.RawCorrectionNative
@@ -29,6 +39,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 enum class WhiteBalancePickerMode(val nativeValue: Int, val displayName: String) {
@@ -62,6 +73,11 @@ class GradingViewModel @Inject constructor(
     private var gradingEpoch = 0L
     @Volatile
     private var darkFrameRequestGeneration = 0L
+    private val dualIsoSnapshotFence = DualIsoSnapshotFence()
+    private val dualIsoRefreshInFlight = AtomicBoolean(false)
+
+    private val _resolvedDualIsoValues = MutableStateFlow<ResolvedDualIsoValues?>(null)
+    val resolvedDualIsoValues: StateFlow<ResolvedDualIsoValues?> = _resolvedDualIsoValues
 
     private val _whiteBalancePickerActive = MutableStateFlow(false)
     val whiteBalancePickerActive: StateFlow<Boolean> = _whiteBalancePickerActive
@@ -120,19 +136,23 @@ class GradingViewModel @Inject constructor(
             activeClipHolder.activeClip.collectLatest { details ->
                 _whiteBalancePickerActive.value = false
                 if (details != null) {
+                    val dualIsoUpdateToken = beginDualIsoSnapshotUpdate()
                     val grading = loadClipGradingState(
                         details.guid,
                         details.metadata.whiteBalanceKelvin,
                         details.metadata.whiteBalanceTint,
+                        details.metadata.dualISO,
                         details.grading
                     )
                     applyProcessingSettings(
                         details.nativeHandle,
                         details.guid,
                         gradingEpoch,
-                        grading
+                        grading,
+                        dualIsoUpdateToken
                     )
                 } else {
+                    beginDualIsoSnapshotUpdate()
                     currentGradingGuid = 0L
                     gradingEpoch++
                 }
@@ -145,9 +165,10 @@ class GradingViewModel @Inject constructor(
         guid: Long,
         kelvin: Int,
         tint: Int,
+        dualIsoValid: Boolean,
         seededGrading: ClipGradingData
     ): ClipGradingData {
-        val grading = clipGradingStates.getOrPut(guid) {
+        val storedGrading = clipGradingStates.getOrPut(guid) {
             seededGrading.copy(
                 colorGrading = seededGrading.colorGrading.copy(
                     temperature = kelvin,
@@ -155,6 +176,13 @@ class GradingViewModel @Inject constructor(
                 )
             )
         }
+        val grading = storedGrading.copy(
+            // A valid DISO block owns the ISO pair. "Force" is only for old
+            // clips without that metadata, matching desktop receipt restore.
+            rawCorrection = storedGrading.rawCorrection
+                .reconciledWithDualIsoMetadata(dualIsoValid)
+        )
+        clipGradingStates[guid] = grading
         currentGradingGuid = guid
         gradingEpoch++
         _currentGrading.value = grading
@@ -173,7 +201,8 @@ class GradingViewModel @Inject constructor(
         handle: Long,
         guid: Long,
         expectedEpoch: Long,
-        grading: ClipGradingData
+        grading: ClipGradingData,
+        dualIsoUpdateToken: Long
     ) {
         if (handle == 0L) return
         val expectedDarkFrameGeneration = ++darkFrameRequestGeneration
@@ -207,6 +236,10 @@ class GradingViewModel @Inject constructor(
                     deflickerTarget = raw.deflickerTarget,
                     dualIso = raw.dualIso,
                     dualIsoForced = raw.dualIsoForced,
+                    dualIsoPattern = raw.dualIsoPattern,
+                    dualIsoMatchMethod = raw.dualIsoMatchMethod,
+                    dualIsoEvCorrection = raw.dualIsoEvCorrection,
+                    dualIsoBlackDelta = raw.dualIsoBlackDelta,
                     dualIsoInterpolation = raw.dualIsoInterpolation,
                     dualIsoAliasMap = raw.dualIsoAliasMap,
                     dualIsoFrBlending = raw.dualIsoFrBlending,
@@ -271,6 +304,7 @@ class GradingViewModel @Inject constructor(
                 if (stillActive != null && stillActive.nativeHandle == handle &&
                     stillActive.guid == guid && gradingEpoch == expectedEpoch
                 ) {
+                    dualIsoSnapshotFence.completeUpdate(dualIsoUpdateToken)
                     if (activeClipHolder.completeProcessingReceiptRestore(
                             expectedHandle = handle,
                             expectedGuid = guid,
@@ -315,12 +349,14 @@ class GradingViewModel @Inject constructor(
             return
         }
 
-        updateGrading {
-            it.copy(rawCorrection = it.rawCorrection.copy(enabled = enabled))
-        }
+        val updated = _currentGrading.value.rawCorrection.copy(enabled = enabled)
+        val dualIsoUpdateToken = beginDualIsoSnapshotUpdate()
+        updateGrading { it.copy(rawCorrection = updated) }
 
         launchNativeUpdate("toggle raw correction") {
             RawCorrectionNative.setRawCorrectionEnabled(handle, enabled)
+            configureDualIsoForSnapshotRearm(handle, updated)
+            dualIsoSnapshotFence.completeUpdate(dualIsoUpdateToken)
         }
     }
 
@@ -344,54 +380,79 @@ class GradingViewModel @Inject constructor(
     }
 
     fun setDualISO(mode: Int) {
-        val handle = clipHandle
-        if (handle == 0L) return
-
-        updateGrading {
-            it.copy(rawCorrection = it.rawCorrection.copy(dualIso = mode))
-        }
-
-        launchNativeUpdate("set Dual ISO") {
-            RawCorrectionNative.setDualIsoMode(handle, mode)
-        }
+        updateDualIso("set Dual ISO") { it.copy(dualIso = mode) }
     }
 
     fun setDualISOForced(isForced: Boolean) {
-        val handle = clipHandle
-        if (handle == 0L) return
-
-        updateGrading {
-            it.copy(rawCorrection = it.rawCorrection.copy(dualIsoForced = isForced))
+        val effectiveForced = isForced && !dualIsoValid.value
+        updateDualIso("set Dual ISO forced") {
+            it.withDualIsoForced(effectiveForced)
         }
+    }
 
-        launchNativeUpdate("set Dual ISO forced") {
-            RawCorrectionNative.setDualIsoForced(handle, isForced)
+    fun setDualISOPattern(pattern: Int) {
+        updateDualIso("set Dual ISO pattern") { it.withDualIsoPattern(pattern) }
+    }
+
+    fun setDualISOMatchMethod(matchMethod: Int) {
+        updateDualIso("set Dual ISO exposure matching") { current ->
+            current.copy(
+                dualIsoMatchMethod = matchMethod,
+                dualIsoEvCorrection = DualIsoSettingsContract.EV_AUTO,
+                dualIsoBlackDelta = DualIsoSettingsContract.BLACK_DELTA_AUTO
+            )
+        }
+    }
+
+    fun setDualISOEvCorrection(evCorrection: Float) {
+        updateDualIso("set Dual ISO exposure correction") {
+            it.copy(dualIsoEvCorrection = evCorrection)
+        }
+    }
+
+    fun setDualISOBlackDelta(blackDelta: Int) {
+        updateDualIso("set Dual ISO black delta") {
+            it.copy(dualIsoBlackDelta = blackDelta)
         }
     }
 
     fun setDualISOInterpolation(interpolation: Int) {
-        val handle = clipHandle
-        if (handle == 0L) return
-
-        updateGrading {
-            it.copy(rawCorrection = it.rawCorrection.copy(dualIsoInterpolation = interpolation))
-        }
-
-        launchNativeUpdate("set Dual ISO interpolation") {
-            RawCorrectionNative.setDualIsoInterpolation(handle, interpolation)
+        updateDualIso("set Dual ISO interpolation") {
+            it.copy(dualIsoInterpolation = interpolation)
         }
     }
 
     fun setDualISOAliasMap(isEnabled: Boolean) {
+        updateDualIso("set Dual ISO alias map") {
+            it.copy(dualIsoAliasMap = isEnabled)
+        }
+    }
+
+    private fun updateDualIso(
+        action: String,
+        transform: (RawCorrectionSettings) -> RawCorrectionSettings
+    ) {
         val handle = clipHandle
         if (handle == 0L) return
 
-        updateGrading {
-            it.copy(rawCorrection = it.rawCorrection.copy(dualIsoAliasMap = isEnabled))
-        }
+        val updated = transform(_currentGrading.value.rawCorrection).normalizedDualIso()
+        val dualIsoUpdateToken = beginDualIsoSnapshotUpdate()
+        updateGrading { it.copy(rawCorrection = updated) }
 
-        launchNativeUpdate("set Dual ISO alias map") {
-            RawCorrectionNative.setDualIsoAliasMap(handle, isEnabled)
+        launchNativeUpdate(action, expectedHandle = handle) {
+            RawCorrectionNative.configureDualIso(
+                mlvObjectPtr = handle,
+                mode = updated.dualIso,
+                forced = updated.dualIsoForced,
+                pattern = updated.dualIsoPattern,
+                matchMethod = updated.dualIsoMatchMethod,
+                evCorrection = updated.dualIsoEvCorrection,
+                blackDelta = updated.dualIsoBlackDelta,
+                interpolation = updated.dualIsoInterpolation,
+                aliasMap = updated.dualIsoAliasMap,
+                fullResBlending = true
+            )
+            dualIsoSnapshotFence.completeUpdate(dualIsoUpdateToken)
         }
     }
 
@@ -432,6 +493,7 @@ class GradingViewModel @Inject constructor(
         val expectedGuid = currentGradingGuid
         val expectedEpoch = gradingEpoch
         val requestGeneration = ++darkFrameRequestGeneration
+        val dualIsoUpdateToken = beginDualIsoSnapshotUpdate()
         viewModelScope.launch(nativeDispatcher) {
             val active = activeClipHolder.activeClip.value
             if (active?.nativeHandle != handle || active.guid != expectedGuid ||
@@ -457,11 +519,16 @@ class GradingViewModel @Inject constructor(
                             rawCorrection = it.rawCorrection.copy(
                                 darkFrameFileName = fileName,
                                 darkFrameUri = uriString,
-                                darkFrameEnabled = 1
+                                darkFrameEnabled = 1,
+                                dualIsoBlackDelta =
+                                    DualIsoSettingsContract.BLACK_DELTA_AUTO
                             )
                         )
                     }
+                    dualIsoSnapshotFence.completeUpdate(dualIsoUpdateToken)
                 } else {
+                    // Validation leaves the prior receipt/native mode intact.
+                    dualIsoSnapshotFence.completeUpdate(dualIsoUpdateToken)
                     Toast.makeText(
                         applicationContext,
                         "The selected file is not a compatible dark-frame MLV",
@@ -486,6 +553,7 @@ class GradingViewModel @Inject constructor(
         val requestGeneration = ++darkFrameRequestGeneration
         val expectedGuid = currentGradingGuid
         val expectedEpoch = gradingEpoch
+        val dualIsoUpdateToken = beginDualIsoSnapshotUpdate()
         viewModelScope.launch(nativeDispatcher) {
             val active = activeClipHolder.activeClip.value
             if (active?.nativeHandle != handle || active.guid != expectedGuid ||
@@ -507,11 +575,16 @@ class GradingViewModel @Inject constructor(
                     updateGrading {
                         it.copy(
                             rawCorrection = it.rawCorrection.copy(
-                                darkFrameEnabled = requestedMode
+                                darkFrameEnabled = requestedMode,
+                                dualIsoBlackDelta =
+                                    DualIsoSettingsContract.BLACK_DELTA_AUTO
                             )
                         )
                     }
+                    dualIsoSnapshotFence.completeUpdate(dualIsoUpdateToken)
                 } else {
+                    // Rejected Int mode does not mutate native state.
+                    dualIsoSnapshotFence.completeUpdate(dualIsoUpdateToken)
                     Toast.makeText(
                         applicationContext,
                         "This clip has no usable internal dark frame",
@@ -602,12 +675,14 @@ class GradingViewModel @Inject constructor(
         val handle = clipHandle
         if (handle == 0L) return
 
-        updateGrading {
-            it.copy(rawCorrection = it.rawCorrection.copy(dualIsoBlack = level))
-        }
+        val updated = _currentGrading.value.rawCorrection.copy(dualIsoBlack = level)
+        val dualIsoUpdateToken = beginDualIsoSnapshotUpdate()
+        updateGrading { it.copy(rawCorrection = updated) }
 
         launchNativeUpdate("set raw black level") {
             RawCorrectionNative.setRawBlackLevel(handle, level)
+            configureDualIsoForSnapshotRearm(handle, updated)
+            dualIsoSnapshotFence.completeUpdate(dualIsoUpdateToken)
         }
     }
 
@@ -615,12 +690,14 @@ class GradingViewModel @Inject constructor(
         val handle = clipHandle
         if (handle == 0L) return
 
-        updateGrading {
-            it.copy(rawCorrection = it.rawCorrection.copy(dualIsoWhite = level))
-        }
+        val updated = _currentGrading.value.rawCorrection.copy(dualIsoWhite = level)
+        val dualIsoUpdateToken = beginDualIsoSnapshotUpdate()
+        updateGrading { it.copy(rawCorrection = updated) }
 
         launchNativeUpdate("set raw white level") {
             RawCorrectionNative.setRawWhiteLevel(handle, level)
+            configureDualIsoForSnapshotRearm(handle, updated)
+            dualIsoSnapshotFence.completeUpdate(dualIsoUpdateToken)
         }
     }
 
@@ -1079,11 +1156,97 @@ class GradingViewModel @Inject constructor(
     }
 
     fun getAllGradingForExport(): Map<Long, ClipGradingData> {
-        return clipGradingStates.toMap()
+        val exportSnapshot = clipGradingStates.toMutableMap()
+        val active = activeClipHolder.activeClip.value ?: return exportSnapshot
+        val grading = exportSnapshot[active.guid] ?: return exportSnapshot
+        val snapshotToken = dualIsoSnapshotFence.readyToken() ?: return exportSnapshot
+        if (active.nativeHandle == 0L ||
+            grading.rawCorrection.normalizedDualIso().dualIso !=
+            DualIsoSettingsContract.MODE_HQ
+        ) {
+            return exportSnapshot
+        }
+
+        val resolvedState = runCatching {
+            RawCorrectionNative.getDualIsoState(active.nativeHandle)
+        }.getOrNull()
+        dualIsoSnapshotFence.commitIfReady(snapshotToken) {
+            val resolvedRaw = grading.rawCorrection.withResolvedDualIsoState(resolvedState)
+            if (resolvedRaw != grading.rawCorrection) {
+                exportSnapshot[active.guid] = grading.copy(rawCorrection = resolvedRaw)
+            }
+        }
+        return exportSnapshot
+    }
+
+    /**
+     * Refresh resolved preview values for display only. Receipt Auto sentinels
+     * remain unchanged, and a pending native update clears/blocks this state.
+     */
+    fun refreshResolvedDualIsoValues() {
+        val active = activeClipHolder.activeClip.value
+        val grading = active?.let { clipGradingStates[it.guid] }
+        val snapshotToken = dualIsoSnapshotFence.readyToken()
+        if (active == null || grading == null || active.nativeHandle == 0L ||
+            snapshotToken == null ||
+            grading.rawCorrection.normalizedDualIso().dualIso !=
+            DualIsoSettingsContract.MODE_HQ
+        ) {
+            _resolvedDualIsoValues.value = null
+            return
+        }
+        if (!dualIsoRefreshInFlight.compareAndSet(false, true)) return
+
+        val expectedHandle = active.nativeHandle
+        val expectedGuid = active.guid
+        val expectedEpoch = gradingEpoch
+        viewModelScope.launch(nativeDispatcher) {
+            try {
+                val resolved = runCatching {
+                    RawCorrectionNative.getDualIsoState(expectedHandle)
+                }.getOrNull().resolvedDualIsoValues()
+                val activeNow = activeClipHolder.activeClip.value
+                if (activeNow?.nativeHandle == expectedHandle &&
+                    activeNow.guid == expectedGuid && gradingEpoch == expectedEpoch
+                ) {
+                    dualIsoSnapshotFence.commitIfReady(snapshotToken) {
+                        _resolvedDualIsoValues.value = resolved
+                    }
+                }
+            } finally {
+                dualIsoRefreshInFlight.set(false)
+            }
+        }
     }
 
     fun initializeClipGrading(guid: Long, grading: ClipGradingData) {
-        clipGradingStates[guid] = grading
+        clipGradingStates[guid] = grading.copy(
+            rawCorrection = grading.rawCorrection.normalizedDualIso()
+        )
+    }
+
+    private fun beginDualIsoSnapshotUpdate(): Long {
+        _resolvedDualIsoValues.value = null
+        return dualIsoSnapshotFence.beginUpdate()
+    }
+
+    private fun configureDualIsoForSnapshotRearm(
+        handle: Long,
+        raw: RawCorrectionSettings
+    ) {
+        val normalized = raw.normalizedDualIso()
+        RawCorrectionNative.configureDualIso(
+            mlvObjectPtr = handle,
+            mode = normalized.dualIso,
+            forced = normalized.dualIsoForced,
+            pattern = normalized.dualIsoPattern,
+            matchMethod = normalized.dualIsoMatchMethod,
+            evCorrection = normalized.dualIsoEvCorrection,
+            blackDelta = normalized.dualIsoBlackDelta,
+            interpolation = normalized.dualIsoInterpolation,
+            aliasMap = normalized.dualIsoAliasMap,
+            fullResBlending = true
+        )
     }
 
     private fun launchNativeUpdate(

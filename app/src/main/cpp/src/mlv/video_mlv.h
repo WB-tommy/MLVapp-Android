@@ -139,7 +139,8 @@ void mark_mlv_uncached(mlvObject_t * video);
 void clear_mlv_cache(mlvObject_t * video);
 
 /* Returns 1 on success, or 0 if all are cached */
-int find_mlv_frame_to_cache(mlvObject_t * video, uint64_t *index); /* Outputs to *index */
+int find_mlv_frame_to_cache(mlvObject_t * video, uint64_t *index,
+                            uint64_t *generation); /* Outputs claimed frame + generation */
 
 /* Adds one thread, active total can be checked in mlvObject->cache_thread_count */
 void add_mlv_cache_thread(mlvObject_t * video);
@@ -153,7 +154,14 @@ void get_mlv_raw_frame_debayered(mlvObject_t * video,
                                   uint64_t frame_index,
                                   float * temp_memory,
                                   uint16_t * output_frame,
-                                  int debayer_type ); /* Debayer type: 0=bilinear 1=amaze */
+                                  int debayer_type,
+                                  llrpFrameResult_t *frame_result ); /* Debayer type: 0=bilinear 1=amaze */
+
+/* Produces a corrected float RAW frame and its exact low-level result without
+ * publishing either into the shared frame cache. Cache callers commit the
+ * pair only after validating their cache generation. */
+llrpFrameResult_t get_mlv_raw_frame_float_result(
+    mlvObject_t *video, uint64_t frame_index, float *output_frame);
 
 /* Thumbnail Creation with a downscaled raw image sub-sampling algorithm is used. */
 void get_sub_sampling_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer, int downscale_factor, int threads);

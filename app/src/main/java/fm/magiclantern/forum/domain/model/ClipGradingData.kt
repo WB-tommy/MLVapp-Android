@@ -3,6 +3,7 @@ package fm.magiclantern.forum.domain.model
 import android.os.Parcelable
 import androidx.compose.runtime.Stable
 import kotlinx.parcelize.Parcelize
+import kotlin.math.roundToInt
 
 /**
  * Main container for all clip grading settings
@@ -53,6 +54,76 @@ data class ClipGradingData(
 )
 
 /**
+ * Kotlin-side representation of the upstream Dual ISO control contract.
+ *
+ * Automatic values intentionally use the same out-of-range sentinels as the
+ * native implementation so a receipt can distinguish "auto" from a manual
+ * correction of zero.
+ */
+object DualIsoSettingsContract {
+    const val MODE_OFF = 0
+    const val MODE_HQ = 1
+    const val LEGACY_MODE_PREVIEW = 2
+
+    const val PATTERN_AUTO = 0
+    const val PATTERN_FIRST = PATTERN_AUTO
+    const val PATTERN_LAST = 5
+    const val PATTERN_AUTO_EVERY_FRAME = 5
+
+    const val MATCH_ISO = 1
+    const val MATCH_HISTOGRAM = 2
+
+    const val EV_AUTO = 1f
+    const val EV_MIN = -6f
+    const val EV_MAX = 0f
+    const val EV_STEP = 0.005f
+    const val EV_MANUAL_DEFAULT = -3f
+
+    const val BLACK_DELTA_AUTO = -1
+    const val BLACK_DELTA_MIN = 0
+    const val BLACK_DELTA_MAX = 100
+}
+
+/** Values finalized by one successfully presented Dual ISO preview frame. */
+@Stable
+data class ResolvedDualIsoValues(
+    val pattern: Int,
+    val matchMethod: Int,
+    val evCorrection: Float,
+    val blackDelta: Int
+)
+
+/** Validate and decode the native preview snapshot without changing the receipt. */
+fun FloatArray?.resolvedDualIsoValues(): ResolvedDualIsoValues? {
+    if (this == null || size < 5 || this[0] < 0.5f) return null
+
+    fun finiteInt(index: Int): Int? = this[index]
+        .takeIf(Float::isFinite)
+        ?.roundToInt()
+
+    val pattern = finiteInt(1)?.takeIf {
+        it in DualIsoSettingsContract.PATTERN_FIRST..DualIsoSettingsContract.PATTERN_LAST
+    } ?: return null
+    val matchMethod = finiteInt(2)?.takeIf {
+        it == DualIsoSettingsContract.MATCH_ISO ||
+            it == DualIsoSettingsContract.MATCH_HISTOGRAM
+    } ?: return null
+    val evCorrection = this[3].takeIf {
+        it.isFinite() && it in DualIsoSettingsContract.EV_MIN..DualIsoSettingsContract.EV_MAX
+    } ?: return null
+    val blackDelta = finiteInt(4)?.takeIf {
+        it in DualIsoSettingsContract.BLACK_DELTA_MIN..DualIsoSettingsContract.BLACK_DELTA_MAX
+    } ?: return null
+
+    return ResolvedDualIsoValues(
+        pattern = pattern,
+        matchMethod = matchMethod,
+        evCorrection = evCorrection,
+        blackDelta = blackDelta
+    )
+}
+
+/**
  * Raw correction settings (from desktop lines 51-70)
  */
 @Parcelize
@@ -68,17 +139,179 @@ data class RawCorrectionSettings(
     val chromaSmooth: Int = 0,                // 0=Off, 2=2x2, 3=3x3, 5=5x5
     val patternNoise: Int = 0,                // Fix pattern noise (0, 1)
     val deflickerTarget: Int = 0,             // Deflicker value
-    val dualIso: Int = 0,                     // 0=Off, 1=On, 2=Preview
+    val dualIso: Int = 0,                     // 0=Off, 1=HQ; legacy 2 migrates to HQ
     val dualIsoForced: Boolean = false,       // Override ISO detection
+    val dualIsoPattern: Int = DualIsoSettingsContract.PATTERN_AUTO,
+    val dualIsoMatchMethod: Int = DualIsoSettingsContract.MATCH_ISO,
+    val dualIsoEvCorrection: Float = DualIsoSettingsContract.EV_AUTO,
+    val dualIsoBlackDelta: Int = DualIsoSettingsContract.BLACK_DELTA_AUTO,
     val dualIsoInterpolation: Int = 0,        // 0=Amaze, 1=Mean23
-    val dualIsoAliasMap: Boolean = true,      // Alias map on/off
-    val dualIsoFrBlending: Boolean = true,    // Fullres blending on/off
-    val dualIsoWhite: Int = 65013,            // Dual ISO white level
-    val dualIsoBlack: Int = 4096,             // Dual ISO black level
+    val dualIsoAliasMap: Boolean = false,     // Upstream default: off
+    val dualIsoFrBlending: Boolean = true,    // Required for safe full-res output
+    // Legacy field names: these are general RAW processing levels, not DISO delta.
+    val dualIsoWhite: Int = 65013,
+    val dualIsoBlack: Int = 4096,
     val darkFrameFileName: String = "No file selected",  // Dark frame file path
     val darkFrameUri: String = "",            // Persistable SAF URI for handle restore
     val darkFrameEnabled: Int = 0             // 0=Off, 1=Ext, 2=Int
 ) : Parcelable
+
+/** Canonicalize legacy/corrupt receipt values before applying them to native state. */
+fun RawCorrectionSettings.normalizedDualIso(): RawCorrectionSettings {
+    val normalizedMode = when (dualIso) {
+        DualIsoSettingsContract.MODE_HQ,
+        DualIsoSettingsContract.LEGACY_MODE_PREVIEW -> DualIsoSettingsContract.MODE_HQ
+        else -> DualIsoSettingsContract.MODE_OFF
+    }
+    val normalizedMatchMethod = if (dualIsoForced) {
+        DualIsoSettingsContract.MATCH_HISTOGRAM
+    } else if (dualIsoMatchMethod == DualIsoSettingsContract.MATCH_HISTOGRAM) {
+        DualIsoSettingsContract.MATCH_HISTOGRAM
+    } else {
+        DualIsoSettingsContract.MATCH_ISO
+    }
+    val normalizedEv = if (dualIsoEvCorrection == DualIsoSettingsContract.EV_AUTO) {
+        DualIsoSettingsContract.EV_AUTO
+    } else {
+        dualIsoEvCorrection
+            .takeIf(Float::isFinite)
+            ?.coerceIn(DualIsoSettingsContract.EV_MIN, DualIsoSettingsContract.EV_MAX)
+            ?: DualIsoSettingsContract.EV_AUTO
+    }
+    val normalizedBlackDelta = if (
+        dualIsoBlackDelta == DualIsoSettingsContract.BLACK_DELTA_AUTO
+    ) {
+        DualIsoSettingsContract.BLACK_DELTA_AUTO
+    } else {
+        dualIsoBlackDelta.coerceIn(
+            DualIsoSettingsContract.BLACK_DELTA_MIN,
+            DualIsoSettingsContract.BLACK_DELTA_MAX
+        )
+    }
+
+    return copy(
+        dualIso = normalizedMode,
+        dualIsoPattern = dualIsoPattern.coerceIn(
+            DualIsoSettingsContract.PATTERN_FIRST,
+            DualIsoSettingsContract.PATTERN_LAST
+        ),
+        dualIsoMatchMethod = normalizedMatchMethod,
+        dualIsoEvCorrection = normalizedEv,
+        dualIsoBlackDelta = normalizedBlackDelta,
+        dualIsoInterpolation = dualIsoInterpolation.coerceIn(0, 1),
+        dualIsoFrBlending = true
+    )
+}
+
+/**
+ * Normalize settings for a fresh export decoder. External dark-frame data is
+ * owned by the preview handle and is not available to the export handle, so it
+ * must not be advertised as active there. Automatic Dual ISO sentinels remain
+ * automatic and will be resolved again by the export decoder.
+ */
+fun RawCorrectionSettings.normalizedForExport(): RawCorrectionSettings {
+    val normalized = normalizedDualIso()
+    return if (normalized.darkFrameEnabled == 1) {
+        normalized.copy(darkFrameEnabled = 0)
+    } else {
+        normalized.copy(
+            darkFrameEnabled = if (normalized.darkFrameEnabled == 2) 2 else 0
+        )
+    }
+}
+
+/** Apply the upstream force transition and re-arm all dependent auto values. */
+fun RawCorrectionSettings.withDualIsoForced(isForced: Boolean): RawCorrectionSettings =
+    copy(
+        dualIsoForced = isForced,
+        dualIsoPattern = DualIsoSettingsContract.PATTERN_AUTO,
+        dualIsoMatchMethod = if (isForced) {
+            DualIsoSettingsContract.MATCH_HISTOGRAM
+        } else {
+            DualIsoSettingsContract.MATCH_ISO
+        },
+        dualIsoEvCorrection = DualIsoSettingsContract.EV_AUTO,
+        dualIsoBlackDelta = DualIsoSettingsContract.BLACK_DELTA_AUTO
+    ).normalizedDualIso()
+
+/** Force applies only to legacy clips without a valid DISO metadata block. */
+fun RawCorrectionSettings.reconciledWithDualIsoMetadata(
+    dualIsoValid: Boolean
+): RawCorrectionSettings {
+    val normalized = normalizedDualIso()
+    return if (dualIsoValid && normalized.dualIsoForced) {
+        normalized.withDualIsoForced(false)
+    } else {
+        normalized
+    }
+}
+
+/**
+ * Upstream re-runs histogram/forced matching when its row pattern changes.
+ * ISO matching keeps explicit correction values because they are independent
+ * of the detected line arrangement.
+ */
+fun RawCorrectionSettings.withDualIsoPattern(pattern: Int): RawCorrectionSettings {
+    val normalized = normalizedDualIso()
+    val rearmCorrections = normalized.dualIsoForced ||
+        normalized.dualIsoMatchMethod == DualIsoSettingsContract.MATCH_HISTOGRAM
+    return normalized.copy(
+        dualIsoPattern = pattern,
+        dualIsoEvCorrection = if (rearmCorrections) {
+            DualIsoSettingsContract.EV_AUTO
+        } else {
+            normalized.dualIsoEvCorrection
+        },
+        dualIsoBlackDelta = if (rearmCorrections) {
+            DualIsoSettingsContract.BLACK_DELTA_AUTO
+        } else {
+            normalized.dualIsoBlackDelta
+        }
+    ).normalizedDualIso()
+}
+
+/**
+ * Resolve auto values from the last successfully rendered preview frame for
+ * export without changing the live UI/native receipt.
+ */
+fun RawCorrectionSettings.withResolvedDualIsoState(
+    snapshot: FloatArray?
+): RawCorrectionSettings {
+    val normalized = normalizedForExport()
+    if (normalized.dualIso != DualIsoSettingsContract.MODE_HQ) return normalized
+
+    // The preview result includes subtraction unavailable to the fresh export
+    // handle. Re-run every automatic value after normalizing DF_EXT to Off.
+    if (darkFrameEnabled == 1) return normalized
+
+    val resolved = snapshot.resolvedDualIsoValues() ?: return normalized
+
+    val resolvedPattern = if (
+        normalized.dualIsoPattern == DualIsoSettingsContract.PATTERN_AUTO
+    ) {
+        resolved.pattern
+    } else {
+        normalized.dualIsoPattern
+    }
+
+    return normalized.copy(
+        dualIsoPattern = resolvedPattern,
+        dualIsoEvCorrection = if (
+            normalized.dualIsoEvCorrection == DualIsoSettingsContract.EV_AUTO
+        ) {
+            resolved.evCorrection
+        } else {
+            normalized.dualIsoEvCorrection
+        },
+        dualIsoBlackDelta = if (
+            normalized.dualIsoBlackDelta == DualIsoSettingsContract.BLACK_DELTA_AUTO
+        ) {
+            resolved.blackDelta
+        } else {
+            normalized.dualIsoBlackDelta
+        }
+    ).normalizedForExport()
+}
 
 /**
  * Color grading settings (from desktop lines 4-50)

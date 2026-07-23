@@ -165,7 +165,11 @@ typedef struct {
     uint64_t cache_start_frame;
 
     uint8_t * cached_frames; /* Basically an array with as many elements as frames, cache states are defined above */
+    llrpFrameResult_t * raw_frame_results; /* Low-level result paired with each cached/debayered frame */
     uint16_t ** rgb_raw_frames; /* Pointers to 16bit cached RGB frames */
+    /* Protected by g_mutexFind. Incremented whenever cached RAW/RGB state is
+     * invalidated so an in-flight worker cannot publish the previous setup. */
+    uint64_t cache_generation;
 
     /* A single cached frame, speeds up when asking for the same (non-cached) frame over and over again */
     int current_cached_frame_active;

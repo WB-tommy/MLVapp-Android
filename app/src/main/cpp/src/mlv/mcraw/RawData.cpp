@@ -21,6 +21,7 @@
 //   on MotionCam's performance branch before merge. Baseline selection/unpack
 //   behavior remains, with shared packet validation hardened.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -708,13 +709,23 @@ namespace motioncam {
 
         ReadMetadataHeader(input, encodedWidth, encodedHeight, bitsOffset, refsOffset);
 
-        // The decoder writes four complete visible rows per loop. Validate the
-        // packet dimensions and metadata envelope before any output write or
-        // metadata allocation so a corrupt item cannot overrun the JNI buffer.
+        // Type-7 payloads encode complete four-row groups. Recent MotionCam
+        // Pro binned clips can report a visible height that differs from the
+        // encoded height by up to the three rows needed for that grouping
+        // (for example, 1530 visible rows with 1528 encoded rows). Keep that
+        // bounded compatibility case while rejecting unrelated dimensions.
+        // Output copies below are clipped to the visible height and missing
+        // bottom rows are extended from the previous same-CFA-phase row.
+        const uint32_t visibleHeight = static_cast<uint32_t>(height);
+        const uint32_t heightDifference = encodedHeight > visibleHeight
+            ? encodedHeight - visibleHeight
+            : visibleHeight - encodedHeight;
         if (encodedWidth % ENCODING_BLOCK != 0 || encodedWidth < (uint32_t)width ||
             static_cast<uint64_t>(encodedWidth) >
                 static_cast<uint64_t>(width) * 4u ||
-            encodedHeight != (uint32_t)height || encodedHeight % 4u != 0u ||
+            encodedHeight == 0u || encodedHeight % 4u != 0u ||
+            heightDifference > 3u ||
+            (encodedHeight < visibleHeight && encodedHeight < 2u) ||
             bitsOffset < METADATA_OFFSET || refsOffset < METADATA_OFFSET ||
             len < 6u || bitsOffset > len - 6u || refsOffset > len - 6u) {
             return 0;
@@ -890,22 +901,28 @@ namespace motioncam {
                     continue;
                 }
 
-                uint16_t *dst = output +
-                    static_cast<size_t>(group * 4) * static_cast<size_t>(width);
-                std::memcpy(dst, row0.get(), width * sizeof(uint16_t));
-                std::memcpy(dst + width, row1.get(), width * sizeof(uint16_t));
-                std::memcpy(dst + width * 2, row2.get(),
-                            width * sizeof(uint16_t));
-                std::memcpy(dst + width * 3, row3.get(),
-                            width * sizeof(uint16_t));
+                const int firstVisibleRow = group * 4;
+                if (firstVisibleRow < height) {
+                    const uint16_t *rows[4] = {
+                        row0.get(), row1.get(), row2.get(), row3.get()
+                    };
+                    const int visibleRows =
+                        std::min(4, height - firstVisibleRow);
+                    uint16_t *dst = output +
+                        static_cast<size_t>(firstVisibleRow) *
+                        static_cast<size_t>(width);
+                    for (int row = 0; row < visibleRows; ++row) {
+                        std::memcpy(dst + static_cast<size_t>(row) * width,
+                                    rows[row], width * sizeof(uint16_t));
+                    }
+                }
             }
         }
 
-        return decodeFailed == 0
-            ? static_cast<size_t>(width) * static_cast<size_t>(height)
-            : 0;
+        if (decodeFailed != 0) {
+            return 0;
+        }
 #else
-        uint16_t* outputStart = output;
         uint16_t p0[ENCODING_BLOCK];
         uint16_t p1[ENCODING_BLOCK];
         uint16_t p2[ENCODING_BLOCK];
@@ -957,21 +974,30 @@ namespace motioncam {
                 metadataIdx += 4;
             }
 
-            std::memcpy(output, row0.data(), width * 2);
-            output += width;
-
-            std::memcpy(output, row1.data(), width * 2);
-            output += width;
-
-            std::memcpy(output, row2.data(), width * 2);
-            output += width;
-
-            std::memcpy(output, row3.data(), width * 2);
-            output += width;
+            const uint16_t *rows[4] = {
+                row0.data(), row1.data(), row2.data(), row3.data()
+            };
+            if (y < height) {
+                const int visibleRows = std::min(4, height - y);
+                for (int row = 0; row < visibleRows; ++row) {
+                    std::memcpy(output +
+                                    static_cast<size_t>(y + row) * width,
+                                rows[row], width * sizeof(uint16_t));
+                }
+            }
         }
-        
-        return (output - outputStart);
 #endif
+
+        // Preserve the Bayer phase when the encoded payload is rounded down
+        // to a four-row group. This also ensures downstream CFA normalization
+        // never observes uninitialized bottom rows.
+        for (uint32_t row = encodedHeight; row < visibleHeight; ++row) {
+            std::memcpy(output + static_cast<size_t>(row) * width,
+                        output + static_cast<size_t>(row - 2u) * width,
+                        width * sizeof(uint16_t));
+        }
+
+        return static_cast<size_t>(width) * static_cast<size_t>(height);
     }
 }}
 

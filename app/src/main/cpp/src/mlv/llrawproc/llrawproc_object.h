@@ -28,6 +28,22 @@
 #include "stripes.h"
 #include "../mlv.h"
 
+/* Description of the buffer and resolved Dual ISO controls used for one
+ * frame.  Per-frame ownership is required because cache workers may process a
+ * different frame while the UI presents another one. */
+typedef struct
+{
+    int dual_iso_applied;
+    int output_bit_depth;
+    int black_level;
+    int white_level;
+    uint32_t cfa_pattern;
+    int pattern;
+    int match_method;
+    double ev_correction;
+    int black_delta;
+} llrpFrameResult_t;
+
 /* Low level raw processing object */
 typedef struct
 {
@@ -69,6 +85,9 @@ typedef struct
     int diso_averaging;   // dual iso interpolation method, 0 = amaze-edge, 1 = mean23
     int diso_alias_map;   // flag for Alias Map switchin on/off
     int diso_frblending;  // flag for Fullres Blending switching on/off
+    llrpFrameResult_t diso_last_frame_result;
+    llrpFrameResult_t diso_presented_frame_result;
+    int diso_processing_frame_applied;
     int dark_frame;       // flag for Dark Frame subtraction mode 0 = off, 1 = ext, 2 = int
 
     /* cDNG bit depth and black/white levels */

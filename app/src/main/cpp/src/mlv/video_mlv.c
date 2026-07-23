@@ -754,29 +754,32 @@ int getMlvRawFrameCorrectedUint16(mlvObject_t * video, uint64_t frameIndex,
     const size_t pixel_count =
         (size_t)video->RAWI.xRes * (size_t)video->RAWI.yRes;
     const size_t corrected_frame_size = pixel_count * sizeof(uint16_t);
+    pthread_mutex_lock(&video->g_mutexFind);
+    const uint64_t result_generation = video->cache_generation;
+    pthread_mutex_unlock(&video->g_mutexFind);
 
     /* Keep RAW settings and the scale decision atomic. llrawproc uses the
      * same recursive mutex internally for level/map updates. */
     pthread_mutex_lock(&video->processing_mutex);
+    llrpFrameResult_t raw_result;
     if (mcraw_loaded)
     {
         /* prepare_cpu_raw already phase-normalized supported MCRAW to RGGB.
          * Use that layout locally in llrawproc without mutating shared clip
          * metadata that another decoder/cache worker may read. */
-        applyLLRawProcObjectPreparedRggb(
+        raw_result = applyLLRawProcObjectPreparedRggb(
             video, correctedFrame, corrected_frame_size);
     }
     else
     {
-        applyLLRawProcObject(video, correctedFrame, corrected_frame_size);
+        raw_result = applyLLRawProcObject(
+            video, correctedFrame, corrected_frame_size);
     }
 
     /* Normal RAW is still at the file's sensor-code scale after llrawproc.
      * Full Dual ISO output is already true 16-bit. This is representation
      * normalization only; black/white normalization remains a GPU stage. */
-    const int shift = llrpHQDualIso(video)
-        ? 0
-        : 16 - video->RAWI.raw_info.bits_per_pixel;
+    const int shift = 16 - raw_result.output_bit_depth;
     if (shift > 0)
     {
         #pragma omp parallel for
@@ -789,12 +792,27 @@ int getMlvRawFrameCorrectedUint16(mlvObject_t * video, uint64_t frameIndex,
 
     if (corrected_info != NULL)
     {
-        corrected_info->black_level = video->processing->black_level;
-        corrected_info->white_level = video->processing->white_level;
+        const uint64_t promoted_black =
+            (uint64_t)MAX(raw_result.black_level, 0) << shift;
+        const uint64_t promoted_white =
+            (uint64_t)MAX(raw_result.white_level, 0) << shift;
+        corrected_info->black_level =
+            (float)MIN(promoted_black, UINT16_MAX);
+        corrected_info->white_level =
+            (float)MIN(promoted_white, UINT16_MAX);
         corrected_info->cfa_pattern = 0x02010100;
         corrected_info->sample_bit_depth = 16;
     }
+    llrpPublishDualIsoFrameResult(video, &raw_result);
     pthread_mutex_unlock(&video->processing_mutex);
+
+    pthread_mutex_lock(&video->g_mutexFind);
+    if (video->cache_generation == result_generation &&
+        video->raw_frame_results != NULL && frameIndex < video->frames)
+    {
+        video->raw_frame_results[frameIndex] = raw_result;
+    }
+    pthread_mutex_unlock(&video->g_mutexFind);
 
     if (metrics != NULL)
     {
@@ -807,8 +825,10 @@ int getMlvRawFrameCorrectedUint16(mlvObject_t * video, uint64_t frameIndex,
 /* Unpacks the bits of a frame to get a bayer B&W image (without black level correction)
  * Needs memory to return to, sized: sizeof(float) * getMlvHeight(urvid) * getMlvWidth(urvid)
  * Output image's pixels will be in range 0-65535 as if it is 16 bit integers */
-void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outputFrame)
+llrpFrameResult_t get_mlv_raw_frame_float_result(
+    mlvObject_t *video, uint64_t frameIndex, float *outputFrame)
 {
+    llrpFrameResult_t raw_result = { 0 };
     int pixels_count = video->RAWI.xRes * video->RAWI.yRes;
 
     /* Memory buffer for decompressed or bit unpacked RAW data */
@@ -819,7 +839,7 @@ void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outpu
     {
         memset(outputFrame, 0, pixels_count * sizeof(float));
         free(unpacked_frame);
-        return;
+        return raw_result;
     }
 
     /* apply low level raw processing to the unpacked_frame (lock protects llrawproc params) */
@@ -827,17 +847,18 @@ void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outpu
     if (isMcrawLoaded(video))
     {
         /* getMlvRawFrameUint16 already normalized supported MCRAW to RGGB. */
-        applyLLRawProcObjectPreparedRggb(
+        raw_result = applyLLRawProcObjectPreparedRggb(
             video, unpacked_frame, unpacked_frame_size);
     }
     else
     {
-        applyLLRawProcObject(video, unpacked_frame, unpacked_frame_size);
+        raw_result = applyLLRawProcObject(
+            video, unpacked_frame, unpacked_frame_size);
     }
     pthread_mutex_unlock(&video->processing_mutex);
 
     /* high quality dualiso buffer consists of real 16 bit values, no converting needed */
-    int shift_val = (llrpHQDualIso(video)) ? 0 : (16 - video->RAWI.raw_info.bits_per_pixel);
+    int shift_val = 16 - raw_result.output_bit_depth;
 
     /* convert uint16_t raw data -> float raw_data for processing with amaze or bilinear debayer, both need data input as float */
     #pragma omp parallel for
@@ -847,6 +868,25 @@ void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outpu
     }
 
     free(unpacked_frame);
+    return raw_result;
+}
+
+void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outputFrame)
+{
+    pthread_mutex_lock(&video->g_mutexFind);
+    const uint64_t result_generation = video->cache_generation;
+    pthread_mutex_unlock(&video->g_mutexFind);
+
+    llrpFrameResult_t raw_result = get_mlv_raw_frame_float_result(
+        video, frameIndex, outputFrame);
+
+    pthread_mutex_lock(&video->g_mutexFind);
+    if (video->cache_generation == result_generation &&
+        video->raw_frame_results != NULL && frameIndex < video->frames)
+    {
+        video->raw_frame_results[frameIndex] = raw_result;
+    }
+    pthread_mutex_unlock(&video->g_mutexFind);
 }
 
 void setMlvProcessing(mlvObject_t * video, processingObject_t * processing)
@@ -859,8 +899,10 @@ void setMlvProcessing(mlvObject_t * video, processingObject_t * processing)
     /* Wire up thread safety mutex pointer */
     video->processing->param_mutex = &video->processing_mutex;
 
-    /* Link dual_iso value, because it is needed */
-    video->processing->dual_iso = &video->llrawproc->dual_iso;
+    /* Post-demosaic Dual ISO highlight handling is set from the exact frame
+     * result immediately before applyProcessingObject. */
+    video->processing->dual_iso =
+        &video->llrawproc->diso_processing_frame_applied;
 
     /* explicitely switch whitebalance find flag off to get right matrix values */
     video->processing->wbFindActive = 0;
@@ -926,8 +968,10 @@ void setMlvProcessing(mlvObject_t * video, processingObject_t * processing)
     }
 }
 
-void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t * outputFrame)
+static llrpFrameResult_t getMlvRawFrameDebayeredResult(
+    mlvObject_t *video, uint64_t frameIndex, uint16_t *outputFrame)
 {
+    llrpFrameResult_t frame_result = { 0 };
     int width = getMlvWidth(video);
     int height = getMlvHeight(video);
     int frame_size = width * height * sizeof(uint16_t) * 3;
@@ -936,6 +980,7 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
 
     /* Lock g_mutexFind to safely read cache state and pointers */
     pthread_mutex_lock(&video->g_mutexFind);
+    const uint64_t request_generation = video->cache_generation;
 
     /* If frame was requested last time and is sitting in the "current" frame cache */
     if ( video->cached_frames[frameIndex] == MLV_FRAME_NOT_CACHED
@@ -943,6 +988,10 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
          && video->current_cached_frame == frameIndex )
     {
         memcpy(outputFrame, video->rgb_raw_current_frame, frame_size);
+        if (video->raw_frame_results != NULL)
+        {
+            frame_result = video->raw_frame_results[frameIndex];
+        }
         pthread_mutex_unlock(&video->g_mutexFind);
     }
     else switch (video->cached_frames[frameIndex])
@@ -950,6 +999,10 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
         case MLV_FRAME_IS_CACHED:
         {
             memcpy(outputFrame, video->rgb_raw_frames[frameIndex], frame_size);
+            if (video->raw_frame_results != NULL)
+            {
+                frame_result = video->raw_frame_results[frameIndex];
+            }
             pthread_mutex_unlock(&video->g_mutexFind);
             break;
         }
@@ -970,31 +1023,58 @@ void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t 
             if (doesMlvAlwaysUseAmaze(video) && can_use_frame_cache)
             {
                 /* Wait for cache thread to finish — condvar replaces usleep(100) spin */
-                while (video->cached_frames[frameIndex] != MLV_FRAME_IS_CACHED)
+                while (video->cached_frames[frameIndex] ==
+                       MLV_FRAME_BEING_CACHED)
                 {
                     pthread_cond_wait(&video->cache_cond, &video->g_mutexFind);
                 }
-                memcpy(outputFrame, video->rgb_raw_frames[frameIndex], frame_size);
-                pthread_mutex_unlock(&video->g_mutexFind);
+                if (video->cached_frames[frameIndex] == MLV_FRAME_IS_CACHED)
+                {
+                    memcpy(outputFrame, video->rgb_raw_frames[frameIndex],
+                           frame_size);
+                    if (video->raw_frame_results != NULL)
+                    {
+                        frame_result = video->raw_frame_results[frameIndex];
+                    }
+                    pthread_mutex_unlock(&video->g_mutexFind);
+                    break;
+                }
             }
-            else
+
+            /* A reset or decode failure retires BEING_CACHED to NOT_CACHED.
+             * Fall back instead of waiting for a worker that may have exited. */
+            pthread_mutex_unlock(&video->g_mutexFind);
+
+            float * raw_frame = malloc(width * height * sizeof(float));
+            get_mlv_raw_frame_debayered(
+                video, frameIndex, raw_frame, outputFrame,
+                doesMlvAlwaysUseAmaze(video), &frame_result);
+            free(raw_frame);
+
+            pthread_mutex_lock(&video->g_mutexFind);
+            if (video->cache_generation == request_generation &&
+                frame_result.output_bit_depth > 0)
             {
-                /* Unlock before heavy decode work */
-                pthread_mutex_unlock(&video->g_mutexFind);
-
-                float * raw_frame = malloc(width * height * sizeof(float));
-                get_mlv_raw_frame_debayered(video, frameIndex, raw_frame, video->rgb_raw_current_frame, doesMlvAlwaysUseAmaze(video));
-                free(raw_frame);
-                memcpy(outputFrame, video->rgb_raw_current_frame, frame_size);
-
-                pthread_mutex_lock(&video->g_mutexFind);
+                memcpy(video->rgb_raw_current_frame, outputFrame,
+                       frame_size);
+                if (video->raw_frame_results != NULL)
+                {
+                    video->raw_frame_results[frameIndex] = frame_result;
+                }
                 video->current_cached_frame_active = 1;
                 video->current_cached_frame = frameIndex;
-                pthread_mutex_unlock(&video->g_mutexFind);
             }
+            pthread_mutex_unlock(&video->g_mutexFind);
             break;
         }
     }
+
+    return frame_result;
+}
+
+void getMlvRawFrameDebayered(mlvObject_t * video, uint64_t frameIndex, uint16_t * outputFrame)
+{
+    (void)getMlvRawFrameDebayeredResult(video, frameIndex, outputFrame);
 }
 
 /* Get a processed frame in 16 bit, only use more than one thread for preview as
@@ -1012,10 +1092,26 @@ void getMlvProcessedFrame16(mlvObject_t * video, uint64_t frameIndex, uint16_t *
     uint16_t * unprocessed_frame = malloc( rgb_frame_size * sizeof(uint16_t) );
 
     /* Get the raw data in B&W */
-    getMlvRawFrameDebayered(video, frameIndex, unprocessed_frame);
+    llrpFrameResult_t frame_result = getMlvRawFrameDebayeredResult(
+        video, frameIndex, unprocessed_frame);
 
     /* Do processing (lock protects processing params against concurrent setters) */
     pthread_mutex_lock(&video->processing_mutex);
+    if (frame_result.output_bit_depth > 0)
+    {
+        llrpPublishDualIsoFrameResult(video, &frame_result);
+    }
+    else
+    {
+        llrpFrameResult_t unavailable_result = {
+            .dual_iso_applied = 0,
+            .output_bit_depth = getMlvBitdepth(video),
+            .black_level = getMlvBlackLevel(video),
+            .white_level = getMlvWhiteLevel(video),
+            .cfa_pattern = video->RAWI.raw_info.cfa_pattern
+        };
+        llrpSetProcessingDualIsoFrameResult(video, &unavailable_result);
+    }
     applyProcessingObject( video->processing,
                            width, height,
                            unprocessed_frame,
@@ -1090,6 +1186,7 @@ mlvObject_t * initMlvObject()
     video->rgb_raw_frames = NULL;
     video->rgb_raw_current_frame = NULL;
     video->cached_frames = NULL;
+    video->raw_frame_results = NULL;
     /* All frames in one block of memory for least mallocing during usage */
     video->cache_memory_block = NULL;
     /* Path (so separate cache threads can have their own FILE*s) */
@@ -1170,6 +1267,11 @@ void freeMlvObject(mlvObject_t * video)
     {
         free(video->cached_frames);
         video->cached_frames = NULL;
+    }
+    if(video->raw_frame_results)
+    {
+        free(video->raw_frame_results);
+        video->raw_frame_results = NULL;
     }
     if(video->rgb_raw_frames) free(video->rgb_raw_frames);
     if(video->rgb_raw_current_frame) free(video->rgb_raw_current_frame);
@@ -2281,6 +2383,8 @@ short_cut:
     /* For frame cache */
     video->rgb_raw_current_frame = (uint16_t *)malloc( getMlvWidth(video) * getMlvHeight(video) * 3 * sizeof(uint16_t) );
     video->cached_frames = (uint8_t *)calloc( sizeof(uint8_t), video->frames );
+    video->raw_frame_results = (llrpFrameResult_t *)calloc(
+        video->frames, sizeof(llrpFrameResult_t));
 
     isMlvActive(video) = 5;
 
@@ -2452,7 +2556,12 @@ int openMlvClip(mlvObject_t * video, int * fds, int numFds, char * mlvPath, int 
                 {
                     video->frames = video_frames;
                     video->audios = audio_frames;
-                    goto preview_out;
+                    /* The first VIDF follows the clip's static metadata
+                     * headers.  Preview opens still need the common derived
+                     * metadata initialization below: thumbnail-only callers
+                     * use the resolved DISO validity/ISO pair and lossless
+                     * depth to seed unopened batch exports. */
+                    goto short_cut;
                 }
             }
             else if ( memcmp(block_header.blockType, "AUDF", 4) == 0 )
@@ -2697,8 +2806,6 @@ short_cut:
     /* Check and set dual iso validity */
     llrpSetDualIsoValidity(video, 0);
 
-preview_out:
-
     /* NON compressed frame size */
     video->frame_size = (getMlvHeight(video) * getMlvWidth(video) * getMlvBitdepth(video)) / 8;
     /* Calculate framerate */
@@ -2707,6 +2814,8 @@ preview_out:
     /* For frame cache */
     video->rgb_raw_current_frame = (uint16_t *)malloc( getMlvWidth(video) * getMlvHeight(video) * 3 * sizeof(uint16_t) );
     video->cached_frames = (uint8_t *)calloc( sizeof(uint8_t), video->frames );
+    video->raw_frame_results = (llrpFrameResult_t *)calloc(
+        video->frames, sizeof(llrpFrameResult_t));
 
     isMlvActive(video) = 1;
 

@@ -1,73 +1,108 @@
-# Android Patches
+# Android shared-native delta
 
-These patches restore all Android-specific modifications after syncing
-`mlv-core` from the upstream desktop repository.
+This directory preserves Android-specific changes when the shared native tree
+is refreshed from `desktop_src/src`.
 
----
+## Supported baseline
 
-## When to use
+- Desktop repository commit:
+  `877dea2cb9413bd0542abb622af517cf12db63d3`
+- Android destination: `app/src/main/cpp/src/`
+- Consolidated delta: `current_upstream_android_delta.patch.gz`
 
-Every time you sync files from `desktop_src/` into
-`app/src/main/cpp/src/`, run:
+The delta includes the complete difference between that upstream baseline and
+the verified Android shared-native result: SAF/file-descriptor I/O, dark-frame
+ownership, DNG descriptor export, Android build/header fixes, corrected Bayer
+GPU playback, MCRAW decoding, and the Android integration of the current Dual
+ISO strategy.
+
+The former six-patch stack is retained under
+`archive/legacy_split_2026-07-13/` for history only. Do not apply it to the
+current upstream tree: patches 01 and 06 overlap changed upstream code, and a
+sequential run can leave a partially patched tree.
+
+## Safe refresh workflow
+
+First checkpoint all Android work. The overlay command deliberately replaces
+shared upstream files, so never run it over uncommitted implementation work.
+
+Verify the desktop clone:
 
 ```bash
-cd MLVapp_android/
+git -C ../desktop_src status --short
+git -C ../desktop_src rev-parse HEAD
+```
+
+The status must be empty and the revision must match the supported baseline.
+Then, from `MLVapp_android/`, overlay the upstream shared tree while retaining
+Android-only sources and excluding desktop-only assets:
+
+```bash
+rsync -a \
+  --exclude '/icon/' \
+  --exclude '/mlv/OpenJPH/' \
+  ../desktop_src/src/ app/src/main/cpp/src/
+```
+
+Preflight and apply the single delta:
+
+```bash
+bash android_patches/apply_all.sh --check
 bash android_patches/apply_all.sh
 ```
 
----
+`apply_all.sh` is intentionally strict:
 
-## Patch overview
+- Full-tree SHA-256 manifests and file-list checks require either the exact
+  supported upstream baseline or the exact verified Android result.
+- `git apply --check` runs before any write.
+- The patch is one transaction; there is no partially applied sequence.
+- It never falls back to `--3way`. A mismatch means the delta must be reviewed
+  and regenerated for the new upstream revision.
+- A second manifest verifies the patched result.
 
-| File | What it patches | Why needed |
-|------|----------------|------------|
-| `01_fd_based_file_io.patch` | `video_mlv.c/h`, `mcraw.c/h` | Restores `int fd` / `int *fds` parameters in `openMlvClip`, `openMcrawClip`, `initMlvObjectWithClip`, `initMlvObjectWithMcrawClip`, `mr_decoder_open`. Android scoped storage cannot use file paths — Java must open files and pass file descriptors to native code. |
-| `02_dark_frame_fds.patch` | `llrawproc_object.h`, `darkframe.h`, `darkframe.c` | Restores the shared processing-mutex hook plus one-shot SAF dark-frame loading, leak-free descriptor cleanup, transactional replacement, and Ext/Int buffer-source tracking. |
-| `03_save_dng_fd.patch` | `dng.c`, `dng.h` | Adds `saveDngFrameFd(int fd, ...)` — saves a DNG frame to a pre-opened file descriptor. Required for Android scoped storage during DNG export. |
-| `04_cmake_fixes.patch` | `librtprocess/src/CMakeLists.txt` | Restores `librtprocesswrapper.cpp` to the rtprocess source list and `librtprocesswrapper.h` to `PUBLIC_HEADER`. Upstream drops these Android-specific wrapper files on every sync. |
-| `05_header_fixes.patch` | `image_profile.h`, `processing.c` | Adds missing `#include <stdint.h>` to `image_profile.h` (fixes `uint8_t` unknown type on Android NDK), and adds `#include <math.h>` + macros to `processing.c`. |
-| `06_raw_gpu_decode.patch` | `dng/dng.c`, `video_mlv.c/h`, `mlv_object.h`, `llrawproc.c/h`, `mcraw/RawData.cpp`, `mcraw/mcraw.h` | Adds the hybrid playback boundary: decode, run CPU `llrawproc`, promote canonical Bayer to full 16-bit, then hand levels/WB/bilinear/grading to GLES. Native-CFA DNG export remains unchanged. It also makes the validated four-row OpenMP decoder the default for type-7 MCRAW CPU/GPU/export paths; type-6 falls back to baseline, uncompressed MLV keeps its OpenMP unpacker, and LJ92 keeps its serial predictive decoder. |
+## Isolated rehearsal
 
----
-
-## Files that do NOT need patches
-
-| File | Reason |
-|------|--------|
-| `video_mlv_misc.c` | Exists in upstream (`desktop_src/src/mlv/`) and is synced normally. Android-specific `#ifdef ANDROID` blocks are already inside it. |
-| `jni/clip/handle_clip.cpp` | Android-only file, never overwritten by upstream sync. |
-| `CMakeLists.txt` (top-level) | Android-only build file, never overwritten by upstream sync. |
-
----
-
-## If a patch conflicts
-
-When upstream changes the same area as a patch, `apply_all.sh` automatically
-retries with `--3way` merge. If that also fails:
+To validate without touching the working shared-native tree, create a scratch
+repository. Seeding it from Android first retains Android-only files; the next
+step overwrites every upstream-owned file with the desktop baseline.
 
 ```bash
-# Apply with conflict markers
-git apply --3way android_patches/01_fd_based_file_io.patch
-
-# Edit the conflicted file, look for <<<<<<< markers
-# Then mark as resolved
-git add <resolved_file>
+scratch="$(mktemp -d)"
+mkdir -p "$scratch/app/src/main/cpp/src"
+rsync -a --exclude '.DS_Store' \
+  app/src/main/cpp/src/ "$scratch/app/src/main/cpp/src/"
+rsync -a \
+  --exclude '/icon/' \
+  --exclude '/mlv/OpenJPH/' \
+  ../desktop_src/src/ "$scratch/app/src/main/cpp/src/"
+rsync -a android_patches/ "$scratch/android_patches/"
+git -C "$scratch" init -q
+bash "$scratch/android_patches/apply_all.sh" --check
+bash "$scratch/android_patches/apply_all.sh"
+diff -qr --exclude='.DS_Store' \
+  "$scratch/app/src/main/cpp/src" app/src/main/cpp/src
 ```
 
-Continue with the next patch manually:
-```bash
-git apply --3way android_patches/02_dark_frame_fds.patch
-# ...etc
-```
+An empty `diff` proves the current upstream baseline plus the consolidated
+delta reproduces the Android shared-native tree byte for byte.
 
----
+## When upstream advances
 
-## Notes
+Do not force this patch onto a new revision. In an isolated scratch repository:
 
-- `01_fd_based_file_io.patch` is the largest (~25KB) because it includes
-  both Android fd changes AND the upstream Dual ISO overhaul mixed together.
-  If it conflicts heavily, consider applying it with `--3way` from the start.
+1. Seed Android-only files, then overlay the new `desktop_src/src` as above.
+2. Commit that untouched baseline.
+3. Replace only the scratch `app/src/main/cpp/src/` with the reviewed Android
+   target tree.
+4. Generate one binary-safe patch with
+   `git diff --binary --full-index -- app/src/main/cpp/src`, then store it with
+   deterministic `gzip -n -9` compression as
+   `current_upstream_android_delta.patch.gz`.
+5. Regenerate both SHA-256 manifests for every file in
+   `app/src/main/cpp/src/` (excluding `.DS_Store`).
+6. Run the isolated rehearsal and the Android native build before replacing
+   the artifacts in this directory.
 
-- Patches 01 and 03–05 were generated on **2026-03-06** against commit `20558de`.
-- Patch 02 was regenerated on **2026-07-13** against the current desktop dark-frame sources.
-- Patch 06 was regenerated on **2026-07-13** against Android commit `e03ab7f`.
+Keep the previous consolidated patch in `archive/` with its upstream revision
+when rotating to a newer baseline.

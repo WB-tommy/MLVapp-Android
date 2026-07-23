@@ -18,6 +18,7 @@
 #include "../grading/desktop_processing_mapping.h"
 
 extern "C" {
+#include "../../src/mlv/llrawproc/darkframe.h"
 #include "../../src/mlv/llrawproc/llrawproc.h"
 #include "../../src/processing/raw_processing.h"
 }
@@ -28,6 +29,65 @@ static const int kCdngNamingDaVinci = 1;
 namespace {
 inline bool approximately(float value, float target, float epsilon = 1e-3f) {
   return std::fabs(value - target) < epsilon;
+}
+
+double normalize_dual_iso_ev(float value) {
+  if (!std::isfinite(value)) {
+    return 1.0;
+  }
+  return value == 1.0f
+             ? 1.0
+             : std::clamp(static_cast<double>(value), -6.0, 0.0);
+}
+
+int normalize_dual_iso_black_delta(int value) {
+  return value == -1 ? -1 : std::clamp(value, 0, 100);
+}
+
+void apply_receipt_raw_levels(mlvObject_t *video,
+                              const raw_correction_options_t &opts) {
+  if (video == nullptr || video->processing == nullptr) {
+    return;
+  }
+
+  const int bit_depth = getMlvBitdepth(video);
+  if (bit_depth <= 0 || bit_depth > 16) {
+    return;
+  }
+
+  const int maximum_level = static_cast<int>((1u << bit_depth) - 1u);
+  if (opts.dual_iso_black < 0 ||
+      opts.dual_iso_white <= opts.dual_iso_black ||
+      opts.dual_iso_white > maximum_level) {
+    return;
+  }
+
+  /* These legacy receipt fields are the clip's general RAW levels. Keep RAWI,
+   * post-demosaic processing, and per-frame DNG defaults in one transaction so
+   * Dual ISO analyzes the same level range used by live preview. */
+  pthread_mutex_lock(&video->processing_mutex);
+  setMlvBlackLevel(video, opts.dual_iso_black);
+  setMlvWhiteLevel(video, opts.dual_iso_white);
+  processingSetBlackAndWhiteLevel(video->processing, opts.dual_iso_black,
+                                  opts.dual_iso_white, bit_depth);
+  llrpResetDngBWLevels(video);
+  pthread_mutex_unlock(&video->processing_mutex);
+}
+
+int available_export_dark_frame_mode(mlvObject_t *video, int requested_mode) {
+  const int mode = std::clamp(
+      requested_mode, static_cast<int>(DF_OFF), static_cast<int>(DF_INT));
+  if (mode == DF_EXT &&
+      (video->llrawproc->dark_frame_data == nullptr ||
+       video->llrawproc->dark_frame_data_source != DF_EXT)) {
+    /* A display name is not a reopenable SAF source. Never tell Dual ISO that
+     * subtraction happened when this export object has no decoded frame. */
+    return DF_OFF;
+  }
+  if (mode == DF_INT && video->DARK.blockType[0] == '\0') {
+    return DF_OFF;
+  }
+  return mode;
 }
 
 // Helper to apply debayer mode by native ID
@@ -106,6 +166,10 @@ void reset_processing_state(mlvObject_t *video) {
 void apply_raw_correction(mlvObject_t *video,
                           const raw_correction_options_t &opts) {
 
+  /* Live receipt restore applies these levels even when the correction stack
+   * is disabled, because they also drive ordinary image normalization. */
+  apply_receipt_raw_levels(video, opts);
+
   if (!opts.enabled) {
     video->llrawproc->fix_raw = 0;
     return;
@@ -138,25 +202,43 @@ void apply_raw_correction(mlvObject_t *video,
   // Deflicker
   llrpSetDeflickerTarget(video, opts.deflicker_target);
 
-  // Dual ISO
-  llrpSetDualIsoMode(video, opts.dual_iso);
-  llrpSetDualIsoValidity(video, opts.dual_iso_forced ? 1 : 0);
-  llrpSetDualIsoInterpolationMethod(video, opts.dual_iso_interpolation);
-  llrpSetDualIsoAliasMapMode(video, opts.dual_iso_alias_map ? 1 : 0);
-  llrpSetDualIsoFullResBlendingMode(video, opts.dual_iso_fr_blending ? 1 : 0);
+  // Dark-frame changes re-arm automatic exposure matching. Apply this first
+  // so the receipt's finalized Dual ISO values remain authoritative.
+  llrpSetDarkFrameMode(
+      video, available_export_dark_frame_mode(video, opts.dark_frame_enabled));
+  // Note: An external dark-frame path must be supplied through the dedicated
+  // SAF descriptor flow; dark_frame_file_name is display metadata only here.
 
-  //        // Black and white levels
-  //        if (opts.dual_iso_white > 0) {
-  //            setMlvWhiteLevel(video, opts.dual_iso_white);
-  //        }
-  //        if (opts.dual_iso_black > 0) {
-  //            setMlvBlackLevel(video, opts.dual_iso_black);
-  //        }
+  // Apply the complete upstream Dual ISO strategy in one transaction.  Mode 2
+  // existed in older Android receipts as "Preview" even though upstream no
+  // longer implements that path; preserve those receipts as HQ mode.
+  llrpDualIsoConfig_t dual_iso_config = {};
+  dual_iso_config.mode =
+      (opts.dual_iso == DISO_20BIT || opts.dual_iso == DISO_FAST)
+          ? DISO_20BIT
+          : DISO_OFF;
+  dual_iso_config.force = opts.dual_iso_forced ? 1 : 0;
+  dual_iso_config.pattern = std::clamp(
+      opts.dual_iso_pattern, static_cast<int>(DISO_PATTERN_AUTO),
+      static_cast<int>(DISO_PATTERN_AUTO_EVERY_FRAME));
+  dual_iso_config.match_method =
+      opts.dual_iso_match_method == DISO_MATCH_HISTOGRAM
+          ? DISO_MATCH_HISTOGRAM
+          : DISO_MATCH_ISO;
+  dual_iso_config.ev_correction =
+      normalize_dual_iso_ev(opts.dual_iso_ev_correction);
+  dual_iso_config.black_delta =
+      normalize_dual_iso_black_delta(opts.dual_iso_black_delta);
+  dual_iso_config.interpolation = std::clamp(
+      opts.dual_iso_interpolation, static_cast<int>(DISOI_AMAZE),
+      static_cast<int>(DISOI_MEAN23));
+  dual_iso_config.alias_map = opts.dual_iso_alias_map ? 1 : 0;
+  dual_iso_config.fullres_blending = opts.dual_iso_fr_blending ? 1 : 0;
+  if (llrpSetDualIsoConfig(video, &dual_iso_config) != 0) {
+    __android_log_print(ANDROID_LOG_ERROR, "ExportHandler",
+                        "Rejected normalized Dual ISO export settings");
+  }
 
-  // Dark frame
-  llrpSetDarkFrameMode(video, opts.dark_frame_enabled);
-  // Note: Dark frame file path would need to be applied via
-  // llrpSetDarkFrameFile if the file is accessible during export
 }
 
 // Apply all color grading settings to the processing engine.

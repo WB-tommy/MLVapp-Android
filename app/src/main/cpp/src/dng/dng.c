@@ -502,7 +502,11 @@ int loadDngPropertiesInt(char *props_buffer, char *key, int *value)
 }
 
 /* generates the CDNG header. The result is written into dng_data struct */
-static void dng_fill_header(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_t frame_index, const char *props_filename)
+static void dng_fill_header(mlvObject_t * mlv_data,
+                            dngObject_t * dng_data,
+                            uint32_t frame_index,
+                            const char *props_filename,
+                            const llrpFrameResult_t * frame_result)
 {
     uint8_t * header = dng_data->header_buf;
     size_t position = 0;
@@ -562,10 +566,10 @@ static void dng_fill_header(mlvObject_t * mlv_data, dngObject_t * dng_data, uint
             unique_model = unique_model2;
         }
 
-        int black_level = mlv_data->llrawproc->dng_black_level;
+        int black_level = frame_result->black_level;
         loadDngPropertiesInt(props_buffer, "BlackLevel", &black_level);
 
-        int white_level = mlv_data->llrawproc->dng_white_level;
+        int white_level = frame_result->white_level;
         loadDngPropertiesInt(props_buffer, "WhiteLevel", &white_level);
 
 
@@ -671,7 +675,7 @@ static void dng_fill_header(mlvObject_t * mlv_data, dngObject_t * dng_data, uint
         int32_t wbal[6];
         get_white_balance(mlv_data->WBAL, wbal, mlv_data->IDNT.cameraModel);
 
-        uint32_t cfa_pattern = mlv_data->RAWI.raw_info.cfa_pattern;
+        uint32_t cfa_pattern = frame_result->cfa_pattern;
         if (cfa_pattern == 0) {
             cfa_pattern = 0x02010100;   // RGGB
         }
@@ -693,7 +697,7 @@ static void dng_fill_header(mlvObject_t * mlv_data, dngObject_t * dng_data, uint
             {tcNewSubFileType,              ttLong,     1,      sfMainImage},
             {tcImageWidth,                  ttLong,     1,      mlv_data->RAWI.xRes},
             {tcImageLength,                 ttLong,     1,      mlv_data->RAWI.yRes},
-            {tcBitsPerSample,               ttShort,    1,      mlv_data->llrawproc->dng_bit_depth},
+            {tcBitsPerSample,               ttShort,    1,      frame_result->output_bit_depth},
             {tcCompression,                 ttShort,    1,      (!(dng_data->raw_output_state % 2)) ? ccUncompressed : ccJPEG},
             {tcPhotometricInterpretation,   ttShort,    1,      piCFA},
             {tcFillOrder,                   ttShort,    1,      1},
@@ -910,16 +914,39 @@ static void dng_reverse_byte_order(uint16_t * input_buffer, size_t buf_size)
 static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_t frame_index, const char *prop_filename)
 {
     int ret = 0;
+    llrpFrameResult_t frame_result = {
+        .dual_iso_applied = 0,
+        .output_bit_depth = mlv_data->RAWI.raw_info.bits_per_pixel,
+        .black_level = mlv_data->RAWI.raw_info.black_level,
+        .white_level = mlv_data->RAWI.raw_info.white_level,
+        .cfa_pattern = mlv_data->RAWI.raw_info.cfa_pattern,
+    };
+
+    /* Header fields are shared with llrawproc for legacy callers.  Reset them
+     * before every frame so an original/pass-through or failed Dual ISO frame
+     * cannot inherit a previous frame's 16-bit metadata. */
+    llrpResetDngBWLevels(mlv_data);
 
     FILE *fd = mlv_data->file[mlv_data->video_index[frame_index].chunk_num];
 
     if (isMcrawLoaded(mlv_data))
     {
-        /* Use the same validated type-7 decoder policy as CPU/GPU preview.
-         * Native-CFA output preserves MCRAW's DNG semantics; low-level RAW
-         * processing is still applied below exactly as before. */
-        if (getMlvRawFrameNative(mlv_data, frame_index,
-                                 dng_data->image_buf_unpacked) != 0)
+        const uint32_t source_cfa = mlv_data->RAWI.raw_info.cfa_pattern;
+        const int supported_cfa =
+            source_cfa == 0 || source_cfa == 0x02010100 ||
+            source_cfa == 0x01000201 || source_cfa == 0x00010102 ||
+            source_cfa == 0x01020001;
+
+        /* Dual ISO and the Android CPU correction stack operate on canonical
+         * RGGB.  Normalize every supported MCRAW phase exactly as preview does
+         * and describe that effective CFA in the DNG header.  Retain native-CFA
+         * fallback for an unknown future sensor arrangement. */
+        const int decode_result = supported_cfa
+            ? getMlvRawFrameUint16(mlv_data, frame_index,
+                                   dng_data->image_buf_unpacked)
+            : getMlvRawFrameNative(mlv_data, frame_index,
+                                   dng_data->image_buf_unpacked);
+        if (decode_result != 0)
         {
 #ifndef STDOUT_SILENT
             printf("mcraw decoder: Failed to decode frame %u\n", frame_index);
@@ -928,7 +955,13 @@ static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_
         }
 
         /* apply low level raw processing to the unpacked_frame */
-        applyLLRawProcObject(mlv_data, dng_data->image_buf_unpacked, dng_data->image_size_unpacked);
+        frame_result = supported_cfa
+            ? applyLLRawProcObjectPreparedRggb(
+                mlv_data, dng_data->image_buf_unpacked,
+                dng_data->image_size_unpacked)
+            : applyLLRawProcObject(
+                mlv_data, dng_data->image_buf_unpacked,
+                dng_data->image_size_unpacked);
 
         if (dng_data->raw_output_state == COMPRESSED_RAW || dng_data->raw_output_state == COMPRESSED_ORIG)
         {
@@ -937,16 +970,31 @@ static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_
                                      &dng_data->image_size,
                                      mlv_data->RAWI.xRes,
                                      mlv_data->RAWI.yRes,
-                                     mlv_data->RAWI.raw_info.bits_per_pixel);
+                                     frame_result.output_bit_depth);
         }
         else   // uncompressed and fast pass
         {
-            dng_pack_image_bits(dng_data->image_buf,
-                                dng_data->image_buf_unpacked,
-                                mlv_data->RAWI.xRes,
-                                mlv_data->RAWI.yRes,
-                                mlv_data->RAWI.raw_info.bits_per_pixel,
-                                1);
+            if (frame_result.dual_iso_applied)
+            {
+                dng_data->image_size =
+                    dng_get_image_size(mlv_data, IMG_SIZE_UNPACKED,
+                                       frame_index);
+                memcpy(dng_data->image_buf,
+                       dng_data->image_buf_unpacked,
+                       dng_data->image_size);
+            }
+            else
+            {
+                dng_data->image_size =
+                    dng_get_image_size(mlv_data, IMG_SIZE_PACKED,
+                                       frame_index);
+                dng_pack_image_bits(dng_data->image_buf,
+                                    dng_data->image_buf_unpacked,
+                                    mlv_data->RAWI.xRes,
+                                    mlv_data->RAWI.yRes,
+                                    frame_result.output_bit_depth,
+                                    1);
+            }
         }
     }
     else
@@ -978,7 +1026,9 @@ static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_
                                            mlv_data->RAWI.raw_info.bits_per_pixel);
 
                 /* apply low level raw processing to the unpacked_frame */
-                applyLLRawProcObject(mlv_data, dng_data->image_buf_unpacked, dng_data->image_size_unpacked);
+                frame_result = applyLLRawProcObject(
+                    mlv_data, dng_data->image_buf_unpacked,
+                    dng_data->image_size_unpacked);
 
                 if(dng_data->raw_output_state == COMPRESSED_RAW)
                 {
@@ -987,18 +1037,18 @@ static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_
                                              &dng_data->image_size,
                                              mlv_data->RAWI.xRes,
                                              mlv_data->RAWI.yRes,
-                                             (llrpHQDualIso(mlv_data)) ? 16 : mlv_data->RAWI.raw_info.bits_per_pixel);
+                                             frame_result.output_bit_depth);
                 }
                 else
                 {
-                    if(!llrpHQDualIso(mlv_data))
+                    if(!frame_result.dual_iso_applied)
                     {
                         dng_data->image_size = dng_get_image_size(mlv_data, IMG_SIZE_PACKED, frame_index);
                         dng_pack_image_bits(dng_data->image_buf,
                                             dng_data->image_buf_unpacked,
                                             mlv_data->RAWI.xRes,
                                             mlv_data->RAWI.yRes,
-                                            mlv_data->RAWI.raw_info.bits_per_pixel,
+                                            frame_result.output_bit_depth,
                                             1);
                     }
                     else
@@ -1032,7 +1082,9 @@ static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_
                                       mlv_data->RAWI.raw_info.bits_per_pixel);
 
                 /* apply low level raw processing to the unpacked_frame */
-                applyLLRawProcObject(mlv_data, dng_data->image_buf_unpacked, dng_data->image_size_unpacked);
+                frame_result = applyLLRawProcObject(
+                    mlv_data, dng_data->image_buf_unpacked,
+                    dng_data->image_size_unpacked);
 
                 if(dng_data->raw_output_state == COMPRESSED_RAW)
                 {
@@ -1041,18 +1093,18 @@ static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_
                                              &dng_data->image_size,
                                              mlv_data->RAWI.xRes,
                                              mlv_data->RAWI.yRes,
-                                             (llrpHQDualIso(mlv_data)) ? 16 : mlv_data->RAWI.raw_info.bits_per_pixel);
+                                             frame_result.output_bit_depth);
                 }
                 else
                 {
-                    if(!llrpHQDualIso(mlv_data))
+                    if(!frame_result.dual_iso_applied)
                     {
                         dng_data->image_size = dng_get_image_size(mlv_data, IMG_SIZE_PACKED, frame_index);
                         dng_pack_image_bits(dng_data->image_buf,
                                             dng_data->image_buf_unpacked,
                                             mlv_data->RAWI.xRes,
                                             mlv_data->RAWI.yRes,
-                                            mlv_data->RAWI.raw_info.bits_per_pixel,
+                                            frame_result.output_bit_depth,
                                             1);
                     }
                     else
@@ -1065,7 +1117,8 @@ static int dng_get_frame(mlvObject_t * mlv_data, dngObject_t * dng_data, uint32_
         }
     }
 
-    dng_fill_header(mlv_data, dng_data, frame_index, prop_filename);
+    dng_fill_header(mlv_data, dng_data, frame_index, prop_filename,
+                    &frame_result);
     return ret;
 }
 

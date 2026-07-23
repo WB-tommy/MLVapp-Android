@@ -21,5 +21,11 @@ data class ClipPreview(
     val stretchFactorY: Float = 1.0f,
     val cameraModelId: Int = 0,
     val focusPixelMapName: String = "",
-    val isMcraw: Boolean = false
+    val isMcraw: Boolean = false,
+    /** DISO block is valid, including the equal-ISO metadata edge case. */
+    val dualIsoValid: Boolean = false,
+    /** Desktop auto-On condition: valid DISO metadata with two distinct ISOs. */
+    val dualIsoAutoEnabled: Boolean = false,
+    val originalBlackLevel: Int = 4096,
+    val originalWhiteLevel: Int = 65013
 )

@@ -36,6 +36,7 @@ int df_validate(mlvObject_t * video, char * df_filename, char * error_message);
 int df_init(mlvObject_t * video);
 void df_free(mlvObject_t * video);
 
-void df_subtract(mlvObject_t * video, uint16_t * raw_image_buff, size_t raw_image_size);
+/* Returns 1 only when a size-compatible dark frame was actually subtracted. */
+int df_subtract(mlvObject_t * video, uint16_t * raw_image_buff, size_t raw_image_size);
 
 #endif

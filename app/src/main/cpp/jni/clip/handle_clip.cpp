@@ -53,6 +53,12 @@ namespace {
             stretchY = STRETCH_V_033;
         }
     }
+
+    bool shouldAutoEnableDualIso(mlvObject_t *clip) {
+        return clip && clip->llrawproc &&
+               llrpGetDualIsoValidity(clip) == DISO_VALID &&
+               clip->llrawproc->diso1 != clip->llrawproc->diso2;
+    }
 } // namespace
 
 mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
@@ -176,6 +182,10 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
     float stretchFactorY = 0.0f;
     u_int32_t cameraModelId = 0;
     jstring focusPixelMapNameJ = nullptr;
+    jboolean dualIsoValid = JNI_FALSE;
+    jboolean dualIsoAutoEnabled = JNI_FALSE;
+    jint originalBlackLevel = 4096;
+    jint originalWhiteLevel = 65013;
 
     nativeClip = getMlvObject(env, fdArray, fileName, cacheSize, cores,
                              useParallelMcrawDecoder == JNI_TRUE, false);
@@ -189,6 +199,12 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
 
     width = getMlvWidth(nativeClip);
     height = getMlvHeight(nativeClip);
+    dualIsoValid = llrpGetDualIsoValidity(nativeClip) == DISO_VALID
+                   ? JNI_TRUE : JNI_FALSE;
+    dualIsoAutoEnabled = shouldAutoEnableDualIso(nativeClip)
+                         ? JNI_TRUE : JNI_FALSE;
+    originalBlackLevel = static_cast<jint>(getMlvBlackLevel(nativeClip));
+    originalWhiteLevel = static_cast<jint>(getMlvWhiteLevel(nativeClip));
 
     resolveStretchFactors(nativeClip, stretchFactorX, stretchFactorY);
 
@@ -303,7 +319,9 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
     result = env->NewObject(cache.clipPreviewDataClass, cache.clipPreviewCtor,
                             width, height, bitmap, static_cast<jlong>(finalGuid),
                             stretchFactorX, stretchFactorY, cameraModelId,
-                            focusPixelMapNameJ);
+                            focusPixelMapNameJ, dualIsoValid,
+                            dualIsoAutoEnabled, originalBlackLevel,
+                            originalWhiteLevel);
     if (!result) {
         __android_log_print(ANDROID_LOG_ERROR, kJniTag,
                             "Failed to instantiate ClipPreviewData");
@@ -389,6 +407,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
         const int disoVal = static_cast<int>(getMlv2ndIso(nativeClip));
         const bool dualIsoValid =
                 (llrpGetDualIsoValidity(nativeClip) == DISO_VALID);
+        const bool dualIsoAutoEnabled = shouldAutoEnableDualIso(nativeClip);
         const int losslessBpp = static_cast<int>(getLosslessBpp(nativeClip));
         const char *compression =
                 reinterpret_cast<const char *>(getMlvCompression(nativeClip));
@@ -432,9 +451,10 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
                 cache.clipMetaDataClass, cache.clipMetaDataCtor,
                 reinterpret_cast<jlong>(wrapper), jCamera, jLens, frames, fps,
                 focalLengthMm, shutterUs, apertureHundredths, iso, disoVal,
-                dualIsoValid, losslessBpp, jCompression, year, month, day, hour, min,
-                sec, hasAudio, audioChannels, audioSampleRate, blackLevel, whiteLevel,
-                whiteBalanceKelvin, whiteBalanceTint,
+                dualIsoValid, dualIsoAutoEnabled, losslessBpp, jCompression,
+                year, month, day, hour, min, sec, hasAudio, audioChannels,
+                audioSampleRate, blackLevel, whiteLevel, whiteBalanceKelvin,
+                whiteBalanceTint,
                 isMcrawLoaded(nativeClip));
 
         env->DeleteLocalRef(jCamera);

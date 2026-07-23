@@ -105,6 +105,14 @@ static void parse_raw_correction(JNIEnv *env, jobject rawCorrectionObj,
   out.dual_iso = get_int_field(env, rawCorrectionObj, cls, "dualIso");
   out.dual_iso_forced =
       get_bool_field(env, rawCorrectionObj, cls, "dualIsoForced");
+  out.dual_iso_pattern =
+      get_int_field(env, rawCorrectionObj, cls, "dualIsoPattern");
+  out.dual_iso_match_method =
+      get_int_field(env, rawCorrectionObj, cls, "dualIsoMatchMethod");
+  out.dual_iso_ev_correction =
+      get_float_field(env, rawCorrectionObj, cls, "dualIsoEvCorrection");
+  out.dual_iso_black_delta =
+      get_int_field(env, rawCorrectionObj, cls, "dualIsoBlackDelta");
   out.dual_iso_interpolation =
       get_int_field(env, rawCorrectionObj, cls, "dualIsoInterpolation");
   out.dual_iso_alias_map =

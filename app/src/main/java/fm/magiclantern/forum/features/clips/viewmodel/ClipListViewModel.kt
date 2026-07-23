@@ -406,7 +406,11 @@ class ClipListViewModel @Inject constructor(
                 fileNames = fileNames,
                 cameraModelId = current.cameraModelId.takeIf { it != 0 } ?: primary.cameraModelId,
                 focusPixelMapName = current.focusPixelMapName.ifBlank { primary.focusPixelMapName },
-                isMcraw = current.isMcraw || primary.isMcraw
+                isMcraw = current.isMcraw || primary.isMcraw,
+                dualIsoValid = primary.dualIsoValid,
+                dualIsoAutoEnabled = primary.dualIsoAutoEnabled,
+                originalBlackLevel = primary.originalBlackLevel,
+                originalWhiteLevel = primary.originalWhiteLevel
             )
             return PreviewMergeResult(
                 clips = existing.toMutableList().apply { set(index, updated) },
@@ -430,7 +434,11 @@ class ClipListViewModel @Inject constructor(
             stretchFactorY = primary.stretchFactorY.takeIf { it > 0f } ?: 1.0f,
             cameraModelId = primary.cameraModelId,
             focusPixelMapName = primary.focusPixelMapName,
-            isMcraw = primary.isMcraw
+            isMcraw = primary.isMcraw,
+            dualIsoValid = primary.dualIsoValid,
+            dualIsoAutoEnabled = primary.dualIsoAutoEnabled,
+            originalBlackLevel = primary.originalBlackLevel,
+            originalWhiteLevel = primary.originalWhiteLevel
         )
         return PreviewMergeResult(
             clips = existing + newPreview,

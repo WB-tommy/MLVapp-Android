@@ -4,7 +4,9 @@ import fm.magiclantern.forum.domain.model.ClipGradingData
 import fm.magiclantern.forum.domain.model.ClipPreview
 import fm.magiclantern.forum.domain.model.ColorGradingSettings
 import fm.magiclantern.forum.domain.model.DebayerAlgorithm
+import fm.magiclantern.forum.domain.model.DualIsoSettingsContract
 import fm.magiclantern.forum.domain.model.RawCorrectionSettings
+import fm.magiclantern.forum.domain.model.normalizedForExport
 import fm.magiclantern.forum.features.export.model.ExportClipPayload
 import fm.magiclantern.forum.utils.sortedByMlvFileRole
 
@@ -37,7 +39,8 @@ object ExportPayloadBuilder {
                     stretchFactorX = clip.stretchFactorX,
                     stretchFactorY = clip.stretchFactorY,
                     debayerMode = grading?.debayerMode ?: DebayerAlgorithm.AMAZE,
-                    rawCorrection = grading?.rawCorrection ?: RawCorrectionSettings(),
+                    rawCorrection = (grading?.rawCorrection ?: clip.defaultRawCorrection())
+                        .normalizedForExport(),
                     colorGrading = grading?.colorGrading ?: ColorGradingSettings(),
                     cutIn = grading?.cutIn ?: 1,
                     cutOut = grading?.cutOut ?: 0
@@ -45,6 +48,17 @@ object ExportPayloadBuilder {
             )
         }
     }
+
+    /** Seed never-opened batch clips from metadata gathered with the thumbnail. */
+    private fun ClipPreview.defaultRawCorrection() = RawCorrectionSettings(
+        dualIso = if (dualIsoAutoEnabled) {
+            DualIsoSettingsContract.MODE_HQ
+        } else {
+            DualIsoSettingsContract.MODE_OFF
+        },
+        dualIsoBlack = originalBlackLevel,
+        dualIsoWhite = originalWhiteLevel
+    )
 
     fun clipDisplayName(clip: ClipPreview): String {
         if (clip.displayName.isNotBlank()) return clip.displayName

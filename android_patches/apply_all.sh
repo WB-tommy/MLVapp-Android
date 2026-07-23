@@ -1,88 +1,120 @@
-#!/bin/bash
-# =============================================================================
-# apply_all.sh — Apply all Android-specific patches after an upstream sync
-#
-# Usage (run from MLVapp_android/ directory):
-#   bash android_patches/apply_all.sh
-#
-# If a patch fails due to upstream conflict, use --3way for that patch:
-#   git apply --3way android_patches/01_fd_based_file_io.patch
-# Then resolve conflict markers manually, then continue with the next patch.
-# =============================================================================
+#!/usr/bin/env bash
+# Apply the current upstream -> Android shared-native delta as one transaction.
 
-set -e
-PATCH_DIR="$(dirname "$0")"
-FAILED=()
-SKIPPED=()
-STATUS=0
+set -euo pipefail
 
-apply_patch() {
-    local num="$1"
-    local name="$2"
-    local file="$PATCH_DIR/${num}_${name}.patch"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
+PATCH_ARCHIVE="$SCRIPT_DIR/current_upstream_android_delta.patch.gz"
+BASE_MANIFEST="$SCRIPT_DIR/current_upstream_base.sha256"
+RESULT_MANIFEST="$SCRIPT_DIR/current_android_result.sha256"
+CHECK_ONLY=0
+PATCH_FILE=""
 
-    echo ""
-    echo "──────────────────────────────────────────"
-    echo "  Applying ${num}_${name}.patch ..."
-    echo "──────────────────────────────────────────"
-
-    if [ ! -f "$file" ]; then
-        echo "  [SKIP] File not found: $file"
-        SKIPPED+=("$file")
-        return
-    fi
-
-    if [ ! -s "$file" ]; then
-        echo "  [SKIP] Empty patch (no changes)"
-        SKIPPED+=("$file")
-        return
-    fi
-
-    if git apply --check "$file" 2>/dev/null; then
-        git apply "$file"
-        echo "  [OK]"
-    else
-        echo "  [CONFLICT] Clean apply failed — retrying with 3-way merge..."
-        if git apply --3way "$file"; then
-            echo "  [OK via 3-way merge — check for conflict markers!]"
-        else
-            echo "  [FAILED] Manual resolution required."
-            echo "  Run: git apply --3way $file"
-            FAILED+=("$file")
-        fi
+cleanup() {
+    if [[ -n "$PATCH_FILE" ]]; then
+        rm -f "$PATCH_FILE"
     fi
 }
+trap cleanup EXIT
 
-echo ""
-echo "============================================="
-echo "  MLVapp Android Patch Applicator"
-echo "  $(date)"
-echo "============================================="
+usage() {
+    cat <<'EOF'
+Usage: bash android_patches/apply_all.sh [--check]
 
-# Apply in dependency order
-apply_patch "01" "fd_based_file_io"    # video_mlv.c/h, mcraw.c/h
-apply_patch "02" "dark_frame_fds"       # SAF descriptor + retained dark-frame state
-apply_patch "03" "save_dng_fd"          # dng.c/h
-apply_patch "04" "cmake_fixes"          # librtprocess/src/CMakeLists.txt
-apply_patch "05" "header_fixes"         # image_profile.h, processing.c
-apply_patch "06" "raw_gpu_decode"       # Corrected RAW/llrawproc playback + shared type-7 row decoder
+  --check  Validate the exact upstream baseline and patch applicability only.
 
-echo ""
-echo "============================================="
-if [ ${#FAILED[@]} -eq 0 ] && [ ${#SKIPPED[@]} -eq 0 ]; then
-    echo "  All patches applied successfully!"
-elif [ ${#FAILED[@]} -eq 0 ]; then
-    echo "  Done. ${#SKIPPED[@]} patch(es) skipped (empty or missing)."
-else
-    STATUS=1
-    echo "  Done with ${#FAILED[@]} failure(s). Manual resolution needed:"
-    for f in "${FAILED[@]}"; do
-        echo "    - $f"
-    done
-    echo ""
-    echo "  For each failed patch:"
-    echo "    git apply --3way <patch_file>"
-    echo "  Then resolve conflicts and: git add <file>"
+The script is intentionally strict and does not attempt a 3-way merge. It
+either applies the consolidated patch cleanly or leaves the tree unchanged.
+EOF
+}
+
+if [[ "$#" -gt 1 ]]; then
+    usage >&2
+    exit 2
 fi
-echo "============================================="
-exit "$STATUS"
+
+case "${1:-}" in
+    "") ;;
+    --check) CHECK_ONLY=1 ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+esac
+
+for artifact in "$PATCH_ARCHIVE" "$BASE_MANIFEST" "$RESULT_MANIFEST"; do
+    if [[ ! -s "$artifact" ]]; then
+        echo "Missing patch artifact: $artifact" >&2
+        exit 1
+    fi
+done
+
+if ! command -v gzip >/dev/null 2>&1; then
+    echo "gzip is required to read $PATCH_ARCHIVE" >&2
+    exit 1
+fi
+PATCH_FILE="$(mktemp "${TMPDIR:-/tmp}/mlv-android-delta.XXXXXX.patch")"
+gzip -dc "$PATCH_ARCHIVE" > "$PATCH_FILE"
+if [[ ! -s "$PATCH_FILE" ]]; then
+    echo "Consolidated patch archive is empty: $PATCH_ARCHIVE" >&2
+    exit 1
+fi
+
+check_manifest() {
+    local manifest="$1"
+    local expected_files
+    local actual_files
+    local status=0
+    expected_files="$(mktemp "${TMPDIR:-/tmp}/mlv-patch-expected.XXXXXX")"
+    actual_files="$(mktemp "${TMPDIR:-/tmp}/mlv-patch-actual.XXXXXX")"
+
+    if command -v shasum >/dev/null 2>&1; then
+        (cd "$REPO_ROOT" && shasum -a 256 -c "$manifest") || status=1
+    elif command -v sha256sum >/dev/null 2>&1; then
+        (cd "$REPO_ROOT" && sha256sum -c "$manifest") || status=1
+    else
+        echo "Neither shasum nor sha256sum is available." >&2
+        status=1
+    fi
+
+    awk '{print $2}' "$manifest" | LC_ALL=C sort > "$expected_files"
+    (
+        cd "$REPO_ROOT"
+        find app/src/main/cpp/src -type f ! -name .DS_Store -print | LC_ALL=C sort
+    ) > "$actual_files"
+    cmp -s "$expected_files" "$actual_files" || status=1
+
+    rm -f "$expected_files" "$actual_files"
+    return "$status"
+}
+
+if check_manifest "$RESULT_MANIFEST" >/dev/null 2>&1; then
+    echo "Android shared-native delta is already applied and verified."
+    exit 0
+fi
+
+if ! check_manifest "$BASE_MANIFEST" >/dev/null 2>&1; then
+    echo "Shared-native files do not match the supported upstream baseline" >&2
+    echo "or the verified Android result. No files were changed." >&2
+    echo >&2
+    echo "Expected desktop upstream: 877dea2cb9413bd0542abb622af517cf12db63d3" >&2
+    echo "Re-run the documented isolated overlay, or regenerate this delta" >&2
+    echo "for the new upstream revision. Do not force a 3-way apply." >&2
+    exit 1
+fi
+
+git -C "$REPO_ROOT" apply --check --whitespace=nowarn "$PATCH_FILE"
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+    echo "Upstream baseline verified; consolidated patch applies cleanly."
+    exit 0
+fi
+
+git -C "$REPO_ROOT" apply --whitespace=nowarn "$PATCH_FILE"
+
+if ! check_manifest "$RESULT_MANIFEST" >/dev/null 2>&1; then
+    echo "Patch applied, but result verification failed." >&2
+    echo "Stop and inspect the touched shared-native files." >&2
+    exit 1
+fi
+
+echo "Consolidated Android shared-native delta applied and verified."

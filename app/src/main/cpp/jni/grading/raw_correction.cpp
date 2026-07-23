@@ -2,6 +2,9 @@
 #include "../utils.h"
 #include "desktop_processing_mapping.h"
 #include "../../src/mlv/video_mlv.h"
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <jni.h>
 #include <mutex>
 #include <unistd.h>
@@ -32,6 +35,43 @@ static JniClipWrapper *getWrapperFromHandle(jlong handle) {
 
 static int clampRawSetting(int value, int minimum, int maximum) {
     return value < minimum ? minimum : (value > maximum ? maximum : value);
+}
+
+static bool finiteJFloat(jfloat value) {
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&bits, &value, sizeof(bits));
+    return (bits & UINT32_C(0x7f800000)) != UINT32_C(0x7f800000);
+}
+
+static llrpDualIsoConfig_t makeDualIsoConfig(
+        jint mode, jboolean forced, jint pattern, jint matchMethod,
+        jfloat evCorrection, jint blackDelta, jint interpolation,
+        jboolean aliasMap, jboolean fullResBlending) {
+    llrpDualIsoConfig_t config = {};
+    config.mode = mode == DISO_OFF ? DISO_OFF : DISO_20BIT;
+    config.force = forced == JNI_TRUE ? 1 : 0;
+    config.pattern = clampRawSetting(
+            pattern, static_cast<int>(DISO_PATTERN_AUTO),
+            static_cast<int>(DISO_PATTERN_AUTO_EVERY_FRAME));
+    config.match_method = clampRawSetting(
+            matchMethod, static_cast<int>(DISO_MATCH_ISO),
+            static_cast<int>(DISO_MATCH_HISTOGRAM));
+    if (!finiteJFloat(evCorrection) || evCorrection == 1.0f) {
+        config.ev_correction = 1.0;
+    } else {
+        config.ev_correction = std::fmax(
+                -6.0, std::fmin(0.0, static_cast<double>(evCorrection)));
+    }
+    config.black_delta = blackDelta == -1
+            ? -1
+            : clampRawSetting(blackDelta, 0, 100);
+    config.interpolation = clampRawSetting(
+            interpolation, static_cast<int>(DISOI_AMAZE),
+            static_cast<int>(DISOI_MEAN23));
+    config.alias_map = aliasMap == JNI_TRUE ? 1 : 0;
+    config.fullres_blending = fullResBlending == JNI_TRUE ? 1 : 0;
+    return config;
 }
 
 static void resetProcessingLevelsToRaw(mlvObject_t *video) {
@@ -94,7 +134,9 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_applyRawCorrectio
         jint verticalStripes, jint focusPixels, jint fpiMethod,
         jint badPixels, jint bpsMethod, jint bpiMethod, jint chromaSmooth,
         jboolean patternNoise, jint deflickerTarget, jint dualIso,
-        jboolean dualIsoForced, jint dualIsoInterpolation,
+        jboolean dualIsoForced, jint dualIsoPattern,
+        jint dualIsoMatchMethod, jfloat dualIsoEvCorrection,
+        jint dualIsoBlackDelta, jint dualIsoInterpolation,
         jboolean dualIsoAliasMap, jboolean dualIsoFrBlending,
         jint rawBlackLevel, jint rawWhiteLevel, jint darkFrameMode) {
     JniClipWrapper *wrapper = getWrapperFromHandle(handle);
@@ -125,14 +167,6 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_applyRawCorrectio
             clampRawSetting(chromaSmooth, CS_OFF, CS_5x5));
     llrpSetPatternNoiseMode(video, patternNoise == JNI_TRUE ? PN_ON : PN_OFF);
     llrpSetDeflickerTarget(video, deflickerTarget < 0 ? 0 : deflickerTarget);
-    llrpSetDualIsoMode(video,
-            clampRawSetting(dualIso, DISO_OFF, DISO_FAST));
-    llrpSetDualIsoInterpolationMethod(video,
-            clampRawSetting(dualIsoInterpolation, DISOI_AMAZE, DISOI_MEAN23));
-    llrpSetDualIsoAliasMapMode(video, dualIsoAliasMap == JNI_TRUE ? 1 : 0);
-    llrpSetDualIsoFullResBlendingMode(
-            video, dualIsoFrBlending == JNI_TRUE ? 1 : 0);
-    llrpSetDualIsoValidity(video, dualIsoForced == JNI_TRUE ? 1 : 0);
     const int appliedDarkFrameMode = availableDarkFrameMode(video, darkFrameMode);
     llrpSetDarkFrameMode(video, appliedDarkFrameMode);
 
@@ -148,6 +182,14 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_applyRawCorrectio
                                             rawWhiteLevel,
                                             bitDepth);
         }
+    }
+
+    const llrpDualIsoConfig_t dualIsoConfig = makeDualIsoConfig(
+            dualIso, dualIsoForced, dualIsoPattern, dualIsoMatchMethod,
+            dualIsoEvCorrection, dualIsoBlackDelta, dualIsoInterpolation,
+            dualIsoAliasMap, dualIsoFrBlending);
+    if (llrpSetDualIsoConfig(video, &dualIsoConfig) != 0) {
+        LOGE(RAW_TAG, "applyRawCorrectionSettings: Invalid Dual ISO state");
     }
 
     llrpResetDngBWLevels(video);
@@ -390,10 +432,81 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setVerticalStripe
     resetMlvCachedFrame(video);
 }
 
-/**
- * Set dual ISO mode
- * JNI: setDualIsoMode(J, I)V
- */
+/** Apply the complete Dual ISO control state as one render-serialized update. */
+extern "C" JNIEXPORT void JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_configureDualIso(
+        JNIEnv * /*env*/, jobject /*this*/, jlong handle, jint mode,
+        jboolean forced, jint pattern, jint matchMethod, jfloat evCorrection,
+        jint blackDelta, jint interpolation, jboolean aliasMap,
+        jboolean fullResBlending) {
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "configureDualIso: Invalid wrapper");
+        return;
+    }
+    std::lock_guard<std::mutex> renderLock(wrapper->render_mutex);
+    mlvObject_t *video = wrapper->mlv_object;
+    if (!video || !video->llrawproc || !video->processing) {
+        LOGE(RAW_TAG, "configureDualIso: Invalid MLV processing state");
+        return;
+    }
+
+    const llrpDualIsoConfig_t config = makeDualIsoConfig(
+            mode, forced, pattern, matchMethod, evCorrection, blackDelta,
+            interpolation, aliasMap, fullResBlending);
+    if (llrpSetDualIsoConfig(video, &config) != 0) {
+        LOGE(RAW_TAG, "configureDualIso: Invalid Dual ISO state");
+        return;
+    }
+
+    /* Restricted-range processing can change the shared normalization pair.
+     * Reconfiguration starts from the current RAW/user levels. */
+    resetProcessingLevelsToRaw(video);
+    resetMlvCache(video);
+    resetMlvCachedFrame(video);
+}
+
+/** Snapshot the finalized state produced by the most recently processed frame. */
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_getDualIsoState(
+        JNIEnv *env, jobject /*this*/, jlong handle) {
+    JniClipWrapper *wrapper = getWrapperFromHandle(handle);
+    if (!wrapper) {
+        LOGE(RAW_TAG, "getDualIsoState: Invalid wrapper");
+        return nullptr;
+    }
+    std::unique_lock<std::mutex> renderLock(
+            wrapper->render_mutex, std::try_to_lock);
+    if (!renderLock.owns_lock()) {
+        return nullptr;
+    }
+    mlvObject_t *video = wrapper->mlv_object;
+    llrpDualIsoConfig_t state = {};
+    if (!video || pthread_mutex_trylock(&video->processing_mutex) != 0) {
+        return nullptr;
+    }
+    const int stateResult = llrpGetDualIsoConfig(video, &state);
+    pthread_mutex_unlock(&video->processing_mutex);
+    if (stateResult != 0) {
+        LOGE(RAW_TAG, "getDualIsoState: Invalid MLV processing state");
+        return nullptr;
+    }
+
+    const jfloat values[5] = {
+        static_cast<jfloat>(state.last_frame_applied),
+        static_cast<jfloat>(state.pattern),
+        static_cast<jfloat>(state.match_method),
+        static_cast<jfloat>(state.ev_correction),
+        static_cast<jfloat>(state.black_delta),
+    };
+    jfloatArray result = env->NewFloatArray(5);
+    if (result != nullptr) {
+        env->SetFloatArrayRegion(result, 0, 5, values);
+    }
+    return result;
+}
+
+/** Compatibility setter for callers that only toggle the HQ mode. */
 extern "C" JNIEXPORT void JNICALL
 Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoMode(
         JNIEnv *env, jobject /* this */, jlong handle, jint mode) {
@@ -409,8 +522,10 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoMode(
         return;
     }
 
-    // Mode: 0=Off, 1=On, 2=Preview
-    llrpSetDualIsoMode(video, mode);
+    llrpDualIsoConfig_t config = {};
+    if (llrpGetDualIsoConfig(video, &config) != 0) return;
+    config.mode = mode == DISO_OFF ? DISO_OFF : DISO_20BIT;
+    llrpSetDualIsoConfig(video, &config);
     resetProcessingLevelsToRaw(video);
     resetMlvCache(video);
     resetMlvCachedFrame(video);
@@ -435,7 +550,16 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoForced(
         return;
     }
 
-    llrpSetDualIsoValidity(video, force ? 1 : 0);
+    llrpDualIsoConfig_t config = {};
+    if (llrpGetDualIsoConfig(video, &config) != 0) return;
+    config.force = force == JNI_TRUE ? 1 : 0;
+    config.pattern = DISO_PATTERN_AUTO;
+    config.match_method = config.force
+            ? DISO_MATCH_HISTOGRAM
+            : DISO_MATCH_ISO;
+    config.ev_correction = 1.0;
+    config.black_delta = -1;
+    llrpSetDualIsoConfig(video, &config);
     /* A forced restricted-range frame can scale the processing levels. When
      * force is removed from a clip without valid DISO metadata, reset them
      * immediately so corrected-Bayer metadata cannot remain stale. */
@@ -463,8 +587,12 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoInterpo
         return;
     }
 
-    // Interpolation: 0=Amaze, 1=Mean
-    llrpSetDualIsoInterpolationMethod(video, interpolation);
+    llrpDualIsoConfig_t config = {};
+    if (llrpGetDualIsoConfig(video, &config) != 0) return;
+    config.interpolation = clampRawSetting(
+            interpolation, static_cast<int>(DISOI_AMAZE),
+            static_cast<int>(DISOI_MEAN23));
+    llrpSetDualIsoConfig(video, &config);
     resetMlvCache(video);
     resetMlvCachedFrame(video);
 }
@@ -488,8 +616,10 @@ Java_fm_magiclantern_forum_nativeInterface_RawCorrectionNative_setDualIsoAliasMa
         return;
     }
 
-    // Interpolation: 0=Amaze, 1=Mean
-    llrpSetDualIsoAliasMapMode(video, isEnabled);
+    llrpDualIsoConfig_t config = {};
+    if (llrpGetDualIsoConfig(video, &config) != 0) return;
+    config.alias_map = isEnabled == JNI_TRUE ? 1 : 0;
+    llrpSetDualIsoConfig(video, &config);
     resetMlvCache(video);
     resetMlvCachedFrame(video);
 }

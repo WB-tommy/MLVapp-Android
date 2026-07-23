@@ -11,8 +11,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import fm.magiclantern.forum.domain.model.DualIsoSettingsContract
 import fm.magiclantern.forum.domain.model.RawCorrectionSettings
 import fm.magiclantern.forum.features.grading.viewmodel.GradingViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * Raw Correction Area UI Component
@@ -21,6 +26,7 @@ import fm.magiclantern.forum.features.grading.viewmodel.GradingViewModel
  * Simplified signature - no more onStateChange callback,
  * ViewModel handles all state updates.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RawCorrectionArea(
     state: RawCorrectionSettings,
@@ -44,6 +50,15 @@ fun RawCorrectionArea(
     val originalBlackLevel by gradingViewModel.originalBlackLevel.collectAsState()
     val originalWhiteLevel by gradingViewModel.originalWhiteLevel.collectAsState()
     val hasClipLoaded by gradingViewModel.hasClipLoaded.collectAsState()
+    val resolvedDualIso by gradingViewModel.resolvedDualIsoValues.collectAsState()
+
+    LaunchedEffect(isExpanded, state.dualIso, hasClipLoaded) {
+        if (!isExpanded || state.dualIso <= 0 || !hasClipLoaded) return@LaunchedEffect
+        while (isActive) {
+            gradingViewModel.refreshResolvedDualIsoValues()
+            delay(350)
+        }
+    }
 
     // Local state for text fields (updates immediately for UI responsiveness)
     var blackLevelText by remember { mutableStateOf(state.dualIsoBlack.toString()) }
@@ -256,8 +271,8 @@ fun RawCorrectionArea(
                 // Dual ISO
                 RawCorrectionSection(title = "Dual ISO") {
                     RadioButtonGroup(
-                        options = listOf("Off", "On", "Preview"),
-                        selectedIndex = state.dualIso,
+                        options = listOf("Off", "On"),
+                        selectedIndex = if (state.dualIso == 0) 0 else 1,
                         onSelectionChange = { gradingViewModel.setDualISO(it) }
                     )
 
@@ -283,12 +298,61 @@ fun RawCorrectionArea(
                         }
 
                         Text(
+                            "Horizontal Pattern",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                        DualIsoPatternDropdown(
+                            selectedPattern = state.dualIsoPattern,
+                            resolvedPattern = resolvedDualIso?.pattern,
+                            onPatternSelected = gradingViewModel::setDualISOPattern
+                        )
+
+                        Text(
+                            "Match Exposures By",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                        RadioButtonGroup(
+                            options = listOf("ISO", "Histogram"),
+                            selectedIndex = if (
+                                state.dualIsoMatchMethod ==
+                                DualIsoSettingsContract.MATCH_HISTOGRAM
+                            ) 1 else 0,
+                            onSelectionChange = { index ->
+                                gradingViewModel.setDualISOMatchMethod(index + 1)
+                            },
+                            isOptionEnabled = { index ->
+                                !state.dualIsoForced || index == 1
+                            }
+                        )
+                        if (state.dualIsoForced) {
+                            Text(
+                                "Forced Dual ISO uses histogram matching.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        DualIsoEvCorrectionControl(
+                            value = state.dualIsoEvCorrection,
+                            resolvedAutoValue = resolvedDualIso?.evCorrection,
+                            onValueCommitted = gradingViewModel::setDualISOEvCorrection
+                        )
+
+                        DualIsoBlackDeltaControl(
+                            value = state.dualIsoBlackDelta,
+                            resolvedAutoValue = resolvedDualIso?.blackDelta,
+                            onValueCommitted = gradingViewModel::setDualISOBlackDelta
+                        )
+
+                        Text(
                             "Interpolation Method",
                             style = MaterialTheme.typography.labelMedium,
                             modifier = Modifier.padding(top = 8.dp)
                         )
                         RadioButtonGroup(
-                            options = listOf("Amaze", "Mean"),
+                            options = listOf("AMaZE", "Mean 2/3"),
                             selectedIndex = state.dualIsoInterpolation,
                             onSelectionChange = { gradingViewModel.setDualISOInterpolation(it) }
                         )
@@ -455,6 +519,223 @@ fun RawCorrectionArea(
     }
 }
 
+private val dualIsoPatternLabels = listOf(
+    "(Auto Detect)",
+    "HIGH-HIGH-low-low",
+    "HIGH-low-low-HIGH",
+    "low-low-HIGH-HIGH",
+    "low-HIGH-HIGH-low",
+    "Auto Detect Every Frame"
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DualIsoPatternDropdown(
+    selectedPattern: Int,
+    resolvedPattern: Int?,
+    onPatternSelected: (Int) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = selectedPattern.coerceIn(
+        DualIsoSettingsContract.PATTERN_FIRST,
+        DualIsoSettingsContract.PATTERN_LAST
+    )
+    val displayedPattern = resolvedPattern?.takeIf {
+        selected == DualIsoSettingsContract.PATTERN_AUTO &&
+            it in 1 until DualIsoSettingsContract.PATTERN_AUTO_EVERY_FRAME
+    }
+    val selectedLabel = if (displayedPattern != null) {
+        "${dualIsoPatternLabels[selected]} · ${dualIsoPatternLabels[displayedPattern]}"
+    } else {
+        dualIsoPatternLabels[selected]
+    }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            trailingIcon = {
+                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+            },
+            modifier = Modifier
+                .menuAnchor(
+                    type = ExposedDropdownMenuAnchorType.PrimaryNotEditable,
+                    enabled = true
+                )
+                .fillMaxWidth()
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            dualIsoPatternLabels.forEachIndexed { index, label ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = {
+                        onPatternSelected(index)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DualIsoEvCorrectionControl(
+    value: Float,
+    resolvedAutoValue: Float?,
+    onValueCommitted: (Float) -> Unit
+) {
+    val automatic = value == DualIsoSettingsContract.EV_AUTO
+    val resolvedManualSeed = resolvedAutoValue?.takeIf {
+        it.isFinite() && it in DualIsoSettingsContract.EV_MIN..DualIsoSettingsContract.EV_MAX
+    }
+    var pendingValue by remember(value, resolvedManualSeed) {
+        mutableFloatStateOf(
+            if (automatic) resolvedManualSeed ?: DualIsoSettingsContract.EV_MANUAL_DEFAULT
+            else value.coerceIn(
+                DualIsoSettingsContract.EV_MIN,
+                DualIsoSettingsContract.EV_MAX
+            )
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Exposure Correction", style = MaterialTheme.typography.labelMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (automatic && resolvedManualSeed != null) String.format(
+                        Locale.US,
+                        "Auto: %.3f EV",
+                        resolvedManualSeed
+                    ) else if (automatic) "Auto" else String.format(
+                        Locale.US,
+                        "Manual: %.3f EV",
+                        pendingValue
+                    ),
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Switch(
+                    checked = automatic,
+                    onCheckedChange = { enabled ->
+                        onValueCommitted(
+                            if (enabled) DualIsoSettingsContract.EV_AUTO else pendingValue
+                        )
+                    },
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+        }
+        Slider(
+            value = pendingValue,
+            onValueChange = { raw ->
+                val stepsFromMin = (
+                    (raw - DualIsoSettingsContract.EV_MIN) /
+                        DualIsoSettingsContract.EV_STEP
+                    ).roundToInt()
+                pendingValue = (
+                    DualIsoSettingsContract.EV_MIN +
+                        stepsFromMin * DualIsoSettingsContract.EV_STEP
+                    ).coerceIn(
+                    DualIsoSettingsContract.EV_MIN,
+                    DualIsoSettingsContract.EV_MAX
+                )
+            },
+            onValueChangeFinished = {
+                if (!automatic && pendingValue != value) {
+                    onValueCommitted(pendingValue)
+                }
+            },
+            valueRange = DualIsoSettingsContract.EV_MIN..DualIsoSettingsContract.EV_MAX,
+            steps = 1199,
+            enabled = !automatic,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@Composable
+private fun DualIsoBlackDeltaControl(
+    value: Int,
+    resolvedAutoValue: Int?,
+    onValueCommitted: (Int) -> Unit
+) {
+    val automatic = value == DualIsoSettingsContract.BLACK_DELTA_AUTO
+    val resolvedManualSeed = resolvedAutoValue?.takeIf {
+        it in DualIsoSettingsContract.BLACK_DELTA_MIN..DualIsoSettingsContract.BLACK_DELTA_MAX
+    }
+    var pendingValue by remember(value, resolvedManualSeed) {
+        mutableIntStateOf(
+            if (automatic) resolvedManualSeed ?: DualIsoSettingsContract.BLACK_DELTA_MIN
+            else value.coerceIn(
+                DualIsoSettingsContract.BLACK_DELTA_MIN,
+                DualIsoSettingsContract.BLACK_DELTA_MAX
+            )
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Black Delta", style = MaterialTheme.typography.labelMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (automatic && resolvedManualSeed != null) {
+                        "Auto: $resolvedManualSeed"
+                    } else if (automatic) {
+                        "Auto"
+                    } else {
+                        "Manual: $pendingValue"
+                    },
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Switch(
+                    checked = automatic,
+                    onCheckedChange = { enabled ->
+                        onValueCommitted(
+                            if (enabled) DualIsoSettingsContract.BLACK_DELTA_AUTO
+                            else pendingValue
+                        )
+                    },
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+        }
+        Slider(
+            value = pendingValue.toFloat(),
+            onValueChange = { pendingValue = it.roundToInt() },
+            onValueChangeFinished = {
+                if (!automatic && pendingValue != value) {
+                    onValueCommitted(pendingValue)
+                }
+            },
+            valueRange = DualIsoSettingsContract.BLACK_DELTA_MIN.toFloat()..
+                DualIsoSettingsContract.BLACK_DELTA_MAX.toFloat(),
+            steps = 99,
+            enabled = !automatic,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
 @Composable
 private fun RawCorrectionSection(
     title: String,
@@ -479,19 +760,21 @@ fun RadioButtonGroup(
     selectedIndex: Int,
     onSelectionChange: (Int) -> Unit,
     modifier: Modifier = Modifier,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    isOptionEnabled: (Int) -> Boolean = { true }
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         options.forEachIndexed { index, option ->
+            val optionEnabled = enabled && isOptionEnabled(index)
             FilterChip(
                 selected = selectedIndex == index,
-                onClick = { if (enabled) onSelectionChange(index) },
+                onClick = { if (optionEnabled) onSelectionChange(index) },
                 label = { Text(option) },
                 modifier = Modifier.weight(1f),
-                enabled = enabled
+                enabled = optionEnabled
             )
         }
     }

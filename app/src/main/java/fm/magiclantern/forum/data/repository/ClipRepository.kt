@@ -95,7 +95,11 @@ class ClipRepository @Inject constructor(
             stretchFactorX = preview.stretchFactorX,
             stretchFactorY = preview.stretchFactorY,
             cameraModelId = preview.cameraModelId,
-            focusPixelMapName = preview.focusPixelMapName
+            focusPixelMapName = preview.focusPixelMapName,
+            dualIsoValid = preview.dualIsoValid,
+            dualIsoAutoEnabled = preview.dualIsoAutoEnabled,
+            originalBlackLevel = preview.originalBlackLevel,
+            originalWhiteLevel = preview.originalWhiteLevel
         )
     }
 
@@ -171,6 +175,7 @@ class ClipRepository @Inject constructor(
             bitDepth = nativeMetadata.losslessBpp,
             iso = nativeMetadata.iso,
             dualISO = nativeMetadata.dualIsoValid,
+            dualIsoAutoEnabled = nativeMetadata.dualIsoAutoEnabled,
             shutterUs = nativeMetadata.shutterUs,
             shutter = formatShutter(nativeMetadata.shutterUs, nativeMetadata.fps),
             aperture = aperture,
@@ -197,7 +202,11 @@ class ClipRepository @Inject constructor(
         // Update preview with loaded data
         val updatedPreview = preview.copy(
             cameraModelId = derivedCameraModelId,
-            focusPixelMapName = focusPixelMapName
+            focusPixelMapName = focusPixelMapName,
+            dualIsoValid = nativeMetadata.dualIsoValid,
+            dualIsoAutoEnabled = nativeMetadata.dualIsoAutoEnabled,
+            originalBlackLevel = nativeMetadata.originalBlackLevel,
+            originalWhiteLevel = nativeMetadata.originalWhiteLevel
         )
 
         // Auto-detect focus pixel mode for eligible clips
@@ -205,6 +214,9 @@ class ClipRepository @Inject constructor(
         val initialRawCorrection = RawCorrectionSettings(
             enabled = true,
             focusPixels = detectedFocusMode,
+            // Desktop auto-enables only when valid DISO metadata resolves to
+            // two distinct exposure ISOs.
+            dualIso = if (nativeMetadata.dualIsoAutoEnabled) 1 else 0,
             dualIsoBlack = nativeMetadata.originalBlackLevel,
             dualIsoWhite = nativeMetadata.originalWhiteLevel
         )
@@ -323,7 +335,11 @@ data class PreparedClipFile(
     val stretchFactorX: Float = 1.0f,
     val stretchFactorY: Float = 1.0f,
     val cameraModelId: Int = 0,
-    val focusPixelMapName: String = ""
+    val focusPixelMapName: String = "",
+    val dualIsoValid: Boolean = false,
+    val dualIsoAutoEnabled: Boolean = false,
+    val originalBlackLevel: Int = 4096,
+    val originalWhiteLevel: Int = 65013
 ) {
     val isMcraw: Boolean
         get() = role == MlvFileRole.Mcraw

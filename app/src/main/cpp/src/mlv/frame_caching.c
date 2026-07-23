@@ -1,7 +1,9 @@
 /* Yeas, we have another background thread */
 #include <stdio.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <pthread.h>
 
@@ -24,9 +26,6 @@
 
 void resetMlvCache(mlvObject_t * video)
 {
-    pthread_mutex_lock(&video->g_mutexFind);
-    resetMlvCachedFrame(video);
-    pthread_mutex_unlock(&video->g_mutexFind);
     mark_mlv_uncached(video);
 }
 
@@ -146,13 +145,30 @@ void setMlvRawCacheLimitFrames(mlvObject_t * video, uint64_t frameLimit)
     }
 }
 
-/* Marks all frames as not cached */
+/* Invalidates every completed cache entry and advances the generation fence.
+ * A BEING_CACHED slot remains reserved until its owning worker observes the
+ * generation change and retires it, preventing old/new workers from writing
+ * the same RGB slot concurrently. */
 void mark_mlv_uncached(mlvObject_t * video)
 {
     pthread_mutex_lock( &video->g_mutexFind );
-    for (uint64_t i = 0; i < getMlvFrames(video); ++i)
+    video->cache_generation++;
+    video->cache_next = 0;
+    resetMlvCachedFrame(video);
+    if (video->raw_frame_results != NULL)
     {
-        video->cached_frames[i] = MLV_FRAME_NOT_CACHED;
+        memset(video->raw_frame_results, 0,
+               getMlvFrames(video) * sizeof(*video->raw_frame_results));
+    }
+    if (video->cached_frames != NULL)
+    {
+        for (uint64_t i = 0; i < getMlvFrames(video); ++i)
+        {
+            if (video->cached_frames[i] != MLV_FRAME_BEING_CACHED)
+            {
+                video->cached_frames[i] = MLV_FRAME_NOT_CACHED;
+            }
+        }
     }
     /* Wake any playback thread waiting on cache_cond for a BEING_CACHED frame */
     pthread_cond_broadcast( &video->cache_cond );
@@ -168,28 +184,40 @@ void clear_mlv_cache(mlvObject_t * video)
 }
 
 /* Returns 1 on success, or 0 if all are cached */
-int find_mlv_frame_to_cache(mlvObject_t * video, uint64_t * index) /* Outputs to *index */
+int find_mlv_frame_to_cache(mlvObject_t * video, uint64_t * index,
+                            uint64_t * generation)
 {
     pthread_mutex_lock( &video->g_mutexFind );
     /* If a specific frame was requested */
-    if (video->cache_next) 
+    if (video->cache_next)
     {
-        *index = video->cache_next;
+        uint64_t requested = video->cache_next;
         video->cache_next = 0;
-        pthread_mutex_unlock( &video->g_mutexFind );
-        return 1;
-    }
-    else
-    {
-        for (uint64_t frame = 0; frame < getMlvRawCacheLimitFrames(video); ++frame)
+        if (requested < getMlvFrames(video) &&
+            requested < getMlvRawCacheLimitFrames(video) &&
+            video->cached_frames[requested] == MLV_FRAME_NOT_CACHED)
         {
-            /* Return index if it is not cached */
-            if (video->cached_frames[frame] == MLV_FRAME_NOT_CACHED)
-            {
-                *index = frame;
-                pthread_mutex_unlock( &video->g_mutexFind );
-                return 1;
-            }
+            *index = requested;
+            *generation = video->cache_generation;
+            video->cached_frames[requested] = MLV_FRAME_BEING_CACHED;
+            pthread_mutex_unlock( &video->g_mutexFind );
+            return 1;
+        }
+    }
+
+    uint64_t frame_limit = MIN(getMlvRawCacheLimitFrames(video),
+                               getMlvFrames(video));
+    for (uint64_t frame = 0; frame < frame_limit; ++frame)
+    {
+        /* Claim under the finder lock so two workers cannot choose the same
+         * slot before either marks it as in flight. */
+        if (video->cached_frames[frame] == MLV_FRAME_NOT_CACHED)
+        {
+            *index = frame;
+            *generation = video->cache_generation;
+            video->cached_frames[frame] = MLV_FRAME_BEING_CACHED;
+            pthread_mutex_unlock( &video->g_mutexFind );
+            return 1;
         }
     }
     pthread_mutex_unlock( &video->g_mutexFind );
@@ -249,16 +277,15 @@ void an_mlv_cache_thread(mlvObject_t * video)
         if (video->stop_caching) break;
 
         uint64_t cache_frame;
+        uint64_t cache_generation;
 
         /* If cache finder reurns false, it's time t stop caching */
-        if (!find_mlv_frame_to_cache(video, &cache_frame)) break;
-
-        pthread_mutex_lock( &video->g_mutexFind );
-        video->cached_frames[cache_frame] = MLV_FRAME_BEING_CACHED;
-        pthread_mutex_unlock( &video->g_mutexFind );
+        if (!find_mlv_frame_to_cache(video, &cache_frame,
+                                     &cache_generation)) break;
 
         pthread_mutex_lock( &video->cache_mutex ); //cache mutex used first time ;)
-        getMlvRawFrameFloat(video, cache_frame, imagefloat1d);
+        llrpFrameResult_t raw_result = get_mlv_raw_frame_float_result(
+            video, cache_frame, imagefloat1d);
         pthread_mutex_unlock( &video->cache_mutex );
 
         /* Single thread AMaZE */
@@ -275,11 +302,36 @@ void an_mlv_cache_thread(mlvObject_t * video)
         }
 
         pthread_mutex_lock( &video->g_mutexFind );
-        video->cached_frames[cache_frame] = MLV_FRAME_IS_CACHED;
+        int cache_published = 0;
+        int generation_current =
+            video->cache_generation == cache_generation;
+        if (video->cache_generation == cache_generation &&
+            raw_result.output_bit_depth > 0 &&
+            video->cached_frames[cache_frame] == MLV_FRAME_BEING_CACHED)
+        {
+            if (video->raw_frame_results != NULL)
+            {
+                video->raw_frame_results[cache_frame] = raw_result;
+            }
+            video->cached_frames[cache_frame] = MLV_FRAME_IS_CACHED;
+            cache_published = 1;
+        }
+        else if (video->cached_frames[cache_frame] ==
+                 MLV_FRAME_BEING_CACHED)
+        {
+            /* Invalidation deliberately kept this slot reserved. Release it
+             * without publishing the stale RGB/result pair. */
+            video->cached_frames[cache_frame] = MLV_FRAME_NOT_CACHED;
+        }
         pthread_cond_broadcast( &video->cache_cond );
         pthread_mutex_unlock( &video->g_mutexFind );
 
-        DEBUG( printf("Debayered frame %llu/%llu has been cached.\n", cache_frame+1, video->cache_limit_frames); )
+        DEBUG( if (cache_published) printf("Debayered frame %" PRIu64 "/%" PRIu64 " has been cached.\n", cache_frame+1, video->cache_limit_frames); )
+        (void)cache_published;
+
+        /* A persistent decode failure must not become a valid zero frame or
+         * spin this worker forever retrying the same slot. */
+        if (generation_current && raw_result.output_bit_depth <= 0) break;
     }
 
     free(red1d);
@@ -301,13 +353,19 @@ void get_mlv_raw_frame_debayered( mlvObject_t * video,
                                   uint64_t frame_index,
                                   float * temp_memory, 
                                   uint16_t * output_frame, 
-                                  int debayer_type ) /* 0=bilinear 1=amaze ... */
+                                  int debayer_type,
+                                  llrpFrameResult_t *frame_result ) /* 0=bilinear 1=amaze ... */
 {
     int width = getMlvWidth(video);
     int height = getMlvHeight(video);
 
     /* Get the raw data in B&W */
-    getMlvRawFrameFloat(video, frame_index, temp_memory);
+    llrpFrameResult_t raw_result = get_mlv_raw_frame_float_result(
+        video, frame_index, temp_memory);
+    if (frame_result != NULL)
+    {
+        *frame_result = raw_result;
+    }
 
     wb_convert_info_t wb_info;
 

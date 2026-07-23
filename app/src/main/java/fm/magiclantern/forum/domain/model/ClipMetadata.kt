@@ -22,6 +22,7 @@ data class ClipMetadata(
     // Exposure
     val iso: Int = 0,
     val dualISO: Boolean = false,
+    val dualIsoAutoEnabled: Boolean = false,
     val shutterUs: Int = 0,
     val shutter: String = "",
     val aperture: String = "",

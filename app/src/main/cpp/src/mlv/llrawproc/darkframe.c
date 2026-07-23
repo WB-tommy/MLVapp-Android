@@ -71,6 +71,11 @@ static void df_unload( mlvObject_t* df_mlv )
         free(df_mlv->cached_frames);
         df_mlv->cached_frames = NULL;
     }
+    if(df_mlv->raw_frame_results)
+    {
+        free(df_mlv->raw_frame_results);
+        df_mlv->raw_frame_results = NULL;
+    }
     if(df_mlv->rgb_raw_frames) free(df_mlv->rgb_raw_frames);
     if(df_mlv->rgb_raw_current_frame) free(df_mlv->rgb_raw_current_frame);
     if(df_mlv->cache_memory_block) free(df_mlv->cache_memory_block);
@@ -235,7 +240,13 @@ static int df_load_ext(mlvObject_t * video, char * error_message)
 static int df_load_int(mlvObject_t * video)
 {
     /* if DARK block is not found return error */
-    if(!video->DARK.blockType[0]) return 1;
+    if(!video->DARK.blockType[0] ||
+       video->DARK.blockSize <= sizeof(mlv_dark_hdr_t) ||
+       video->file == NULL || video->file[0] == NULL ||
+       video->main_file_mutex == NULL)
+    {
+        return 1;
+    }
     /* Allocate dark frame data buffer */
     size_t df_packed_size = video->DARK.blockSize - sizeof(mlv_dark_hdr_t);
     uint8_t * df_packed_buf = calloc(df_packed_size, 1);
@@ -247,15 +258,18 @@ static int df_load_int(mlvObject_t * video)
         return 1;
     }
     /* Load dark frame data to the allocated buffer */
+    pthread_mutex_lock(video->main_file_mutex);
     file_set_pos(video->file[0], video->dark_frame_offset, SEEK_SET);
     if ( fread(df_packed_buf, df_packed_size, 1, video->file[0]) != 1 )
     {
+        pthread_mutex_unlock(video->main_file_mutex);
 #ifndef STDOUT_SILENT
-        printf("DF: could not read frame: %s\n", video->llrawproc->dark_frame_filename);
+        printf("DF: could not read internal dark frame\n");
 #endif
         free(df_packed_buf);
         return 1;
     }
+    pthread_mutex_unlock(video->main_file_mutex);
     /* Free all data related to the dark frame if needed */
     df_free(video);
     /* Copy DARK block header */
@@ -295,14 +309,14 @@ void df_free_filename(mlvObject_t * video)
 }
 
 /* subtract dark frame from the current frame */
-void df_subtract(mlvObject_t * video, uint16_t * raw_image_buff, size_t raw_image_size)
+int df_subtract(mlvObject_t * video, uint16_t * raw_image_buff, size_t raw_image_size)
 {
     if( !video->llrawproc->dark_frame_data || (raw_image_size != video->llrawproc->dark_frame_size) )
     {
 #ifndef STDOUT_SILENT
     printf("DF: subtracting is impossible, invalid dark frame'\n\n");
 #endif
-        return;
+        return 0;
     }
 #ifndef STDOUT_SILENT
     printf("Subtracting dark frame...'\n\n");
@@ -320,6 +334,7 @@ void df_subtract(mlvObject_t * video, uint16_t * raw_image_buff, size_t raw_imag
 
         raw_image_buff[i] = COERCE( orig_val - dark_val + black_level, 0, white_level );
     }
+    return 1;
 }
 
 /* validate external dark frame file */

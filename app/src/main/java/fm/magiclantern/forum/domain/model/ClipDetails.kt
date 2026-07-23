@@ -40,6 +40,7 @@ data class ClipDetails(
     val bitDepth: Int get() = metadata.bitDepth
     val iso: Int get() = metadata.iso
     val dualISO: Boolean get() = metadata.dualISO
+    val dualIsoAutoEnabled: Boolean get() = metadata.dualIsoAutoEnabled
     val shutter: String get() = metadata.shutter
     val aperture: String get() = metadata.aperture
     val focalLength: String get() = metadata.focalLength

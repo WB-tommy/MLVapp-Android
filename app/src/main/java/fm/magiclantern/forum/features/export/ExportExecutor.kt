@@ -9,6 +9,7 @@ import androidx.documentfile.provider.DocumentFile
 import fm.magiclantern.forum.domain.model.ColorGradingSettings
 import fm.magiclantern.forum.domain.model.DebayerAlgorithm
 import fm.magiclantern.forum.domain.model.RawCorrectionSettings
+import fm.magiclantern.forum.domain.model.normalizedForExport
 import fm.magiclantern.forum.features.export.model.CdngNaming
 import fm.magiclantern.forum.features.export.model.ExportClipPayload
 import fm.magiclantern.forum.features.export.model.ExportCodec
@@ -334,7 +335,7 @@ class ExportExecutor(
             resize = resize,
             hdrBlending = hdrBlending,
             antiAliasing = antiAliasing,
-            rawCorrection = rawCorrection,
+            rawCorrection = rawCorrection.normalizedForExport(),
             colorGrading = colorGrading,
             cutIn = cutIn,
             cutOut = cutOut

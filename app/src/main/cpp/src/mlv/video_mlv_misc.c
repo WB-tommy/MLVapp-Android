@@ -57,7 +57,8 @@ void get_sub_sampling_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
             downscaled_frame[i * width + j] =
                     raw_frame[(i * downscale_factor) * raw_w + (j * downscale_factor)];
 
-    int shift_val = llrpHQDualIso(video) ? 0 : (16 - video->RAWI.raw_info.bits_per_pixel);
+    /* getMlvRawFrameUint16 returns unprocessed sensor-scale samples. */
+    int shift_val = 16 - video->RAWI.raw_info.bits_per_pixel;
 
     float *float_thumb = (float *) malloc(pixel_count * sizeof(float));
     if (!float_thumb) {
@@ -88,9 +89,19 @@ void get_sub_sampling_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
         return;
     }
 
+    llrpFrameResult_t unprocessed_result = {
+        .dual_iso_applied = 0,
+        .output_bit_depth = video->RAWI.raw_info.bits_per_pixel,
+        .black_level = video->RAWI.raw_info.black_level,
+        .white_level = video->RAWI.raw_info.white_level,
+        .cfa_pattern = video->RAWI.raw_info.cfa_pattern,
+    };
+    pthread_mutex_lock(&video->processing_mutex);
+    llrpSetProcessingDualIsoFrameResult(video, &unprocessed_result);
     applyProcessingObject(video->processing, width, height,
                           debayered_frame, processed_frame,
                           threads, 1, 0);
+    pthread_mutex_unlock(&video->processing_mutex);
 
     write_thumbnail_output(out_buffer, processed_frame, pixel_count);
 
@@ -114,7 +125,8 @@ void get_area_average_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
     float *raw_frame = (float *) malloc(raw_w * raw_h * sizeof(float));
     if (!raw_frame) return;
 
-    getMlvRawFrameFloat(video, 0, raw_frame);
+    llrpFrameResult_t thumbnail_result =
+            get_mlv_raw_frame_float_result(video, 0, raw_frame);
 
     uint16_t *debayered_frame = (uint16_t *) malloc(
             (size_t) (raw_w * raw_h * 3) * sizeof(uint16_t));
@@ -170,9 +182,23 @@ void get_area_average_downscale_thumnail(mlvObject_t *video, uint8_t *out_buffer
         return;
     }
 
+    pthread_mutex_lock(&video->processing_mutex);
+    if (thumbnail_result.output_bit_depth <= 0)
+    {
+        thumbnail_result.output_bit_depth =
+            video->RAWI.raw_info.bits_per_pixel;
+        thumbnail_result.black_level =
+            video->RAWI.raw_info.black_level;
+        thumbnail_result.white_level =
+            video->RAWI.raw_info.white_level;
+        thumbnail_result.cfa_pattern =
+            video->RAWI.raw_info.cfa_pattern;
+    }
+    llrpSetProcessingDualIsoFrameResult(video, &thumbnail_result);
     applyProcessingObject(video->processing, thumb_w, thumb_h,
                           downscaled_frame, processed_frame,
                           threads, 1, 0);
+    pthread_mutex_unlock(&video->processing_mutex);
 
     write_thumbnail_output(out_buffer, processed_frame, pixel_count);
 

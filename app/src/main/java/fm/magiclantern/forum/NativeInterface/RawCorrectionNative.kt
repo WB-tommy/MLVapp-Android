@@ -21,6 +21,10 @@ object RawCorrectionNative {
         deflickerTarget: Int,
         dualIso: Int,
         dualIsoForced: Boolean,
+        dualIsoPattern: Int,
+        dualIsoMatchMethod: Int,
+        dualIsoEvCorrection: Float,
+        dualIsoBlackDelta: Int,
         dualIsoInterpolation: Int,
         dualIsoAliasMap: Boolean,
         dualIsoFrBlending: Boolean,
@@ -87,10 +91,37 @@ object RawCorrectionNative {
     external fun setVerticalStripesMode(mlvObjectPtr: Long, mode: Int)
 
     /**
-     * Set dual ISO mode
+     * Atomically apply the complete Dual ISO state. Pattern/matching changes
+     * must be serialized together so native auto-detection can be re-armed
+     * without exposing a partially updated frame.
+     *
      * @param mlvObjectPtr Native pointer to MLV object
-     * @param mode 0=Off, 1=On, 2=Preview
+     * @param mode 0=Off, 1=HQ; legacy 2 is normalized to HQ
+     * @param pattern 0=Auto, 1..4=fixed row pattern, 5=Auto every frame
+     * @param matchMethod 1=ISO metadata, 2=histogram
+     * @param evCorrection 1.0=Auto, otherwise -6.0..0.0 EV
+     * @param blackDelta -1=Auto, otherwise 0..100
      */
+    external fun configureDualIso(
+        mlvObjectPtr: Long,
+        mode: Int,
+        forced: Boolean,
+        pattern: Int,
+        matchMethod: Int,
+        evCorrection: Float,
+        blackDelta: Int,
+        interpolation: Int,
+        aliasMap: Boolean,
+        fullResBlending: Boolean
+    )
+
+    /**
+     * Snapshot the last successfully applied frame as
+     * [applied, pattern, match method, EV correction, black delta].
+     */
+    external fun getDualIsoState(mlvObjectPtr: Long): FloatArray?
+
+    /** Compatibility setter for callers that only toggle the HQ mode. */
     external fun setDualIsoMode(
         mlvObjectPtr: Long,
         mode: Int

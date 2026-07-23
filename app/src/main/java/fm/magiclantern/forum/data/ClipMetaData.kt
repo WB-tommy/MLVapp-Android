@@ -13,6 +13,7 @@ data class ClipMetaData(
     val iso: Int,
     val dualIsoValue: Int,
     val dualIsoValid: Boolean,
+    val dualIsoAutoEnabled: Boolean,
     val losslessBpp: Int,
     val compression: String,
     val year: Int,
