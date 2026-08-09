@@ -53,6 +53,8 @@ fun VideoPlayerScreen(
     val whiteBalancePickInProgress by
         gradingViewModel.whiteBalancePickInProgress.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
+    val settledStillPreview by
+        viewModel.settledStillPreview.collectAsState()
 
     LaunchedEffect(whiteBalancePickerActive, isPlaying) {
         if (whiteBalancePickerActive && isPlaying) {
@@ -83,11 +85,12 @@ fun VideoPlayerScreen(
                         }
                     },
                     update = { glSurfaceView ->
-                        // Read both to trigger recomposition on either change
+                        // Redraw for frame, processing, renderer-policy, or settled-still changes.
                         currentFrame.let { _ -> }
                         processingVersion.let { _ -> }
                         experimentalRawGpuPreview.let { _ -> }
                         experimentalMcrawParallelDecoder.let { _ -> }
+                        settledStillPreview.let { _ -> }
                         glSurfaceView.requestRender()
                     },
                     onRelease = { glSurfaceView ->

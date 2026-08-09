@@ -1,6 +1,7 @@
 package fm.magiclantern.forum.domain.session
 
 import fm.magiclantern.forum.domain.model.ClipDetails
+import fm.magiclantern.forum.domain.model.DebayerAlgorithm
 import fm.magiclantern.forum.domain.model.ClipPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -62,6 +63,10 @@ class ActiveClipHolder @Inject constructor() {
     val cpuProcessingPreviewRequirement: StateFlow<CpuProcessingPreviewRequirement> =
         _cpuProcessingPreviewRequirement.asStateFlow()
 
+    private val _previewDebayerMode = MutableStateFlow(DebayerAlgorithm.AMAZE)
+    val previewDebayerMode: StateFlow<DebayerAlgorithm> =
+        _previewDebayerMode.asStateFlow()
+
     private val _currentCutIn = MutableStateFlow(1)
     private val _currentCutOut = MutableStateFlow(0)
     
@@ -98,6 +103,10 @@ class ActiveClipHolder @Inject constructor() {
                 (_activeClip.value != null && !processingReceiptReady)
             publishCpuProcessingRequirement(effectiveRequired)
         }
+    }
+
+    fun setPreviewDebayerMode(mode: DebayerAlgorithm) {
+        _previewDebayerMode.value = mode
     }
 
     /** Release the activation safety gate only after native receipt commit. */
@@ -141,6 +150,7 @@ class ActiveClipHolder @Inject constructor() {
         synchronized(activationLock) {
             _currentCutIn.value = 1
             _currentCutOut.value = 0
+            _previewDebayerMode.value = details.grading.debayerMode
             processingReceiptReady = false
             publishCpuProcessingRequirement(true)
             _activeClip.value = details
@@ -155,6 +165,7 @@ class ActiveClipHolder @Inject constructor() {
     fun clearActiveClip() {
         synchronized(activationLock) {
             _activeClip.value = null
+            _previewDebayerMode.value = DebayerAlgorithm.AMAZE
             processingReceiptReady = true
             publishCpuProcessingRequirement(false)
         }

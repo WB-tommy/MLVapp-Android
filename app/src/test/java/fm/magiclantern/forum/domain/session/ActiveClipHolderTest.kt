@@ -5,8 +5,11 @@ import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.graphics.colorspace.ColorSpace
 import androidx.compose.ui.graphics.colorspace.ColorSpaces
 import fm.magiclantern.forum.domain.model.ClipDetails
+import fm.magiclantern.forum.domain.model.ClipGradingData
 import fm.magiclantern.forum.domain.model.ClipMetadata
 import fm.magiclantern.forum.domain.model.ClipPreview
+import fm.magiclantern.forum.domain.model.DebayerAlgorithm
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -76,7 +79,30 @@ class ActiveClipHolderTest {
         )
     }
 
-    private fun clip(guid: Long, handle: Long): ClipDetails = ClipDetails(
+    @Test
+    fun previewDebayerModeFollowsActiveReceiptAndUpdates() {
+        val holder = ActiveClipHolder()
+        val active = clip(
+            guid = 44L,
+            handle = 505L,
+            grading = ClipGradingData(debayerMode = DebayerAlgorithm.RCD)
+        )
+
+        holder.activateClip(active)
+        assertEquals(DebayerAlgorithm.RCD, holder.previewDebayerMode.value)
+
+        holder.setPreviewDebayerMode(DebayerAlgorithm.LMMSE)
+        assertEquals(DebayerAlgorithm.LMMSE, holder.previewDebayerMode.value)
+
+        holder.clearActiveClip()
+        assertEquals(DebayerAlgorithm.AMAZE, holder.previewDebayerMode.value)
+    }
+
+    private fun clip(
+        guid: Long,
+        handle: Long,
+        grading: ClipGradingData = ClipGradingData()
+    ): ClipDetails = ClipDetails(
         preview = ClipPreview(
             guid = guid,
             displayName = "clip-$guid",
@@ -87,7 +113,8 @@ class ActiveClipHolderTest {
             height = 4
         ),
         metadata = ClipMetadata(frames = 1, originalWhiteLevel = 16383),
-        nativeHandle = handle
+        nativeHandle = handle,
+        grading = grading
     )
 
     private val testBitmap = object : ImageBitmap {

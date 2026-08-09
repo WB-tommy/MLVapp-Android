@@ -189,6 +189,7 @@ class GradingViewModel @Inject constructor(
         
         // Sync cut marks to ActiveClipHolder for PlayerViewModel playback bounds
         activeClipHolder.setCutMarks(grading.cutIn, grading.cutOut)
+        activeClipHolder.setPreviewDebayerMode(grading.debayerMode)
         activeClipHolder.setRequiresCpuProcessingPreview(
             grading.requiresCpuProcessingPreview()
         )
@@ -368,8 +369,9 @@ class GradingViewModel @Inject constructor(
         updateGrading {
             it.copy(debayerMode = mode)
         }
+        activeClipHolder.setPreviewDebayerMode(mode)
         
-        // Preview remains bilinear; this receipt value is consumed by export.
+        // Receipt selection drives export and the settled CPU preview.
     }
 
     fun setDualISO(mode: Int) {

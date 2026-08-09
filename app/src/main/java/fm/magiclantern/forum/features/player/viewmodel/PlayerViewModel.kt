@@ -14,6 +14,8 @@ import fm.magiclantern.forum.features.player.PlaybackContext
 import fm.magiclantern.forum.features.player.PlaybackEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +25,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
@@ -67,6 +70,11 @@ class PlayerViewModel @Inject constructor(
     // Playback state
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
+
+    private val _settledStillPreview = MutableStateFlow(false)
+    val settledStillPreview: StateFlow<Boolean> = _settledStillPreview
+    private var stillPreviewJob: Job? = null
+    private var stillPreviewGeneration = 0L
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
@@ -199,6 +207,13 @@ class PlayerViewModel @Inject constructor(
             settingsRepository.dropFrameMode.collectLatest { enabled ->
                 _isDropFrameMode.value = enabled
                 playbackEngine.setDropFrameMode(enabled)
+            }
+        }
+        viewModelScope.launch {
+            processingVersion.collectLatest {
+                if (!_isPlaying.value) {
+                    scheduleSettledStillPreview()
+                }
             }
         }
         val nativeCpuFallbackForCurrentVersion = combine(
@@ -340,7 +355,7 @@ class PlayerViewModel @Inject constructor(
         _currentFrame.value = 0
         _isPlaying.value = false
         
-        // CPU preview uses the same bilinear demosaic as GPU preview.
+        // Start in the fast interactive mode; the settled preview restores the receipt mode.
         applyDebayerMode(DebayerAlgorithm.BILINEAR)
         
         // Resolve cut bounds (1-based → 0-based)
@@ -365,6 +380,7 @@ class PlayerViewModel @Inject constructor(
                 effectiveEndFrame = effectiveEnd
             )
         )
+        scheduleSettledStillPreview()
     }
 
     private fun onClipDeactivated() {
@@ -372,6 +388,7 @@ class PlayerViewModel @Inject constructor(
         lastPresentedFrame.value = null
         _currentFrame.value = 0
         _isPlaying.value = false
+        cancelSettledStillPreview()
         decodeEmaUs = 0.0
         renderEmaUs = 0.0
         _averageDecodeUs.value = 0L
@@ -382,6 +399,9 @@ class PlayerViewModel @Inject constructor(
     fun setCurrentFrame(currentFrame: Int) {
         val total = totalFrames.value
         if (total <= 0) return
+        if (!_isPlaying.value) {
+            scheduleSettledStillPreview()
+        }
         val clamped = currentFrame.coerceIn(0, total - 1)
         _currentFrame.value = clamped
         if (!_isDropFrameMode.value) {
@@ -394,17 +414,20 @@ class PlayerViewModel @Inject constructor(
         val shouldPlay = !_isPlaying.value
         _isPlaying.value = shouldPlay
         if (shouldPlay) {
-            // Both CPU and GPU playback use bilinear demosaic for predictable speed.
+            cancelSettledStillPreview()
+            // Interactive preview stays bilinear for predictable playback speed.
             applyDebayerMode(DebayerAlgorithm.BILINEAR)
             playbackEngine.play()
         } else {
             playbackEngine.pause()
+            scheduleSettledStillPreview()
         }
     }
 
     fun stopPlayback() {
         playbackEngine.stop()
         _isPlaying.value = false
+        scheduleSettledStillPreview()
     }
 
     fun changeDrawingStatus(status: Boolean) {
@@ -554,6 +577,7 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         playbackEngine.stop()
+        cancelSettledStillPreview()
         // Note: Native clip handle is managed by ActiveClipHolder, not here
         super.onCleared()
     }
@@ -570,6 +594,49 @@ class PlayerViewModel @Inject constructor(
 
     private fun onEnginePlaybackStopped() {
         _isPlaying.value = false
+        scheduleSettledStillPreview()
+    }
+
+    private fun cancelSettledStillPreview() {
+        stillPreviewGeneration++
+        stillPreviewJob?.cancel()
+        stillPreviewJob = null
+        _settledStillPreview.value = false
+    }
+
+    private fun scheduleSettledStillPreview() {
+        if (_isPlaying.value) return
+        val handle = activeClip.value?.nativeHandle ?: return
+        if (handle == 0L) return
+
+        val generation = ++stillPreviewGeneration
+        stillPreviewJob?.cancel()
+        stillPreviewJob = null
+        _settledStillPreview.value = false
+        stillPreviewJob = viewModelScope.launch {
+            delay(SETTLED_STILL_DELAY_MS)
+            if (_isPlaying.value || generation != stillPreviewGeneration ||
+                activeClip.value?.nativeHandle != handle
+            ) {
+                return@launch
+            }
+
+            val receiptDebayerMode = activeClipHolder.previewDebayerMode.value
+            val configured = withContext(nativeDispatcher) {
+                runCatching {
+                    NativeLib.setDebayerMode(handle, receiptDebayerMode.nativeId)
+                }.onFailure { error ->
+                    Log.e(tag, "Could not enable settled still preview", error)
+                }.isSuccess
+            }
+            if (configured && !_isPlaying.value &&
+                generation == stillPreviewGeneration &&
+                activeClip.value?.nativeHandle == handle
+            ) {
+                _settledStillPreview.value = true
+                stillPreviewJob = null
+            }
+        }
     }
 
     private fun applyDebayerMode(mode: DebayerAlgorithm) {
@@ -584,5 +651,9 @@ class PlayerViewModel @Inject constructor(
                 NativeLib.setDebayerMode(handle, nativeId)
             }
         }
+    }
+
+    private companion object {
+        const val SETTLED_STILL_DELAY_MS = 250L
     }
 }

@@ -690,7 +690,8 @@ class MlvRenderer(
         var usedGpu = false
         var freshFrame = false
         var gpuDecoderBackend = DECODER_BACKEND_UNSET
-        val wantsGpu = viewModel.experimentalRawGpuPreview.value &&
+        val wantsGpu = !viewModel.settledStillPreview.value &&
+            viewModel.experimentalRawGpuPreview.value &&
             viewModel.isRawGpuReady(clipHandle) &&
             !viewModel.requiresCpuProcessingPreview() &&
             !viewModel.requiresRawGpuNativeCpuFallback(clipHandle, processingVersion)

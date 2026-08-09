@@ -94,6 +94,8 @@ fun FullScreenView(
         playerViewModel.experimentalRawGpuPreview.collectAsState()
     val experimentalMcrawParallelDecoder by
         playerViewModel.experimentalMcrawParallelDecoder.collectAsState()
+    val settledStillPreview by
+        playerViewModel.settledStillPreview.collectAsState()
 
     var controlsVisible by rememberSaveable(clipGUID) { mutableStateOf(true) }
     var autoHideJobKey by remember(clipGUID) { mutableLongStateOf(0L) }
@@ -135,11 +137,12 @@ fun FullScreenView(
                         }
                     },
                     update = { glSurfaceView ->
-                        // Read both to trigger recomposition on either change
+                        // Redraw for frame, processing, renderer-policy, or settled-still changes.
                         currentFrame.let { _ -> }
                         processingVersion.let { _ -> }
                         experimentalRawGpuPreview.let { _ -> }
                         experimentalMcrawParallelDecoder.let { _ -> }
+                        settledStillPreview.let { _ -> }
                         glSurfaceView.requestRender()
                     },
                     onRelease = { glSurfaceView ->
