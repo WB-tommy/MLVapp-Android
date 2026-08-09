@@ -9,7 +9,6 @@ import fm.magiclantern.forum.domain.model.DebayerAlgorithm
 import fm.magiclantern.forum.domain.session.ActiveClipHolder
 import fm.magiclantern.forum.domain.session.CpuProcessingPreviewRequirement
 import fm.magiclantern.forum.nativeInterface.NativeLib
-import fm.magiclantern.forum.features.settings.viewmodel.DebayerMode
 import fm.magiclantern.forum.features.settings.viewmodel.SettingsRepository
 import fm.magiclantern.forum.features.player.PlaybackContext
 import fm.magiclantern.forum.features.player.PlaybackEngine
@@ -102,10 +101,6 @@ class PlayerViewModel @Inject constructor(
 
     private val _averageProcessingUs = MutableStateFlow(0L)
     val averageProcessingUs: StateFlow<Long> = _averageProcessingUs
-
-    // Debayer mode
-    private val _debayerMode = MutableStateFlow(DebayerMode.AMAZE)
-    val debayerMode: StateFlow<DebayerMode> = _debayerMode
 
     private var decodeEmaUs = 0.0
     private var renderEmaUs = 0.0
@@ -206,15 +201,6 @@ class PlayerViewModel @Inject constructor(
                 playbackEngine.setDropFrameMode(enabled)
             }
         }
-        viewModelScope.launch {
-            settingsRepository.debayerMode.collectLatest { mode ->
-                _debayerMode.value = mode
-                // Only apply playback debayer if currently playing
-                if (_isPlaying.value) {
-                    applyDebayerMode(mode)
-                }
-            }
-        }
         val nativeCpuFallbackForCurrentVersion = combine(
             activeClipHolder.processingVersion,
             rawGpuNativeCpuFallback
@@ -310,16 +296,6 @@ class PlayerViewModel @Inject constructor(
                 }
         }
         
-        // Observe receipt debayer mode changes (from grading screen)
-        viewModelScope.launch {
-            activeClipHolder.currentReceiptDebayerMode.collectLatest { mode ->
-                // Only apply receipt debayer if currently paused
-                if (!_isPlaying.value && clipHandle.value != 0L) {
-                    scheduleDebayerMode(clipHandle.value, mode.nativeId)
-                }
-            }
-        }
-        
         // Observe active clip changes
         viewModelScope.launch {
             activeClipHolder.activeClip.collectLatest { details ->
@@ -364,10 +340,8 @@ class PlayerViewModel @Inject constructor(
         _currentFrame.value = 0
         _isPlaying.value = false
         
-        // Clip starts in paused state, so use receipt debayer for quality preview
-        // Note: The receipt debayer will be set by GradingViewModel via ActiveClipHolder
-        // This is a fallback in case grading hasn't loaded yet
-        applyReceiptDebayerMode()
+        // CPU preview uses the same bilinear demosaic as GPU preview.
+        applyDebayerMode(DebayerAlgorithm.BILINEAR)
         
         // Resolve cut bounds (1-based → 0-based)
         val cutIn = activeClipHolder.currentCutIn.value
@@ -420,12 +394,10 @@ class PlayerViewModel @Inject constructor(
         val shouldPlay = !_isPlaying.value
         _isPlaying.value = shouldPlay
         if (shouldPlay) {
-            // Playing: Use settings debayer (fast algorithm for smooth playback)
-            applyDebayerMode(_debayerMode.value)
+            // Both CPU and GPU playback use bilinear demosaic for predictable speed.
+            applyDebayerMode(DebayerAlgorithm.BILINEAR)
             playbackEngine.play()
         } else {
-            // Paused: Use receipt debayer (quality algorithm for accurate preview)
-            applyReceiptDebayerMode()
             playbackEngine.pause()
         }
     }
@@ -556,12 +528,6 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    fun setDebayerMode(mode: DebayerMode) {
-        viewModelScope.launch {
-            settingsRepository.setDebayerMode(mode)
-        }
-    }
-
     fun reportFrameTiming(decodeNs: Long, renderNs: Long) {
         val decodeUs = decodeNs / 1000.0
         val renderUs = renderNs / 1000.0
@@ -606,23 +572,12 @@ class PlayerViewModel @Inject constructor(
         _isPlaying.value = false
     }
 
-    private fun applyDebayerMode(mode: DebayerMode) {
+    private fun applyDebayerMode(mode: DebayerAlgorithm) {
         val handle = clipHandle.value
         if (handle == 0L) return
         scheduleDebayerMode(handle, mode.nativeId)
     }
     
-    /**
-     * Apply the current clip's receipt debayer mode (from grading settings).
-     * Used when playback is paused for high-quality preview matching export output.
-     */
-    private fun applyReceiptDebayerMode() {
-        val handle = clipHandle.value
-        if (handle == 0L) return
-        val receiptMode = activeClipHolder.currentReceiptDebayerMode.value
-        scheduleDebayerMode(handle, receiptMode.nativeId)
-    }
-
     private fun scheduleDebayerMode(handle: Long, nativeId: Int) {
         viewModelScope.launch(nativeDispatcher) {
             runCatching {

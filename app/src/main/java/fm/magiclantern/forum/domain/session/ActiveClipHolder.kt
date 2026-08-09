@@ -2,7 +2,6 @@ package fm.magiclantern.forum.domain.session
 
 import fm.magiclantern.forum.domain.model.ClipDetails
 import fm.magiclantern.forum.domain.model.ClipPreview
-import fm.magiclantern.forum.domain.model.DebayerAlgorithm
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -62,24 +61,7 @@ class ActiveClipHolder @Inject constructor() {
     /** True while active settings need processing stages absent from RAW GPU preview. */
     val cpuProcessingPreviewRequirement: StateFlow<CpuProcessingPreviewRequirement> =
         _cpuProcessingPreviewRequirement.asStateFlow()
-    
-    private val _currentReceiptDebayerMode = MutableStateFlow(DebayerAlgorithm.AMAZE)
-    
-    /**
-     * The current clip's receipt debayer mode (from grading settings).
-     * Used by PlayerViewModel when playback is paused to show high-quality preview.
-     * Updated by GradingViewModel when user changes debayer in grading screen.
-     */
-    val currentReceiptDebayerMode: StateFlow<DebayerAlgorithm> = _currentReceiptDebayerMode.asStateFlow()
-    
-    /**
-     * Update the current clip's receipt debayer mode.
-     * Called by GradingViewModel when debayer setting changes.
-     */
-    fun setReceiptDebayerMode(mode: DebayerAlgorithm) {
-        _currentReceiptDebayerMode.value = mode
-    }
-    
+
     private val _currentCutIn = MutableStateFlow(1)
     private val _currentCutOut = MutableStateFlow(0)
     

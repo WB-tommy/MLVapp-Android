@@ -187,8 +187,6 @@ class GradingViewModel @Inject constructor(
         gradingEpoch++
         _currentGrading.value = grading
         
-        // Sync receipt debayer mode to ActiveClipHolder for PlayerViewModel
-        activeClipHolder.setReceiptDebayerMode(grading.debayerMode)
         // Sync cut marks to ActiveClipHolder for PlayerViewModel playback bounds
         activeClipHolder.setCutMarks(grading.cutIn, grading.cutOut)
         activeClipHolder.setRequiresCpuProcessingPreview(
@@ -371,12 +369,7 @@ class GradingViewModel @Inject constructor(
             it.copy(debayerMode = mode)
         }
         
-        // Share with ActiveClipHolder so PlayerViewModel can access it
-        activeClipHolder.setReceiptDebayerMode(mode)
-
-        launchNativeUpdate("set debayer mode") {
-            NativeLib.setDebayerMode(handle, mode.nativeId)
-        }
+        // Preview remains bilinear; this receipt value is consumed by export.
     }
 
     fun setDualISO(mode: Int) {

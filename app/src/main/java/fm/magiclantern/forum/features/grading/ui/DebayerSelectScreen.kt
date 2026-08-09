@@ -35,9 +35,8 @@ import fm.magiclantern.forum.features.grading.viewmodel.GradingViewModel
 /**
  * Debayer algorithm selection component for grading screen.
  * 
- * Sets the per-clip debayer algorithm (receipt setting) which is used:
- * - During playback (preview)
- * - During export when "Receipt" is selected in export settings
+ * Sets the per-clip debayer algorithm used during export when "Receipt" is
+ * selected in export settings. Preview always uses bilinear demosaic.
  * 
  * Mirrors desktop comboBoxDebayer functionality.
  */

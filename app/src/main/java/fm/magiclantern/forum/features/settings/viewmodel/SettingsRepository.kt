@@ -11,18 +11,6 @@ import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
-enum class DebayerMode(val displayName: String, val nativeId: Int) {
-    NONE("None (monochrome)", 0),
-    SIMPLE("Simple", 1),
-    BILINEAR("Bilinear", 2),
-    LMMSE("LMMSE", 3),
-    IGV("IGV", 4),
-    AMAZE("AMaZE", 5),
-    AHD("AHD", 6),
-    RCD("RCD", 7),
-    DCB("DCB", 8),
-}
-
 @Singleton
 class SettingsRepository @Inject constructor(
     @ApplicationContext context: Context
@@ -44,13 +32,6 @@ class SettingsRepository @Inject constructor(
     )
     val experimentalMcrawParallelDecoder: StateFlow<Boolean> =
         experimentalMcrawParallelDecoderFlow.asStateFlow()
-
-    private val debayerModeFlow = MutableStateFlow(
-        prefs.getString(KEY_DEBAYER_MODE, DebayerMode.AMAZE.name)?.let { stored ->
-            runCatching { DebayerMode.valueOf(stored) }.getOrDefault(DebayerMode.AMAZE)
-        } ?: DebayerMode.AMAZE
-    )
-    val debayerMode: StateFlow<DebayerMode> = debayerModeFlow.asStateFlow()
 
     private val mutex = Mutex()
 
@@ -75,13 +56,6 @@ class SettingsRepository @Inject constructor(
         }
     }
 
-    suspend fun setDebayerMode(mode: DebayerMode) {
-        mutex.withLock {
-            prefs.edit().putString(KEY_DEBAYER_MODE, mode.name).apply()
-            debayerModeFlow.value = mode
-        }
-    }
-
     companion object {
         private const val PREFS_NAME = "mlvapp_settings"
         private const val KEY_DROP_FRAME_MODE = "drop_frame_mode"
@@ -91,6 +65,5 @@ class SettingsRepository @Inject constructor(
             "experimental_mcraw_gpu_preview"
         private const val KEY_EXPERIMENTAL_MCRAW_PARALLEL_DECODER =
             "experimental_mcraw_parallel_decoder"
-        private const val KEY_DEBAYER_MODE = "debayer_mode"
     }
 }
