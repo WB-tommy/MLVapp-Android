@@ -518,8 +518,10 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportHandler(
 
   int result = startExportJob(video, options, provider, progress_callback);
 
-  freeProcessingObject(video->processing);
+  // Free the clip first: freeMlvObject() stops cache threads that read processing.
+  processingObject_t *processing = video->processing;
   freeMlvObject(video);
+  freeProcessingObject(processing);
 
   env->DeleteGlobalRef(g_progress_listener);
   g_progress_listener = nullptr;
@@ -716,8 +718,10 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_exportBatchHandler(
       lastResult = startBatchExportJob(batch_ctx, video, clipOptions, provider,
                                        progress_callback);
 
-      freeProcessingObject(video->processing);
+      // Free the clip first: freeMlvObject() stops cache threads that read processing.
+      processingObject_t *processing = video->processing;
       freeMlvObject(video);
+      freeProcessingObject(processing);
     } else {
       lastResult = EXPORT_ERROR_GENERIC;
     }

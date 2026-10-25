@@ -54,6 +54,14 @@ namespace {
         }
     }
 
+    // freeMlvObject() stops the cache threads, which read clip->processing,
+    // so the processing object must outlive it (same order as desktop).
+    void freeClipAndProcessing(mlvObject_t *clip) {
+        processingObject_t *processing = clip->processing;
+        freeMlvObject(clip);
+        freeProcessingObject(processing);
+    }
+
     bool shouldAutoEnableDualIso(mlvObject_t *clip) {
         return clip && clip->llrawproc &&
                llrpGetDualIsoValidity(clip) == DISO_VALID &&
@@ -312,8 +320,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
         focusPixelMapNameJ = env->NewStringUTF("");
     }
 
-    freeProcessingObject(nativeClip->processing);
-    freeMlvObject(nativeClip);
+    freeClipAndProcessing(nativeClip);
     nativeClip = nullptr;
 
     result = env->NewObject(cache.clipPreviewDataClass, cache.clipPreviewCtor,
@@ -339,8 +346,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClipForPreview(
         env->DeleteLocalRef(focusPixelMapNameJ);
     }
     if (nativeClip) {
-        freeProcessingObject(nativeClip->processing);
-        freeMlvObject(nativeClip);
+        freeClipAndProcessing(nativeClip);
     }
     env->DeleteLocalRef(fdArray);
     return result;
@@ -475,8 +481,7 @@ Java_fm_magiclantern_forum_nativeInterface_NativeLib_openClip(
             delete wrapper;
         }
         if (nativeClip) {
-            freeProcessingObject(nativeClip->processing);
-            freeMlvObject(nativeClip);
+            freeClipAndProcessing(nativeClip);
         }
     }
 
