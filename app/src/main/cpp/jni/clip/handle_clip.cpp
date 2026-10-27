@@ -124,7 +124,11 @@ mlvObject_t *getMlvObject(JNIEnv *env, jintArray fds, jstring fileName,
     env->ReleaseStringUTFChars(fileName, filePath);
 
     nativeClip->processing = initProcessingObject();
-    setMlvRawCacheLimitMegaBytes(nativeClip, cacheSize);
+    // setMlvRawCacheLimitMegaBytes() (re)starts cache threads; preview opens
+    // only decode one thumbnail frame, so they must not get any.
+    if (isFull) {
+        setMlvRawCacheLimitMegaBytes(nativeClip, cacheSize);
+    }
     setMlvCpuCores(nativeClip, std::max<jint>(cores, 1));
 
     return nativeClip;
